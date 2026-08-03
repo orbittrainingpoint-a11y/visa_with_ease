@@ -1,0 +1,17 @@
+node_modules/
+.pnpm-store/
+dist/
+build/
+.expo/
+.expo-export-*/
+.env
+.env.*
+!.env.example
+coverage/
+*.log
+app_logcat.txt
+apps/mobile/android/
+apps/mobile/ios/
+test-results/
+playwright-report/
+*.md

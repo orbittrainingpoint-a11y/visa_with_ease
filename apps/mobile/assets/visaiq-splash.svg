@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1080 1920" role="img" aria-label="VisaIQ splash">
+  <rect width="1080" height="1920" fill="#F8FAFC"/>
+  <rect x="290" y="710" width="500" height="500" rx="112" fill="#0B1F4B"/>
+  <path d="M396 852h82l62 198 62-198h82l-102 236h-84L396 852z" fill="#FFFFFF"/>
+  <circle cx="700" cy="1062" r="45" fill="#14B8A6"/>
+  <path d="M712 1092l52 52" stroke="#F59E0B" stroke-width="30" stroke-linecap="round"/>
+  <text x="540" y="1310" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="72" font-weight="800" fill="#0F172A">VisaIQ</text>
+</svg>

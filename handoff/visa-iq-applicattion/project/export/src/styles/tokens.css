@@ -1,0 +1,120 @@
+/* VisaIQ design tokens — derived from PRD v2.0 */
+:root {
+  /* Primitive colors */
+  --navy-900: #0B1F4B;
+  --navy-800: #112858;
+  --navy-700: #1A3373;
+
+  --royal-700: #1547C0;
+  --royal-600: #1A56DB;
+  --royal-500: #3B82F6;
+  --royal-100: #DBEAFE;
+  --royal-50:  #EFF6FF;
+
+  --teal-600:  #0284C7;
+  --teal-500:  #0EA5E9;
+  --teal-100:  #E0F2FE;
+
+  --gold-500:  #D97706;
+  --gold-400:  #F59E0B;
+  --gold-100:  #FEF3C7;
+
+  --green-600: #059669;
+  --green-500: #10B981;
+  --green-100: #D1FAE5;
+
+  --orange-600: #EA580C;
+  --orange-500: #F97316;
+  --orange-100: #FFEDD5;
+
+  --red-700:   #B91C1C;
+  --red-600:   #DC2626;
+  --red-500:   #EF4444;
+  --red-100:   #FEE2E2;
+
+  --purple-700: #6D28D9;
+  --purple-600: #7C3AED;
+  --purple-100: #EDE9FE;
+
+  --slate-50:  #F8FAFC;
+  --slate-100: #F1F5F9;
+  --slate-200: #E2E8F0;
+  --slate-300: #CBD5E1;
+  --slate-400: #94A3B8;
+  --slate-500: #64748B;
+  --slate-600: #475569;
+  --slate-700: #334155;
+  --slate-800: #1E293B;
+  --slate-900: #0F172A;
+
+  /* Semantic */
+  --bg-canvas: var(--slate-50);
+  --bg-surface: #FFFFFF;
+  --bg-input: var(--slate-100);
+  --bg-brand: var(--navy-900);
+  --text-primary: var(--slate-800);
+  --text-secondary: var(--slate-600);
+  --text-disabled: var(--slate-400);
+  --text-onBrand: #FFFFFF;
+  --action-primary: var(--royal-600);
+  --action-hover: var(--royal-700);
+  --border-default: var(--slate-200);
+  --border-focus: var(--royal-600);
+
+  /* Radius */
+  --r-xs: 4px;
+  --r-sm: 8px;
+  --r-md: 12px;
+  --r-lg: 16px;
+  --r-xl: 24px;
+  --r-2xl: 32px;
+  --r-full: 9999px;
+
+  /* Shadows */
+  --el-1: 0 2px 4px rgba(15,23,42,.06), 0 1px 2px rgba(15,23,42,.04);
+  --el-2: 0 4px 8px rgba(15,23,42,.08), 0 2px 4px rgba(15,23,42,.05);
+  --el-3: 0 8px 16px rgba(15,23,42,.10), 0 4px 8px rgba(15,23,42,.06);
+  --el-4: 0 16px 24px rgba(15,23,42,.12), 0 6px 12px rgba(15,23,42,.08);
+
+  /* Typography stacks */
+  --f-display: "Plus Jakarta Sans", "Inter", system-ui, sans-serif;
+  --f-body: "Inter", system-ui, sans-serif;
+  --f-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", monospace;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; font-family: var(--f-body); color: var(--text-primary); -webkit-font-smoothing: antialiased; }
+
+/* Utilities */
+.viq-chip { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: var(--r-full); font: 500 11px/1.4 var(--f-body); letter-spacing: 0.1px; }
+.viq-chip--success { background: var(--green-100); color: #047857; }
+.viq-chip--warning { background: var(--orange-100); color: #9A3412; }
+.viq-chip--error   { background: var(--red-100); color: #991B1B; }
+.viq-chip--info    { background: var(--royal-50); color: var(--royal-700); }
+.viq-chip--neutral { background: var(--slate-100); color: var(--slate-600); }
+.viq-chip--ai      { background: var(--purple-100); color: var(--purple-700); }
+.viq-chip--gold    { background: var(--gold-100); color: #92400E; }
+
+.viq-btn { display:inline-flex; align-items:center; justify-content:center; gap:8px; height:44px; padding:0 20px; border-radius: var(--r-md); font:600 14px/1 var(--f-body); border:0; cursor:pointer; }
+.viq-btn--primary  { background: var(--royal-600); color: #fff; }
+.viq-btn--tonal    { background: var(--royal-50); color: var(--royal-700); }
+.viq-btn--outlined { background: transparent; border: 1.5px solid var(--slate-200); color: var(--text-primary); }
+.viq-btn--text     { background: transparent; color: var(--royal-600); }
+.viq-btn--destruct { background: var(--red-600); color: #fff; }
+
+.viq-h-display-l { font: 700 36px/1.2 var(--f-display); color: var(--text-primary); letter-spacing: -0.02em; }
+.viq-h-display-m { font: 700 28px/1.25 var(--f-display); letter-spacing: -0.02em; }
+.viq-h-display-s { font: 600 24px/1.3 var(--f-display); letter-spacing: -0.01em; }
+.viq-h-headline-l { font: 600 22px/1.35 var(--f-body); letter-spacing: -0.01em; }
+.viq-h-headline-m { font: 600 18px/1.4 var(--f-body); }
+.viq-h-headline-s { font: 600 16px/1.4 var(--f-body); }
+.viq-body-l { font: 400 15px/1.5 var(--f-body); color: var(--text-secondary); }
+.viq-body-m { font: 400 13px/1.5 var(--f-body); color: var(--text-secondary); }
+.viq-body-s { font: 400 11px/1.5 var(--f-body); color: var(--text-secondary); }
+.viq-label-l { font: 500 13px/1.4 var(--f-body); }
+.viq-label-m { font: 500 11px/1.4 var(--f-body); letter-spacing: 0.2px; }
+.viq-label-s { font: 500 10px/1.3 var(--f-body); letter-spacing: 0.4px; text-transform: uppercase; }
+.viq-mono { font-family: var(--f-mono); letter-spacing: 0.02em; }
+
+/* Material icon font (Google fonts) */
+.mi { font-family: 'Material Symbols Rounded'; font-weight: normal; font-style: normal; line-height: 1; display: inline-block; -webkit-font-feature-settings: 'liga'; font-feature-settings: 'liga'; user-select: none; }

@@ -1,0 +1,37 @@
+{
+  "name": "@visaiq/backend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json",
+    "start": "node dist/server.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "test": "tsx --test src/backend.contract.test.ts",
+    "test:mobile": "tsx --test src/mobile.contract.test.ts",
+    "test:all": "tsx --test src/backend.contract.test.ts src/mobile.contract.test.ts"
+  },
+  "dependencies": {
+    "@visaiq/contracts": "workspace:*",
+    "@visaiq/mock-data": "workspace:*",
+    "cors": "^2.8.5",
+    "express": "^4.21.2",
+    "express-rate-limit": "^8.5.2",
+    "google-auth-library": "^10.7.0",
+    "helmet": "^8.0.0",
+    "jsonwebtoken": "^9.0.3",
+    "pino": "^9.6.0",
+    "pino-http": "^10.4.0",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/express": "^5.0.0",
+    "@types/express-rate-limit": "^6.0.2",
+    "@types/jsonwebtoken": "^9.0.10",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3"
+  }
+}

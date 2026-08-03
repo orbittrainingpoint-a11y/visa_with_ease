@@ -1,0 +1,20 @@
+{
+  "name": "visaiq",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@9.15.4",
+  "scripts": {
+    "dev": "pnpm --parallel --filter @visaiq/web --filter @visaiq/backend dev",
+    "dev:web": "pnpm --filter @visaiq/web dev",
+    "dev:backend": "pnpm --filter @visaiq/backend dev",
+    "dev:mobile": "pnpm --filter @visaiq/mobile start",
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "lint": "pnpm -r lint",
+    "test": "pnpm -r test"
+  },
+  "devDependencies": {
+    "@types/node": "^20.17.12",
+    "typescript": "^5.7.3"
+  }
+}

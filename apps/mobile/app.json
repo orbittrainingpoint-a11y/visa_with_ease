@@ -1,0 +1,22 @@
+{
+  "expo": {
+    "name": "VisaIQ",
+    "slug": "visaiq",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "scheme": "visaiq",
+    "userInterfaceStyle": "automatic",
+    "platforms": ["android", "ios"],
+    "android": {
+      "package": "app.visaiq.mobile",
+      "minSdkVersion": 26,
+      "targetSdkVersion": 35,
+      "googleServicesFile": "./google-services.json",
+      "allowBackup": false
+    },
+    "ios": {
+      "bundleIdentifier": "app.visaiq.mobile",
+      "supportsTablet": false
+    }
+  }
+}

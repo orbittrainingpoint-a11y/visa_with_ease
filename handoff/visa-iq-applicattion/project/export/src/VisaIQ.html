@@ -1,0 +1,307 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=1400"/>
+<title>VisaIQ — Design System & Prototype</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin/>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@24,400,0,0..1&display=block" rel="stylesheet"/>
+<link rel="stylesheet" href="styles/tokens.css"/>
+
+<style>
+  html, body, #root { height: 100%; }
+  body { background: #f0eee9; }
+</style>
+</head>
+<body>
+<template id="__bundler_thumbnail">
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400">
+    <defs>
+      <linearGradient id="vbg" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0" stop-color="#0B1F4B"/>
+        <stop offset="0.6" stop-color="#1A56DB"/>
+        <stop offset="1" stop-color="#7C3AED"/>
+      </linearGradient>
+    </defs>
+    <rect width="400" height="400" fill="url(#vbg)"/>
+    <text x="200" y="220" font-family="Plus Jakarta Sans, Inter, sans-serif" font-size="64" font-weight="800" text-anchor="middle" fill="#fff" letter-spacing="-3">Visa<tspan fill="#0EA5E9">IQ</tspan></text>
+    <text x="200" y="258" font-family="Inter, sans-serif" font-size="14" font-weight="500" text-anchor="middle" fill="#94A3B8" letter-spacing="2">DESIGN SYSTEM · v2.0</text>
+  </svg>
+</template>
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<!-- foundation -->
+<script type="text/babel" src="components/design-canvas.jsx"></script>
+<script type="text/babel" src="components/viq-frames.jsx"></script>
+<script type="text/babel" src="components/viq-ui.jsx"></script>
+
+<!-- screens -->
+<script type="text/babel" src="screens/system.jsx"></script>
+<script type="text/babel" src="screens/mobile-auth.jsx"></script>
+<script type="text/babel" src="screens/mobile-consumer.jsx"></script>
+<script type="text/babel" src="screens/mobile-b2b.jsx"></script>
+<script type="text/babel" src="screens/mobile-profile.jsx"></script>
+<script type="text/babel" src="screens/mobile-agent.jsx"></script>
+<script type="text/babel" src="screens/web-screens.jsx"></script>
+<script type="text/babel" src="screens/web-agent-hr.jsx"></script>
+<script type="text/babel" src="screens/realtime-analysis.jsx"></script>
+<script type="text/babel" src="screens/mobile-extras.jsx"></script>
+<script type="text/babel" src="screens/dashboards-extra.jsx"></script>
+<script type="text/babel" src="screens/employee-app.jsx"></script>
+<script type="text/babel" src="screens/agent-mobile-extra.jsx"></script>
+<script type="text/babel" src="screens/agent-web-extra.jsx"></script>
+
+<script type="text/babel">
+const { useState } = React;
+
+// Wrapper to render a Web (DOM-shell) screen inside a fixed-size browser frame
+function WebFrame({ width = 1280, height = 800, url, tab, children }) {
+  return (
+    <VBrowser width={width} height={height} url={url} tab={tab}>{children}</VBrowser>
+  );
+}
+
+// Single artboard helper for phone screens
+function PhoneArt({ children }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '100%', height: '100%' }}>
+      <VPhone width={380} height={800}>{children}</VPhone>
+    </div>
+  );
+}
+
+// DS artboard helper (just renders content full-size with white bg)
+function DSArt({ children }) {
+  return <div style={{ width: '100%', height: '100%', background: '#fff' }}>{children}</div>;
+}
+
+function App() {
+  return (
+    <DesignCanvas>
+      {/* ═══════════════ INTRO ═══════════════ */}
+      <DCSection id="cover" title="VisaIQ · Design System & Prototype Board" subtitle="Full UI system + Web app + Android mobile app · All user roles">
+        <DCArtboard id="cover" label="Overview" width={1100} height={620}>
+          <div style={{ width: '100%', height: '100%', background: 'linear-gradient(135deg, #0B1F4B 0%, #1A56DB 60%, #7C3AED 100%)', color: '#fff', padding: 56, position: 'relative', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+            <div style={{ position: 'absolute', right: -100, top: -100, width: 480, height: 480, borderRadius: '50%', background: 'radial-gradient(circle, rgba(14,165,233,.3), transparent 65%)' }}/>
+            <div style={{ position: 'absolute', right: 100, bottom: -120, width: 360, height: 360, borderRadius: '50%', background: 'radial-gradient(circle, rgba(245,158,11,.25), transparent 65%)' }}/>
+            <div style={{ position: 'relative' }}>
+              <Logo size={36} onDark/>
+              <div style={{ font: '500 12px/1 Inter', color: '#0EA5E9', letterSpacing: 2, textTransform: 'uppercase', marginTop: 36 }}>Design System · v2.0</div>
+              <div style={{ font: '800 64px/1.05 Plus Jakarta Sans', marginTop: 14, letterSpacing: '-0.03em', maxWidth: 740 }}>
+                AI-powered visa intelligence —<br/>
+                <span style={{ color: '#F59E0B' }}>simplified for everyone.</span>
+              </div>
+              <div style={{ font: '400 17px/1.5 Inter', color: 'rgba(255,255,255,.75)', marginTop: 22, maxWidth: 620 }}>
+                A full design language and frame-by-frame prototype board for VisaIQ — covering Tourist, Professional, HR Manager and Admin users across Android + Web.
+              </div>
+            </div>
+            <div style={{ marginTop: 'auto', position: 'relative', display: 'flex', gap: 40 }}>
+              {[
+                { v: '50+', l: 'Frame specifications' },
+                { v: '4', l: 'User roles' },
+                { v: '2', l: 'Platforms · Web + Android' },
+                { v: '94%', l: 'AI audit accuracy' },
+              ].map((s, i) => (
+                <div key={i}>
+                  <div style={{ font: '800 36px/1 Plus Jakarta Sans', color: '#fff' }}>{s.v}</div>
+                  <div style={{ font: '500 12px/1.3 Inter', color: 'rgba(255,255,255,.6)', marginTop: 6, letterSpacing: 0.4 }}>{s.l}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </DCArtboard>
+      </DCSection>
+
+      {/* ═══════════════ DESIGN SYSTEM ═══════════════ */}
+      <DCSection id="system" title="01 · Design System" subtitle="Tokens, type, spacing, components — the foundation everything else uses">
+        <DCArtboard id="colors" label="Color tokens" width={720} height={760}><DSArt><DSColors/></DSArt></DCArtboard>
+        <DCArtboard id="type" label="Typography" width={720} height={760}><DSArt><DSType/></DSArt></DCArtboard>
+        <DCArtboard id="space" label="Spacing · Radius · Elevation" width={720} height={760}><DSArt><DSSpacing/></DSArt></DCArtboard>
+        <DCArtboard id="btns" label="Buttons" width={720} height={620}><DSArt><DSButtons/></DSArt></DCArtboard>
+        <DCArtboard id="inputs" label="Forms · Inputs · Upload" width={920} height={760}><DSArt><DSInputs/></DSArt></DCArtboard>
+        <DCArtboard id="cards" label="Cards · Score rings" width={920} height={620}><DSArt><DSCards/></DSArt></DCArtboard>
+      </DCSection>
+
+      {/* ═══════════════ MOBILE — AUTH & ONBOARDING ═══════════════ */}
+      <DCSection id="mobile-auth" title="02 · Mobile Android — Auth & Onboarding" subtitle="Splash → Welcome → Register → Verify → Login → 4-step Onboarding wizard">
+        <DCArtboard id="splash" label="F-SPLASH-01 · Splash" width={400} height={820}><PhoneArt><MSplash/></PhoneArt></DCArtboard>
+        <DCArtboard id="welcome" label="F-WELCOME-01 · Welcome" width={400} height={820}><PhoneArt><MWelcome/></PhoneArt></DCArtboard>
+        <DCArtboard id="register" label="F-AUTH-REG-01 · Register" width={400} height={820}><PhoneArt><MRegister/></PhoneArt></DCArtboard>
+        <DCArtboard id="verify" label="F-AUTH-VERIFY-01 · Verify email" width={400} height={820}><PhoneArt><MVerify/></PhoneArt></DCArtboard>
+        <DCArtboard id="login" label="F-AUTH-LOGIN-01 · Login" width={400} height={820}><PhoneArt><MLogin/></PhoneArt></DCArtboard>
+        <DCArtboard id="onb1" label="F-ONBOARD-01 · Nationality" width={400} height={820}><PhoneArt><MOnboard1/></PhoneArt></DCArtboard>
+        <DCArtboard id="onb2" label="F-ONBOARD-02 · Destination" width={400} height={820}><PhoneArt><MOnboard2/></PhoneArt></DCArtboard>
+        <DCArtboard id="onb4" label="F-ONBOARD-04 · You're ready" width={400} height={820}><PhoneArt><MOnboard4/></PhoneArt></DCArtboard>
+      </DCSection>
+
+      {/* ═══════════════ MOBILE — CONSUMER ═══════════════ */}
+      <DCSection id="mobile-consumer" title="03 · Mobile Android — Tourist / Consumer journey" subtitle="The complete consumer flow: Dashboard → Documents → Audit → Requirements → Chat → VIP">
+        <DCArtboard id="dash" label="F-DASH-CON-01 · Dashboard" width={400} height={820}><PhoneArt><MDashboard/></PhoneArt></DCArtboard>
+        <DCArtboard id="appdetail" label="F-APP-DETAIL-01 · Application · Documents tab" width={400} height={820}><PhoneArt><MAppDetail/></PhoneArt></DCArtboard>
+        <DCArtboard id="upload" label="F-DOC-UPLOAD-01 · Upload sheet" width={400} height={820}><PhoneArt><MDocUpload/></PhoneArt></DCArtboard>
+        <DCArtboard id="audit" label="F-AUDIT-REPORT-01 · AI Audit Report" width={400} height={820}><PhoneArt><MAuditReport/></PhoneArt></DCArtboard>
+        <DCArtboard id="req" label="F-REQ-01 · Live Requirements" width={400} height={820}><PhoneArt><MRequirements/></PhoneArt></DCArtboard>
+        <DCArtboard id="chat" label="F-CHAT-01 · AI Assistant" width={400} height={820}><PhoneArt><MChat/></PhoneArt></DCArtboard>
+        <DCArtboard id="booking" label="F-BOOKING-01 · VIP Expert booking" width={400} height={820}><PhoneArt><MBooking/></PhoneArt></DCArtboard>
+        <DCArtboard id="checkout" label="F-CHECKOUT · Payment" width={400} height={820}><PhoneArt><MCheckout/></PhoneArt></DCArtboard>
+        <DCArtboard id="newapp" label="F-APP-NEW · New Application wizard" width={400} height={820}><PhoneArt><MNewAppWizard/></PhoneArt></DCArtboard>
+      </DCSection>
+
+      {/* ═══════════════ REAL-TIME AI ═══════════════ */}
+      <DCSection id="realtime-ai" title="04a · Real-time AI analysis — same-time everywhere" subtitle="Streaming Claude reasoning, live document audit, app-level readiness updating on every change">
+        <DCArtboard id="rt-mobile-doc" label="F-AI-LIVE · Document analyzing (streaming)" width={400} height={820}><PhoneArt><MAIAnalysisLive/></PhoneArt></DCArtboard>
+        <DCArtboard id="rt-mobile-app" label="F-AI-APP-RT · Application real-time insights" width={400} height={820}><PhoneArt><MAppRealtime/></PhoneArt></DCArtboard>
+        <DCArtboard id="rt-web" label="Web · Live audit dashboard with AI reasoning stream" width={1300} height={820}>
+          <WebFrame width={1280} height={800} url="visaiq.app/applications/fr-2026-q/live" tab="Live audit · VisaIQ"><WRealtimeAudit/></WebFrame>
+        </DCArtboard>
+      </DCSection>
+
+      {/* ═══════════════ MOBILE — SUPPORT / STATES ═══════════════ */}
+      <DCSection id="mobile-states" title="04b · Mobile — Supporting states & utilities" subtitle="Camera capture, notifications, search, empty + offline states, push preview, dark mode">
+        <DCArtboard id="cam" label="F-CAMERA · Document capture" width={400} height={820}><PhoneArt><MCamera/></PhoneArt></DCArtboard>
+        <DCArtboard id="notif" label="F-NOTIF · Notifications center" width={400} height={820}><PhoneArt><MNotifications/></PhoneArt></DCArtboard>
+        <DCArtboard id="push" label="F-PUSH · Lockscreen notifications" width={400} height={820}><PhoneArt><MPush/></PhoneArt></DCArtboard>
+        <DCArtboard id="search" label="F-SEARCH · Global search + AI answer" width={400} height={820}><PhoneArt><MSearch/></PhoneArt></DCArtboard>
+        <DCArtboard id="empty" label="F-EMPTY · No applications yet" width={400} height={820}><PhoneArt><MEmptyApps/></PhoneArt></DCArtboard>
+        <DCArtboard id="offline" label="F-OFFLINE · Offline / cached mode" width={400} height={820}><PhoneArt><MOffline/></PhoneArt></DCArtboard>
+        <DCArtboard id="dark" label="F-DASH-DARK · Dashboard — dark theme" width={400} height={820}><PhoneArt><MDashboardDark/></PhoneArt></DCArtboard>
+      </DCSection>
+
+      {/* ═══════════════ MOBILE — PROFILE & APPLICATIONS ═══════════════ */}
+      <DCSection id="mobile-profile" title="04 · Mobile Android — Complete Profile & Account" subtitle="Personal info, passport, travel history, financials, resume — reused across all applications">
+        <DCArtboard id="prof-hub" label="F-PROFILE-HUB · Complete profile checklist" width={400} height={820}><PhoneArt><MProfileHub/></PhoneArt></DCArtboard>
+        <DCArtboard id="prof-travel" label="F-PROFILE-TRAVEL · Travel history" width={400} height={820}><PhoneArt><MProfileTravel/></PhoneArt></DCArtboard>
+        <DCArtboard id="prof-fin" label="F-PROFILE-FIN · Bank statements (3 mo)" width={400} height={820}><PhoneArt><MProfileFinancials/></PhoneArt></DCArtboard>
+        <DCArtboard id="prof-resume" label="F-PROFILE-RESUME · Employment & Resume" width={400} height={820}><PhoneArt><MProfileResume/></PhoneArt></DCArtboard>
+        <DCArtboard id="prof-page" label="F-PROFILE-PAGE · My Profile" width={400} height={820}><PhoneArt><MProfilePage/></PhoneArt></DCArtboard>
+      </DCSection>
+
+      {/* ═══════════════ MOBILE — APPS & DOC CLEARANCE ═══════════════ */}
+      <DCSection id="mobile-apps" title="05 · Mobile Android — Applications & Document Clearance" subtitle="List of apps, AI-driven document clearance, find & chat with real consultants">
+        <DCArtboard id="m-apps" label="F-APPS-LIST · My applications" width={400} height={820}><PhoneArt><MAppsList/></PhoneArt></DCArtboard>
+        <DCArtboard id="m-clearance" label="F-CLEARANCE-01 · Document clearance / session" width={400} height={820}><PhoneArt><MDocClearance/></PhoneArt></DCArtboard>
+        <DCArtboard id="m-consult" label="F-CONSULT-01 · Find consultant (live)" width={400} height={820}><PhoneArt><MFindConsultant/></PhoneArt></DCArtboard>
+        <DCArtboard id="m-agentchat" label="F-AGENTCHAT-01 · Chat with consultant" width={400} height={820}><PhoneArt><MAgentChat/></PhoneArt></DCArtboard>
+      </DCSection>
+
+      {/* ═══════════════ MOBILE — B2B ═══════════════ */}
+      <DCSection id="mobile-b2b" title="06 · Mobile Android — HR Manager B2B" subtitle="Team-level dashboards, bulk upload, employee management">
+        <DCArtboard id="b2b-dash" label="F-DASH-B2B-01 · Team overview" width={400} height={820}><PhoneArt><MB2BDashboard/></PhoneArt></DCArtboard>
+        <DCArtboard id="b2b-team" label="F-B2B-TEAM-01 · Team list" width={400} height={820}><PhoneArt><MB2BTeam/></PhoneArt></DCArtboard>
+        <DCArtboard id="b2b-bulk" label="F-B2B-BULK-01 · Bulk upload" width={400} height={820}><PhoneArt><MB2BBulk/></PhoneArt></DCArtboard>
+      </DCSection>
+
+      {/* ═══════════════ MOBILE — B2B EMPLOYEE (full app) ═══════════════ */}
+      <DCSection id="mobile-emp" title="06a · Mobile — B2B Employee (member)" subtitle="The employee experience: HR manages their applications; they upload requested docs, message HR, track tasks">
+        <DCArtboard id="emp-dash" label="F-EMP-01 · Dashboard" width={400} height={820}><PhoneArt><MEmployeeDash/></PhoneArt></DCArtboard>
+        <DCArtboard id="emp-tasks" label="F-EMP-02 · Tasks from HR" width={400} height={820}><PhoneArt><MEmployeeTasks/></PhoneArt></DCArtboard>
+        <DCArtboard id="emp-app" label="F-EMP-03 · Application detail (read-only)" width={400} height={820}><PhoneArt><MEmployeeApp/></PhoneArt></DCArtboard>
+        <DCArtboard id="emp-upload" label="F-EMP-04 · Upload doc with AI tips" width={400} height={820}><PhoneArt><MEmployeeUpload/></PhoneArt></DCArtboard>
+        <DCArtboard id="emp-hrchat" label="F-EMP-05 · Chat with HR" width={400} height={820}><PhoneArt><MEmployeeHRChat/></PhoneArt></DCArtboard>
+        <DCArtboard id="emp-profile" label="F-EMP-06 · My profile" width={400} height={820}><PhoneArt><MEmployeeProfile/></PhoneArt></DCArtboard>
+        <DCArtboard id="emp-legacy" label="F-EMP-LEGACY · Original concept" width={400} height={820}><PhoneArt><MEmployee/></PhoneArt></DCArtboard>
+      </DCSection>
+
+      {/* ═══════════════ MOBILE — AGENT (expanded) ═══════════════ */}
+      <DCSection id="mobile-agent" title="07 · Mobile Android — Agent / Consultant app" subtitle="The marketplace side: queue, live call, schedule, chats, client CRM, profile, earnings, settings">
+        <DCArtboard id="a-queue" label="F-AGENT-01 · Today's queue" width={400} height={820}><PhoneArt><AgentQueue/></PhoneArt></DCArtboard>
+        <DCArtboard id="a-live" label="F-AGENT-02 · Live call (in-session)" width={400} height={820}><PhoneArt><AgentLiveCall/></PhoneArt></DCArtboard>
+        <DCArtboard id="a-schedule" label="F-AGENT-03 · Schedule / calendar" width={400} height={820}><PhoneArt><AgentSchedule/></PhoneArt></DCArtboard>
+        <DCArtboard id="a-chats" label="F-AGENT-04 · Conversations" width={400} height={820}><PhoneArt><AgentChats/></PhoneArt></DCArtboard>
+        <DCArtboard id="a-client" label="F-AGENT-05 · Client detail (CRM)" width={400} height={820}><PhoneArt><AgentClient/></PhoneArt></DCArtboard>
+        <DCArtboard id="a-review" label="F-AGENT-06 · Application review" width={400} height={820}><PhoneArt><AgentReview/></PhoneArt></DCArtboard>
+        <DCArtboard id="a-earn" label="F-AGENT-07 · Earnings" width={400} height={820}><PhoneArt><AgentEarnings/></PhoneArt></DCArtboard>
+        <DCArtboard id="a-profile" label="F-AGENT-08 · Public profile" width={400} height={820}><PhoneArt><AgentProfile/></PhoneArt></DCArtboard>
+        <DCArtboard id="a-settings" label="F-AGENT-09 · Hours & rates" width={400} height={820}><PhoneArt><AgentSettings/></PhoneArt></DCArtboard>
+      </DCSection>
+
+      {/* ═══════════════ WEB — CONSUMER ═══════════════ */}
+      <DCSection id="web-consumer" title="08 · Web — Consumer / Professional" subtitle="Desktop-optimised layouts · persistent sidebar · context panels">
+        <DCArtboard id="w-dash" label="Consumer dashboard" width={1300} height={820}>
+          <WebFrame width={1280} height={800} url="visaiq.app/dashboard" tab="VisaIQ · Dashboard"><WConsumerDashboard/></WebFrame>
+        </DCArtboard>
+        <DCArtboard id="w-app" label="Application detail · Documents" width={1300} height={820}>
+          <WebFrame width={1280} height={800} url="visaiq.app/applications/fr-2026-q" tab="France · VisaIQ"><WAppDetail/></WebFrame>
+        </DCArtboard>
+      </DCSection>
+
+      {/* ═══════════════ WEB — B2B ═══════════════ */}
+      <DCSection id="web-b2b" title="09 · Web — B2B HR Manager" subtitle="Tables, bulk operations, employee detail, compliance reports">
+        <DCArtboard id="w-b2b" label="HR · Team dashboard" width={1300} height={820}>
+          <WebFrame width={1280} height={800} url="visaiq.app/team" tab="Acme HR · VisaIQ"><WB2BDashboard/></WebFrame>
+        </DCArtboard>
+        <DCArtboard id="w-b2b-emp" label="HR · Employee detail" width={1300} height={820}>
+          <WebFrame width={1280} height={800} url="visaiq.app/team/maria-santos" tab="Maria Santos · VisaIQ"><WB2BEmployee/></WebFrame>
+        </DCArtboard>
+        <DCArtboard id="w-b2b-rep" label="HR · Reports & Compliance" width={1300} height={820}>
+          <WebFrame width={1280} height={800} url="visaiq.app/reports" tab="Reports · VisaIQ"><WB2BReports/></WebFrame>
+        </DCArtboard>
+      </DCSection>
+
+      {/* ═══════════════ WEB — AGENT (expanded) ═══════════════ */}
+      <DCSection id="web-agent" title="10 · Web — Agent / Consultant Console" subtitle="Full marketplace console: queue · live call · CRM · schedule · reviews · earnings · public profile editor">
+        <DCArtboard id="w-agent-q" label="Console · Today's queue" width={1300} height={820}>
+          <WebFrame width={1280} height={800} url="agent.visaiq.app" tab="Agent Console · VisaIQ"><WAgentQueue/></WebFrame>
+        </DCArtboard>
+        <DCArtboard id="w-agent-live" label="Console · Live call (in-session)" width={1300} height={820}>
+          <WebFrame width={1280} height={800} url="agent.visaiq.app/call/live" tab="● Live · Agent Console"><WAgentLiveCall/></WebFrame>
+        </DCArtboard>
+        <DCArtboard id="w-agent-c" label="Console · Clients CRM" width={1300} height={820}>
+          <WebFrame width={1280} height={800} url="agent.visaiq.app/clients" tab="Clients · Agent Console"><WAgentClients/></WebFrame>
+        </DCArtboard>
+        <DCArtboard id="w-agent-s" label="Console · Schedule / calendar" width={1300} height={820}>
+          <WebFrame width={1280} height={800} url="agent.visaiq.app/schedule" tab="Schedule · Agent Console"><WAgentSchedule/></WebFrame>
+        </DCArtboard>
+        <DCArtboard id="w-agent-r" label="Console · Application review" width={1300} height={820}>
+          <WebFrame width={1280} height={800} url="agent.visaiq.app/review/de-2026-q" tab="Review · Agent Console"><WAgentReview/></WebFrame>
+        </DCArtboard>
+        <DCArtboard id="w-agent-e" label="Console · Earnings & reviews" width={1300} height={820}>
+          <WebFrame width={1280} height={800} url="agent.visaiq.app/earnings" tab="Earnings · Agent Console"><WAgentEarnings/></WebFrame>
+        </DCArtboard>
+        <DCArtboard id="w-agent-p" label="Console · Public profile editor" width={1300} height={820}>
+          <WebFrame width={1280} height={800} url="agent.visaiq.app/settings/profile" tab="Profile · Agent Console"><WAgentProfileEditor/></WebFrame>
+        </DCArtboard>
+      </DCSection>
+
+      {/* ═══════════════ WEB — B2B EMPLOYEE ═══════════════ */}
+      <DCSection id="web-emp" title="09a · Web — B2B Employee (member)" subtitle="Employee's own web dashboard inside the company portal · same product, scoped to themselves">
+        <DCArtboard id="w-emp" label="Employee · Web dashboard" width={1300} height={820}>
+          <WebFrame width={1280} height={800} url="visaiq.app/my" tab="My visa · VisaIQ"><WEmployeeDash/></WebFrame>
+        </DCArtboard>
+      </DCSection>
+
+      {/* ═══════════════ WEB — ADMIN ═══════════════ */}
+      <DCSection id="web-admin" title="11 · Web — Platform Admin" subtitle="Platform KPIs, user management, AI monitoring, revenue, requirements DB, super-admin">
+        <DCArtboard id="w-admin-dash" label="Admin · Overview" width={1300} height={820}>
+          <WebFrame width={1280} height={800} url="visaiq.app/admin" tab="VisaIQ · Admin"><WAdminDashboard/></WebFrame>
+        </DCArtboard>
+        <DCArtboard id="w-admin-ai" label="Admin · AI monitoring" width={1300} height={820}>
+          <WebFrame width={1280} height={800} url="visaiq.app/admin/ai" tab="AI Monitor · VisaIQ"><WAdminAI/></WebFrame>
+        </DCArtboard>
+        <DCArtboard id="w-admin-users" label="Admin · User management" width={1300} height={820}>
+          <WebFrame width={1280} height={800} url="visaiq.app/admin/users" tab="Users · VisaIQ Admin"><WAdminUsers/></WebFrame>
+        </DCArtboard>
+        <DCArtboard id="w-admin-rev" label="Admin · Revenue" width={1300} height={820}>
+          <WebFrame width={1280} height={800} url="visaiq.app/admin/revenue" tab="Revenue · VisaIQ Admin"><WAdminRevenue/></WebFrame>
+        </DCArtboard>
+        <DCArtboard id="w-admin-req" label="Admin · Requirements DB" width={1300} height={820}>
+          <WebFrame width={1280} height={800} url="visaiq.app/admin/requirements" tab="Requirements DB · Admin"><WAdminReqDB/></WebFrame>
+        </DCArtboard>
+        <DCArtboard id="w-admin-super" label="Super Admin · Feature flags & system" width={1300} height={820}>
+          <WebFrame width={1280} height={800} url="visaiq.app/admin/system" tab="System · Super Admin"><WSuperAdmin/></WebFrame>
+        </DCArtboard>
+      </DCSection>
+    </DesignCanvas>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>

@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="VisaIQ icon">
+  <rect width="512" height="512" rx="112" fill="#0B1F4B"/>
+  <path d="M116 146h78l58 184 58-184h78L292 366h-80L116 146z" fill="#FFFFFF"/>
+  <circle cx="376" cy="334" r="42" fill="#14B8A6"/>
+  <path d="M386 362l48 48" stroke="#F59E0B" stroke-width="28" stroke-linecap="round"/>
+</svg>

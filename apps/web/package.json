@@ -1,0 +1,37 @@
+{
+  "name": "@visaiq/web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0 --port 5174",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview --host 0.0.0.0 --port 4174",
+    "typecheck": "tsc -b --noEmit",
+    "lint": "tsc -b --noEmit",
+    "test": "echo \"web: component tests pending\"",
+    "test:smoke": "playwright test tests/smoke.spec.ts",
+    "test:smoke:legacy": "playwright test tests/phase4-smoke.spec.ts",
+    "test:smoke:mobile": "playwright test tests/smoke.spec.ts --project=mobile-pixel7",
+    "test:smoke:desktop": "playwright test tests/smoke.spec.ts --project=desktop-chromium"
+  },
+  "dependencies": {
+    "@gsap/react": "^2.1.2",
+    "@vitejs/plugin-react": "^4.3.4",
+    "@visaiq/contracts": "workspace:*",
+    "@visaiq/design-system": "workspace:*",
+    "@visaiq/mock-data": "workspace:*",
+    "gsap": "^3.12.7",
+    "lucide-react": "^0.469.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.28.1",
+    "vite": "^5.4.11"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.60.0",
+    "@types/react": "~19.1.17",
+    "@types/react-dom": "19.1.6",
+    "typescript": "^5.7.3"
+  }
+}

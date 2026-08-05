@@ -1,21 +1,23 @@
 import { chatResponseSchema } from '@visaiq/contracts';
-import type { ChatRequest, ChatResponse } from '@visaiq/contracts';
+import type { ChatRequest, ChatResponse, VisaApplication } from '@visaiq/contracts';
 import type { AiProvider, HealthStatus } from './types.js';
 
 type ProviderName = 'claude' | 'gemini';
+
+type Grounding = { application?: VisaApplication | null };
 
 interface ProviderConfig {
   name: ProviderName;
   apiKey?: string;
   endpoint: string;
-  buildBody(input: ChatRequest): unknown;
+  buildBody(input: ChatRequest, grounding?: Grounding): unknown;
   readReply(body: unknown): string | null;
 }
 
 const timeoutMs = Number(process.env.AI_TIMEOUT_MS ?? 6500);
 const maxAttempts = Number(process.env.AI_RETRY_ATTEMPTS ?? 2);
 
-const VISA_SYSTEM_PROMPT = `You are VisaIQ's visa guidance assistant. You help users with visa applications, passport requirements, embassy rules, document checklists, travel insurance, financial evidence, appointment booking, and related immigration topics.
+const VISA_SYSTEM_PROMPT_BASE = `You are VisaIQ's visa guidance assistant. You help users with visa applications, passport requirements, embassy rules, document checklists, travel insurance, financial evidence, appointment booking, and related immigration topics.
 
 Rules:
 1. ONLY answer questions related to visas, travel documents, passports, immigration, embassy requirements, and related travel topics.
@@ -23,9 +25,45 @@ Rules:
 3. Keep answers concise, actionable, and specific to the user's context.
 4. For complex or urgent cases (overstay, appeal, rejection), recommend consulting a certified consultant.
 5. Never guarantee visa approval outcomes.
-6. Do not answer questions about other AI systems, your own architecture, or general knowledge outside travel/immigration.`;
+6. Do not answer questions about other AI systems, your own architecture, or general knowledge outside travel/immigration.
+7. Ground your answer in the "Applicant's current application data" block below when one is provided — treat it as the authoritative source for that user's status. Do not invent documents, scores, or dates that aren't in that block. If a question needs data that isn't in the block, say so instead of guessing.`;
 
-function fallbackReply(input: ChatRequest): ChatResponse {
+// The applicant's own application record is the "given service" data source this
+// assistant is scoped to — it comes from the same VisaApplication the rest of the
+// product reads (services.applications), not general LLM knowledge. In production
+// this repository is backed by the real applications database instead of mock data.
+function buildGroundingBlock(application?: VisaApplication | null): string {
+  if (!application) return '';
+  return `\n\nApplicant's current application data (authoritative — do not contradict it):
+- Destination: ${application.destinationCountry} (${application.visaType})
+- Status: ${application.status}
+- Readiness score: ${application.readinessScore}/100
+- Documents uploaded: ${application.documentsUploaded}/${application.documentsRequired}
+- Open issues: ${application.issuesCount}
+- Intended travel date: ${application.intendedFrom}`;
+}
+
+function systemPromptFor(grounding?: { application?: VisaApplication | null }): string {
+  return VISA_SYSTEM_PROMPT_BASE + buildGroundingBlock(grounding?.application);
+}
+
+function fallbackReply(input: ChatRequest, grounding?: { application?: VisaApplication | null }): ChatResponse {
+  const app = grounding?.application;
+  if (app) {
+    const complexity = /appeal|rejected|overstay|human|consultant|urgent|7 days/i.test(input.message);
+    return chatResponseSchema.parse({
+      reply: complexity
+        ? `This looks complex or time-sensitive. For your ${app.destinationCountry} ${app.visaType} application (${app.issuesCount} open issue${app.issuesCount === 1 ? '' : 's'}), a verified consultant should review your exact case before submission.`
+        : `For your ${app.destinationCountry} ${app.visaType} application: you're at ${app.readinessScore}/100 readiness with ${app.documentsUploaded}/${app.documentsRequired} documents uploaded and ${app.issuesCount} open issue${app.issuesCount === 1 ? '' : 's'}. Focus on clearing those before your ${app.intendedFrom} travel date.`,
+      suggestedActions: ['Review missing documents', 'Refresh official requirements', 'Find a consultant'],
+      escalate: complexity,
+      escalationReason: complexity ? 'Complexity or urgency threshold detected' : undefined
+    });
+  }
+  return legacyFallbackReply(input);
+}
+
+function legacyFallbackReply(input: ChatRequest): ChatResponse {
   const complexity = /appeal|rejected|overstay|human|consultant|urgent|7 days/i.test(input.message);
   return chatResponseSchema.parse({
     reply: complexity
@@ -47,7 +85,7 @@ function isOffTopic(message: string): boolean {
   return OFF_TOPIC_RE.test(message);
 }
 
-async function postWithTimeout(config: ProviderConfig, input: ChatRequest) {
+async function postWithTimeout(config: ProviderConfig, input: ChatRequest, grounding?: Grounding) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -58,7 +96,7 @@ async function postWithTimeout(config: ProviderConfig, input: ChatRequest) {
         'x-api-key': config.apiKey ?? '',
         authorization: config.name === 'gemini' ? `Bearer ${config.apiKey}` : ''
       },
-      body: JSON.stringify(config.buildBody(input)),
+      body: JSON.stringify(config.buildBody(input, grounding)),
       signal: controller.signal
     });
     if (!response.ok) throw new Error(`${config.name} returned ${response.status}`);
@@ -68,11 +106,11 @@ async function postWithTimeout(config: ProviderConfig, input: ChatRequest) {
   }
 }
 
-async function callProvider(config: ProviderConfig, input: ChatRequest): Promise<ChatResponse> {
+async function callProvider(config: ProviderConfig, input: ChatRequest, grounding?: Grounding): Promise<ChatResponse> {
   let lastError: unknown;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
-      const body = await postWithTimeout(config, input);
+      const body = await postWithTimeout(config, input, grounding);
       const reply = config.readReply(body);
       if (!reply) throw new Error(`${config.name} response did not include text`);
       return chatResponseSchema.parse({
@@ -86,17 +124,17 @@ async function callProvider(config: ProviderConfig, input: ChatRequest): Promise
     }
   }
   console.warn('AI provider failed, falling back to deterministic response', lastError);
-  return fallbackReply(input);
+  return fallbackReply(input, grounding);
 }
 
 const claudeConfig: ProviderConfig = {
   name: 'claude',
   apiKey: process.env.ANTHROPIC_API_KEY,
   endpoint: process.env.CLAUDE_API_URL ?? 'https://api.anthropic.com/v1/messages',
-  buildBody: (input) => ({
+  buildBody: (input, grounding) => ({
     model: process.env.CLAUDE_MODEL ?? 'claude-haiku-4-5-20251001',
     max_tokens: 500,
-    system: VISA_SYSTEM_PROMPT,
+    system: systemPromptFor(grounding),
     messages: [{ role: 'user', content: input.message }]
   }),
   readReply: (body) => {
@@ -111,8 +149,8 @@ const geminiConfig: ProviderConfig = {
   endpoint:
     process.env.GEMINI_API_URL ??
     `https://generativelanguage.googleapis.com/v1beta/models/${process.env.GEMINI_MODEL ?? 'gemini-1.5-flash'}:generateContent?key=${process.env.GOOGLE_GEMINI_API_KEY ?? ''}`,
-  buildBody: (input) => ({
-    systemInstruction: { parts: [{ text: VISA_SYSTEM_PROMPT }] },
+  buildBody: (input, grounding) => ({
+    systemInstruction: { parts: [{ text: systemPromptFor(grounding) }] },
     contents: [{ parts: [{ text: input.message }] }]
   }),
   readReply: (body) => {
@@ -126,7 +164,7 @@ export function createAiProvider(): AiProvider {
   const health = (): HealthStatus => (configured ? 'configured' : 'mock');
 
   return {
-    async chat(input) {
+    async chat(input, grounding) {
       // Reject off-topic queries before spending any AI tokens
       if (isOffTopic(input.message)) {
         return chatResponseSchema.parse({
@@ -135,9 +173,9 @@ export function createAiProvider(): AiProvider {
           escalate: false
         });
       }
-      if (!configured) return fallbackReply(input);
-      if (process.env.ANTHROPIC_API_KEY) return callProvider(claudeConfig, input);
-      return callProvider(geminiConfig, input);
+      if (!configured) return fallbackReply(input, grounding);
+      if (process.env.ANTHROPIC_API_KEY) return callProvider(claudeConfig, input, grounding);
+      return callProvider(geminiConfig, input, grounding);
     },
     health
   };

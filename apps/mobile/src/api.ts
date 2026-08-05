@@ -261,6 +261,9 @@ export function verify2faCode(code: string) {
 export function disable2fa() {
   return request<{ enabled: boolean }>('POST', '/auth/2fa/disable');
 }
+export function deleteAccount() {
+  return request<{ ok: boolean; scheduledFor: string; message: string }>('POST', '/auth/delete-account');
+}
 
 // ── Booking slots ──────────────────────────────────────────────────────────────
 export function fetchBookingSlots(consultantId: string) {

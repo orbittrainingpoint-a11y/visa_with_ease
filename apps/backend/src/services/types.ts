@@ -52,7 +52,7 @@ export interface RequirementsCache {
 }
 
 export interface AiProvider {
-  chat(input: ChatRequest): Promise<ChatResponse>;
+  chat(input: ChatRequest, grounding?: { application?: VisaApplication | null }): Promise<ChatResponse>;
   health(): HealthStatus;
 }
 
@@ -68,8 +68,8 @@ export interface ConsultantService {
 }
 
 export interface AccessGrantRepository {
-  createGrant(input: AccessGrantRequest): Promise<{ grantId: string; status: 'active' } & AccessGrantRequest>;
-  revokeGrant(grantId: string): Promise<{ grantId: string; status: 'revoked' }>;
+  createGrant(input: AccessGrantRequest & { grantedBy: string }): Promise<{ grantId: string; status: 'active' } & AccessGrantRequest>;
+  revokeGrant(grantId: string, requesterUid: string): Promise<{ grantId: string; status: 'revoked' } | null>;
 }
 
 export interface UserProfile {

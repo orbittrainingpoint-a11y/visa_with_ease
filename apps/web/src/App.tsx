@@ -49,6 +49,22 @@ import { scoreColor } from '@visaiq/design-system';
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:3001';
 const SESSION_KEY = 'visaiq.session';
 
+// Safely read the stored session — localStorage can contain a partial/corrupted
+// write (interrupted write, extension interference, manual edit), so every read
+// site must tolerate malformed JSON instead of throwing.
+function getStoredSession(): AuthSessionResponse | null {
+  try {
+    const raw = localStorage.getItem(SESSION_KEY);
+    return raw ? (JSON.parse(raw) as AuthSessionResponse) : null;
+  } catch {
+    return null;
+  }
+}
+
+function getStoredToken(): string | null {
+  return getStoredSession()?.token ?? null;
+}
+
 // Smart AI knowledge base (client-side fallback when backend is mocked)
 const WEB_CHAT_KB: Array<[RegExp, string, string[]]> = [
   [/insurance|cover/i,       'Travel medical insurance covering €30,000+ is mandatory for Schengen. UAE providers like AXA, Oman Insurance, and RSA offer single-trip policies from AED 80. Upload the certificate (not the policy document) to the consulate portal.', ['What is the visa fee?', 'Check my requirements', 'Book a consultant']],
@@ -435,8 +451,7 @@ const ACTIVITY_FEED = [
 ];
 
 function Dashboard() {
-  const sessionRaw = localStorage.getItem(SESSION_KEY);
-  const sessionData = sessionRaw ? (JSON.parse(sessionRaw) as AuthSessionResponse) : null;
+  const sessionData = getStoredSession();
   const firstName = sessionData?.user.name.split(' ')[0] ?? 'there';
   const { data: applicationData } = useApi<{ applications: VisaApplication[] }>('/applications', { applications: fallbackApplications });
   const { data: requirements } = useApi<RequirementsResponse>('/requirements', fallbackRequirements);
@@ -919,7 +934,8 @@ function ApplicationDetail() {
   const { id = fallbackApplications[0].id } = useParams();
   const fallbackApplication = fallbackApplications.find((item) => item.id === id) ?? fallbackApplications[0];
   const { data: appData } = useApi<{ application: VisaApplication }>(`/applications/${id}`, { application: fallbackApplication });
-  const { data: audit } = useApi<AuditResult>('/audit/doc-passport', fallbackAuditResult);
+  const docId = `${id}-passport`;
+  const { data: audit } = useApi<AuditResult>(`/audit/${docId}`, fallbackAuditResult);
   const { data: reqs } = useApi<RequirementsResponse>('/requirements', fallbackRequirements);
   const application = appData.application;
   const missingCount = reqs.requirements.filter((item) => !item.satisfied).length;
@@ -946,7 +962,7 @@ function ApplicationDetail() {
         <article className="panel" id="overview">
           <h2>Overview</h2>
           <div className="two-actions">
-            <Link className="primary-link" to="/audit/doc-passport">View audit report</Link>
+            <Link className="primary-link" to={`/audit/${docId}`} state={{ fromApplicationId: id }}>View audit report</Link>
             <Link className="gold-link" to="/booking">Get expert help</Link>
           </div>
           <div className="activity-row">
@@ -1035,6 +1051,8 @@ function Chat() {
   const [messages, setMessages] = useState<ChatMsg[]>(INITIAL_MESSAGES);
   const [sending, setSending] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const { data: applicationData } = useApi<{ applications: VisaApplication[] }>('/applications', { applications: fallbackApplications });
+  const active = applicationData.applications[0] ?? fallbackApplications[0];
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, sending]);
 
@@ -1045,30 +1063,30 @@ function Chat() {
     setSending(true);
     setMessages(m => [...m, { id: `u-${Date.now()}`, role: 'user', text: userText }]);
     try {
-      const reply = await postJson<ChatResponse>('/chat', { applicationId: 'app-fr-2026', message: userText });
+      const reply = await postJson<ChatResponse>('/chat', { applicationId: active.id, message: userText });
       setMessages(m => [...m, { id: `a-${Date.now()}`, role: 'ai', text: reply.reply, suggestions: ['Ask another question', 'Check requirements', 'Book a consultant'] }]);
     } catch {
       const match = WEB_CHAT_KB.find(([re]) => re.test(userText));
-      const [aiText, chips] = match ? [match[1], match[2]] : ['Based on your France Schengen application, your priority is uploading travel insurance and itinerary proof. Want me to show the full checklist?', ['Check requirements', 'Upload documents', 'Book a consultant']];
+      const [aiText, chips] = match ? [match[1], match[2]] : [`Based on your ${active.destinationCountry} ${active.visaType} application, your priority is closing the ${active.issuesCount} open issue${active.issuesCount === 1 ? '' : 's'} and uploading the remaining documents. Want me to show the full checklist?`, ['Check requirements', 'Upload documents', 'Book a consultant']];
       setMessages(m => [...m, { id: `a-${Date.now()}`, role: 'ai', text: aiText, suggestions: chips }]);
     } finally {
       setSending(false);
     }
-  }, [sending]);
+  }, [sending, active]);
 
   return (
     <section className="page chat-page">
       <div className="page-title">
         <div><p>VisaIQ Assistant</p><h1>Ask visa-scoped questions</h1></div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 12px', borderRadius: 20, background: '#D1FAE5', fontSize: 12, fontWeight: 700, color: '#065F46' }}>
-          <div style={{ width: 8, height: 8, borderRadius: 4, background: '#10B981' }} /> AI ready · France Schengen context
+          <div style={{ width: 8, height: 8, borderRadius: 4, background: '#10B981' }} /> AI ready · {active.destinationCountry} {active.visaType} context
         </div>
       </div>
       <div className="context-chips">
-        <span className="chip">🇫🇷 France Schengen</span>
-        <span className="chip">4/6 docs uploaded</span>
-        <span className="chip warn">2 issues</span>
-        <span className="chip">Score 87/100</span>
+        <span className="chip">{active.destinationFlag} {active.destinationCountry}</span>
+        <span className="chip">{active.documentsUploaded}/{active.documentsRequired} docs uploaded</span>
+        <span className={active.issuesCount > 0 ? 'chip warn' : 'chip'}>{active.issuesCount} issue{active.issuesCount === 1 ? '' : 's'}</span>
+        <span className="chip">Score {active.readinessScore}/100</span>
       </div>
       <div className="chat-window">
         {messages.map((item) => (
@@ -1406,9 +1424,10 @@ function EmployeePortal() {
 
 function AuditReport() {
   const { docId = 'doc-passport' } = useParams();
+  const location = useLocation();
+  const fromApplicationId = (location.state as { fromApplicationId?: string } | null)?.fromApplicationId ?? fallbackApplications[0].id;
   const [version, setVersion] = useState(0);
-  const [unlocked, setUnlocked] = useState(false);
-  const [unlocking, setUnlocking] = useState(false);
+  const [unlocked] = useState(false);
   const { data: audit, loading, error } = useApi<AuditResult>(`/audit/${docId}?v=${version}`, fallbackAuditResult);
   const reportText = encodeURIComponent(
     `VisaIQ Audit Report\nDocument: ${audit.documentType}\nScore: ${audit.score}\nStatus: ${audit.status}\n\n${audit.findings
@@ -1421,13 +1440,14 @@ function AuditReport() {
   const lockedFindings = audit.findings.slice(FREE_LIMIT);
 
   function handleUnlock() {
-    setUnlocking(true);
-    setTimeout(() => { setUnlocking(false); setUnlocked(true); showToast('Full report unlocked! All findings are now visible.', 'success'); }, 1800);
+    // No real payment processor is connected yet (see PricingPage, which is
+    // upfront about this) — be honest here too instead of faking a charge.
+    showToast('Payment integration coming soon — full report unlocking will be available once billing is connected.', 'info');
   }
 
   return (
     <section className="page">
-      <Link className="back-link" to="/applications/app-fr-2026"><ArrowLeft size={16} /> Back to application</Link>
+      <Link className="back-link" to={`/applications/${fromApplicationId}`}><ArrowLeft size={16} /> Back to application</Link>
       <div className="page-title">
         <div>
           <p>AI audit report</p>
@@ -1489,11 +1509,11 @@ function AuditReport() {
                     </div>
                   ))}
                 </div>
-                <button onClick={handleUnlock} disabled={unlocking} style={{ background: '#FCD34D', color: '#0B1F4B', border: 'none', borderRadius: 12, padding: '14px 32px', fontWeight: 900, fontSize: 15, cursor: unlocking ? 'wait' : 'pointer', display: 'flex', alignItems: 'center', gap: 10 }}>
+                <button onClick={handleUnlock} style={{ background: '#FCD34D', color: '#0B1F4B', border: 'none', borderRadius: 12, padding: '14px 32px', fontWeight: 900, fontSize: 15, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 10 }}>
                   <Unlock size={18} />
-                  {unlocking ? 'Processing…' : 'Unlock Full Report — $4.99'}
+                  Unlock Full Report — $4.99
                 </button>
-                <p style={{ color: 'rgba(255,255,255,0.45)', fontSize: 11, margin: 0 }}>One-time payment · no subscription · instant PDF download</p>
+                <p style={{ color: 'rgba(255,255,255,0.45)', fontSize: 11, margin: 0 }}>One-time payment · no subscription · billing coming soon</p>
               </div>
             </div>
           )}
@@ -1811,8 +1831,7 @@ function useApi<T>(path: string, fallback: T) {
     setLoading(true);
     fetch(url, {
       headers: (() => {
-        const raw = localStorage.getItem('visaiq.session');
-        const token = raw ? (JSON.parse(raw) as { token: string }).token : null;
+        const token = getStoredToken();
         return (token ? { authorization: `Bearer ${token}` } : {}) as Record<string, string>;
       })()
     })
@@ -1841,8 +1860,7 @@ function useApi<T>(path: string, fallback: T) {
 }
 
 async function postJson<T>(path: string, body: unknown): Promise<T> {
-  const rawSession = localStorage.getItem(SESSION_KEY);
-  const token = rawSession ? (JSON.parse(rawSession) as AuthSessionResponse).token : undefined;
+  const token = getStoredToken() ?? undefined;
   const response = await fetch(`${API_BASE_URL}${path}`, {
     method: 'POST',
     headers: {
@@ -1989,8 +2007,7 @@ function NotificationsPanel({ onClose }: { onClose: () => void }) {
 
   useEffect(() => {
     if (fetchDone) return;
-    const raw = localStorage.getItem(SESSION_KEY);
-    const token = raw ? (JSON.parse(raw) as { token: string }).token : null;
+    const token = getStoredToken();
     fetch(`${API_BASE_URL}/notifications`, {
       headers: token ? { authorization: `Bearer ${token}` } : {}
     })
@@ -2002,8 +2019,7 @@ function NotificationsPanel({ onClose }: { onClose: () => void }) {
 
   async function markRead(id: string) {
     setItems(prev => prev.map(n => n.id === id ? { ...n, read: true } : n));
-    const raw = localStorage.getItem(SESSION_KEY);
-    const token = raw ? (JSON.parse(raw) as { token: string }).token : null;
+    const token = getStoredToken();
     try {
       await fetch(`${API_BASE_URL}/notifications/${id}/read`, {
         method: 'POST',
@@ -2444,8 +2460,7 @@ function VisaWaiverChecker() {
 
   useEffect(() => {
     setApiLoading(true);
-    const raw = localStorage.getItem(SESSION_KEY);
-    const token = raw ? (JSON.parse(raw) as { token: string }).token : null;
+    const token = getStoredToken();
     fetch(`${API_BASE_URL}/visa-waiver?nationality=${encodeURIComponent(nat)}&destination=${encodeURIComponent(dest)}`, {
       headers: token ? { authorization: `Bearer ${token}` } : {}
     })

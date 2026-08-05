@@ -7,10 +7,10 @@ import {
   fetchSessionOptions as apiFetchSessionOptions,
   createBooking as apiCreateBooking,
   unlockReport,
-  fetchNotifications, fetchDocuments, fetchAuditResult, fetchExchangeRates,
+  fetchNotifications, markNotificationRead, fetchDocuments, fetchAuditResult, fetchExchangeRates,
   fetchProfile, updateProfile,
   forgotPassword, verifyEmailOtp, fetchBookingSlots,
-  fetch2faStatus, send2faCode, verify2faCode, disable2fa,
+  fetch2faStatus, send2faCode, verify2faCode, disable2fa, deleteAccount,
   type AuthUser, type AuthSession, type UserProfile,
   type ApiApplication, type ApiConsultant, type ApiSessionOption, type ApiBooking,
   type ApiNotification, type ApiDocument,
@@ -310,10 +310,10 @@ export default function App() {
     try {
       const booking = await apiCreateBooking({ consultantId, applicationId: appId, sessionType: optionId });
       setLastBooking(booking);
-    } catch {
-      setLastBooking({ bookingId: `bk-${Date.now()}`, status: 'pending', calendlyUrl: 'https://calendly.com/visaiq', consultantId, applicationId: appId, sessionType: optionId });
+      setRoute({ name: 'confirmation', consultantId });
+    } catch (err) {
+      Alert.alert('Could not confirm booking', err instanceof Error ? err.message : 'Please check your connection and try again.');
     }
-    setRoute({ name: 'confirmation', consultantId });
   };
 
   const handleLogin = async () => {
@@ -644,7 +644,16 @@ export default function App() {
           />
         )}
         {route.name === 'ecosystemPartners' && <EcosystemPartnersScreen back={goHome} score={route.score} />}
-        {route.name === 'notifications' && <NotificationsScreen back={goHome} notifications={notificationList} />}
+        {route.name === 'notifications' && (
+          <NotificationsScreen
+            back={goHome}
+            notifications={notificationList}
+            onMarkRead={(id) => {
+              setNotificationList(prev => prev.map(n => n.id === id ? { ...n, read: true } : n));
+              markNotificationRead(id).catch(() => { /* best-effort */ });
+            }}
+          />
+        )}
         {route.name === 'search' && <SearchScreen back={goHome} openApplication={openApplication} openConsultant={(id) => setRoute({ name: 'consultant', id })} appList={appList} consultantList={consultantList} />}
         {route.name === 'settings' && (
           <SettingsScreen
@@ -2369,7 +2378,7 @@ const NOTIF_TABS = [
   { id: 'warning',      label: 'Alerts' },
 ] as const;
 
-function NotificationsScreen({ back, notifications }: { back: () => void; notifications: ApiNotification[] }) {
+function NotificationsScreen({ back, notifications, onMarkRead }: { back: () => void; notifications: ApiNotification[]; onMarkRead: (id: string) => void }) {
   const [activeFilter, setActiveFilter] = useState<string>('all');
   const filtered = activeFilter === 'all' ? notifications : notifications.filter(n => n.type === activeFilter);
 
@@ -2399,7 +2408,7 @@ function NotificationsScreen({ back, notifications }: { back: () => void; notifi
         {filtered.map((n) => {
           const [icon, color] = NOTIF_ICONS[n.type] ?? ['notifications-outline' as IoniconName, colors.slate500];
           return (
-            <View key={n.id} style={[styles.taskRow, { gap: 12, opacity: n.read ? 0.6 : 1 }]}>
+            <Pressable key={n.id} onPress={() => !n.read && onMarkRead(n.id)} style={[styles.taskRow, { gap: 12, opacity: n.read ? 0.6 : 1 }]}>
               <View style={[styles.quickIconBox, { width: 36, height: 36, backgroundColor: n.read ? colors.slate100 : `${color}18` }]}>
                 <Ionicons name={icon} size={18} color={n.read ? colors.slate500 : color} />
               </View>
@@ -2411,7 +2420,7 @@ function NotificationsScreen({ back, notifications }: { back: () => void; notifi
                 <Text style={styles.rowMeta}>{n.body}</Text>
               </View>
               <Text style={[styles.rowMeta, { fontSize: 10, flexShrink: 0 }]}>{n.time}</Text>
-            </View>
+            </Pressable>
           );
         })}
         {filtered.length === 0 && (
@@ -2521,6 +2530,7 @@ function SettingsScreen({ back, authUser, onSignOut, openProfileHub }: { back: (
   const [twoFactorStep, setTwoFactorStep] = useState<'idle' | 'code-sent'>('idle');
   const [twoFactorCode, setTwoFactorCode] = useState('');
   const [twoFactorBusy, setTwoFactorBusy] = useState(false);
+  const [deletingData, setDeletingData] = useState(false);
 
   useEffect(() => {
     Promise.all([LocalAuthentication.hasHardwareAsync(), LocalAuthentication.isEnrolledAsync()])
@@ -2627,6 +2637,33 @@ function SettingsScreen({ back, authUser, onSignOut, openProfileHub }: { back: (
     ]);
   };
 
+  const handleDeleteData = () => {
+    Alert.alert(
+      'Delete my data?',
+      'This creates a GDPR / UAE PDPL deletion request. Your account, documents and access grants will be removed within 30 days.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete', style: 'destructive', onPress: async () => {
+            setDeletingData(true);
+            try {
+              const r = await deleteAccount();
+              Alert.alert('Deletion request submitted', r.message);
+            } catch (err) {
+              Alert.alert('Could not submit request', err instanceof Error ? err.message : 'Please try again later.');
+            } finally {
+              setDeletingData(false);
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const handleExportData = () => {
+    Alert.alert('Coming soon', 'Data export is coming soon — we\'ll notify you when a downloadable account package is available.');
+  };
+
   return (
     <View>
       <BackButton label="Profile" onPress={back} />
@@ -2701,8 +2738,14 @@ function SettingsScreen({ back, authUser, onSignOut, openProfileHub }: { back: (
       </Section>
 
       <Section title="Privacy">
-        <TaskRow title="Delete my data" meta="Creates a compliance request for admin queue." />
-        <TaskRow title="Export my data" meta="Creates a downloadable account package when backend export service is enabled." />
+        <LinkRow
+          title="Delete my data"
+          meta={deletingData ? 'Submitting request…' : 'Creates a compliance request for admin queue.'}
+          onPress={handleDeleteData}
+          disabled={deletingData}
+          tone="danger"
+        />
+        <LinkRow title="Export my data" meta="Creates a downloadable account package when backend export service is enabled." onPress={handleExportData} />
       </Section>
 
       <Section title="App">
@@ -2967,9 +3010,14 @@ function ProTierScreen({ back, appList }: { back: () => void; appList: ReturnTyp
           })}
         </View>
       </Section>
-      <LinearGradient colors={['#F59E0B','#D97706']} style={[styles.primaryButton, { marginTop: 16 }]}>
-        <Text style={styles.primaryButtonText}>Upgrade to Pro — $19/month</Text>
-      </LinearGradient>
+      <Pressable
+        onPress={() => Alert.alert('Coming soon', 'Payment integration is coming soon — Pro upgrades will be available once billing is connected.')}
+        style={{ marginTop: 16 }}
+      >
+        <LinearGradient colors={['#F59E0B','#D97706']} style={styles.primaryButton}>
+          <Text style={styles.primaryButtonText}>Upgrade to Pro — $19/month</Text>
+        </LinearGradient>
+      </Pressable>
       <Text style={[styles.rowMeta, { textAlign: 'center', marginTop: 10 }]}>Cancel anytime · 7-day free trial</Text>
     </View>
   );
@@ -4007,8 +4055,10 @@ function ProfileHubScreen({ back, authUser }: { back: () => void; authUser: Auth
     try {
       const r = await updateProfile(patch);
       setProfile(r.profile);
-    } catch { /* profile saved locally — backend unreachable */ }
-    setActiveSection(null);
+      setActiveSection(null);
+    } catch (err) {
+      Alert.alert('Could not save', err instanceof Error ? err.message : 'Please check your connection and try again. Your changes have not been saved.');
+    }
   }
 
   const completed = PROFILE_SECTIONS.filter(s => isDone(s.id)).length;

@@ -48,30 +48,14 @@ export function createMockServices(): Services {
     async verifyIdToken(token) {
       if (!token) return null;
       const secret = process.env.JWT_SECRET;
-      if (secret) {
-        try {
-          const payload = jwt.verify(token, secret) as { uid: string; email: string; roles: string[] };
-          if (payload?.uid && payload?.email && Array.isArray(payload?.roles)) {
-            return { uid: payload.uid, email: payload.email, roles: payload.roles };
-          }
-        } catch { /* invalid JWT — fall through to legacy check */ }
-      }
-      // Legacy opaque token support for dev mode without JWT_SECRET
-      if (token.startsWith('demo-token-')) {
-        const b64 = token.slice('demo-token-'.length);
-        try {
-          const email = Buffer.from(b64, 'base64url').toString('utf8');
-          const uid = `user-${Buffer.from(email).toString('base64url').slice(0, 12)}`;
-          return { uid, email, roles: ['consumer'] };
-        } catch { /* fall through */ }
-      }
-      if (token.startsWith('google-token-')) {
-        const b64 = token.slice('google-token-'.length);
-        try {
-          const [uid, email] = Buffer.from(b64, 'base64url').toString('utf8').split(':');
-          return { uid, email, roles: ['consumer'] };
-        } catch { /* fall through */ }
-      }
+      if (!secret) return null;
+      try {
+        // Pin the algorithm allow-list — never trust `alg` from the token itself.
+        const payload = jwt.verify(token, secret, { algorithms: ['HS256'] }) as { uid: string; email: string; roles: string[] };
+        if (payload?.uid && payload?.email && Array.isArray(payload?.roles)) {
+          return { uid: payload.uid, email: payload.email, roles: payload.roles };
+        }
+      } catch { /* invalid or expired JWT */ }
       return null;
     },
     health: () => 'mock'
@@ -272,11 +256,20 @@ export function createMockServices(): Services {
     }
   };
 
+  // grantId -> record, so revocation can be limited to the user who created the grant
+  const grantStore = new Map<string, { applicationId: string; consultantId: string; categories: string[]; expiresAt: string; grantedBy: string; status: 'active' | 'revoked' }>();
+
   const accessGrants: AccessGrantRepository = {
     async createGrant(input) {
-      return { grantId: `grant-${Date.now()}`, status: 'active', ...input };
+      const grantId = `grant-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+      grantStore.set(grantId, { ...input, status: 'active' });
+      const { grantedBy: _grantedBy, ...rest } = input;
+      return { grantId, status: 'active', ...rest };
     },
-    async revokeGrant(grantId) {
+    async revokeGrant(grantId, requesterUid) {
+      const record = grantStore.get(grantId);
+      if (!record || record.grantedBy !== requesterUid) return null;
+      record.status = 'revoked';
       return { grantId, status: 'revoked' };
     }
   };

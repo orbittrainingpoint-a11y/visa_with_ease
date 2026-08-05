@@ -55,11 +55,24 @@ test('Mobile: demo login as consumer — returns valid session', async () => {
 });
 
 test('Mobile: email/password login — returns session with consumer role', async () => {
+  await api('POST', '/auth/register', {
+    name: 'Test User', email: 'user@test.visaiq.app', password: 'SecurePass99'
+  });
   const r = await api('POST', '/auth/session', {
     email: 'user@test.visaiq.app', password: 'SecurePass99', remember: false
   });
   assert.equal(r.status, 201);
   assert.ok(r.body.user.roles.includes('consumer'));
+});
+
+test('Mobile: email/password login — rejects wrong password', async () => {
+  await api('POST', '/auth/register', {
+    name: 'Wrong Pw User', email: 'wrongpw@test.visaiq.app', password: 'CorrectPass99'
+  });
+  const r = await api('POST', '/auth/session', {
+    email: 'wrongpw@test.visaiq.app', password: 'IncorrectPass99', remember: false
+  });
+  assert.equal(r.status, 401);
 });
 
 test('Mobile: registration — creates account and returns session', async () => {

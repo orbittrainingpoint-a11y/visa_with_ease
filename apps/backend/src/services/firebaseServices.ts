@@ -217,15 +217,17 @@ export function createFirebaseEmulatorServices(db: FirestoreRestClient): Service
   };
 
   const accessGrants: AccessGrantRepository = {
-    async createGrant(input: AccessGrantRequest) {
+    async createGrant(input: AccessGrantRequest & { grantedBy: string }) {
       const grant = { grantId: nowId('grant'), status: 'active' as const, ...input };
       await fallbackOnError(db.set('accessGrants', grant.grantId, { ...grant, createdAt: new Date().toISOString() }), async () => grant);
-      return grant;
+      const { grantedBy: _grantedBy, ...rest } = grant;
+      return rest;
     },
-    async revokeGrant(grantId) {
+    async revokeGrant(grantId, requesterUid) {
       const existing = await fallbackOnError(db.get<Record<string, unknown>>('accessGrants', grantId), async () => null);
+      if (!existing || existing.grantedBy !== requesterUid) return null;
       await fallbackOnError(
-        db.set('accessGrants', grantId, { ...(existing ?? {}), grantId, status: 'revoked', revokedAt: new Date().toISOString() }),
+        db.set('accessGrants', grantId, { ...existing, grantId, status: 'revoked', revokedAt: new Date().toISOString() }),
         async () => ({ grantId, status: 'revoked' })
       );
       return { grantId, status: 'revoked' };

@@ -180,7 +180,7 @@ export function createMockServices(): Services {
       return {
         bookingId: `booking-${Date.now()}`,
         status: 'pending_calendly',
-        calendlyUrl: 'https://calendly.com/visaiq',
+        calendlyUrl: 'https://calendly.com/visawithease',
         ...input
       };
     },

@@ -17,7 +17,7 @@ interface ProviderConfig {
 const timeoutMs = Number(process.env.AI_TIMEOUT_MS ?? 6500);
 const maxAttempts = Number(process.env.AI_RETRY_ATTEMPTS ?? 2);
 
-const VISA_SYSTEM_PROMPT_BASE = `You are VisaIQ's visa guidance assistant. You help users with visa applications, passport requirements, embassy rules, document checklists, travel insurance, financial evidence, appointment booking, and related immigration topics.
+const VISA_SYSTEM_PROMPT_BASE = `You are Visa With Ease's visa guidance assistant. You help users with visa applications, passport requirements, embassy rules, document checklists, travel insurance, financial evidence, appointment booking, and related immigration topics.
 
 Rules:
 1. ONLY answer questions related to visas, travel documents, passports, immigration, embassy requirements, and related travel topics.
@@ -68,7 +68,7 @@ function legacyFallbackReply(input: ChatRequest): ChatResponse {
   return chatResponseSchema.parse({
     reply: complexity
       ? 'This looks complex or time-sensitive. I can map the likely document risks, but a verified consultant should review your exact case before submission.'
-      : 'I checked your question against the current VisaIQ context. Focus on passport validity, financial proof, insurance, itinerary alignment and appointment timing.',
+      : 'I checked your question against the current Visa With Ease context. Focus on passport validity, financial proof, insurance, itinerary alignment and appointment timing.',
     suggestedActions: ['Review missing documents', 'Refresh official requirements', 'Find a consultant'],
     escalate: complexity,
     escalationReason: complexity ? 'Complexity or urgency threshold detected' : undefined

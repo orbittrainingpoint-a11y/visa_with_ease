@@ -6,6 +6,6 @@ const port = Number(process.env.PORT ?? 8081);
 const app = createApp();
 
 app.listen(port, () => {
-  console.log(`VisaIQ API listening on http://localhost:${port}`);
+  console.log(`Visa With Ease API listening on http://localhost:${port}`);
   startEmbassyUpdater();
 });

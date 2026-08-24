@@ -341,16 +341,28 @@ textarea {
 }
 
 .brand {
-  font-family: 'Plus Jakarta Sans', Inter, sans-serif;
-  font-size: 26px;
-  font-weight: 800;
-  letter-spacing: 0;
-  color: #0b1f4b;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
 }
 
-.brand strong {
-  color: #0ea5e9;
+.brand img {
+  height: 34px;
+  width: 34px;
+  border-radius: 8px;
+  display: block;
+  flex-shrink: 0;
 }
+
+.brand-word {
+  font-family: 'Plus Jakarta Sans', Inter, sans-serif;
+  font-size: 1.2rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.brand-word b { color: var(--text); font-weight: 800; }
+.brand-word .brand-ease { color: #16a34a; }
 
 .sidebar nav {
   display: grid;

@@ -42,6 +42,7 @@ import {
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, NavLink, Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom';
 import LandingPage from './LandingPage';
+import { BlogIndexPage, BlogPostPage } from './Blog';
 import type { AuditResult, AuthSessionResponse, ChatResponse, RequirementsResponse, VisaApplication } from '@visaiq/contracts';
 import { applications as fallbackApplications, auditResult as fallbackAuditResult, requirements as fallbackRequirements } from '@visaiq/mock-data';
 import { scoreColor } from '@visaiq/design-system';
@@ -148,7 +149,7 @@ export function App() {
   const [showSearch, setShowSearch] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
 
-  if (publicPaths.includes(location.pathname)) {
+  if (publicPaths.includes(location.pathname) || location.pathname.startsWith('/blog')) {
     return <PublicSite />;
   }
 
@@ -169,7 +170,7 @@ export function App() {
       <CookieBanner />
       <aside className="sidebar">
         <Link className="brand" to="/">
-          <span>VISA</span><strong>IQ</strong>
+          <img src="/logo-icon.png" alt="" /><span className="brand-word"><b>Visa</b> With <b className="brand-ease">Ease</b></span>
         </Link>
         <nav>
           {nav.map((item) => (
@@ -332,7 +333,7 @@ function AuthPage({ onSession }: { onSession: (session: AuthSessionResponse | nu
   return (
     <main className="auth-page">
       <section className="auth-panel">
-        <Link className="brand" to="/"><span>VISA</span><strong>IQ</strong></Link>
+        <Link className="brand" to="/"><img src="/logo-icon.png" alt="" /><span className="brand-word"><b>Visa</b> With <b className="brand-ease">Ease</b></span></Link>
         <p>Secure sign in</p>
         <h1>Open your visa workspace</h1>
         <form className="auth-form" onSubmit={submit}>
@@ -438,6 +439,8 @@ function PublicSite() {
       <Route path="/about" element={<LandingWrapper />} />
       <Route path="/contact" element={<LandingWrapper />} />
       <Route path="/faq" element={<LandingWrapper />} />
+      <Route path="/blog" element={<BlogIndexPage />} />
+      <Route path="/blog/:slug" element={<BlogPostPage />} />
     </Routes>
   );
 }
@@ -658,7 +661,7 @@ function Analysis() {
         <article className="analysis-summary">
           <Score value={79} size="large" />
           <h2>Submission risk: medium</h2>
-          <p>VisaIQ found a strong identity baseline, but itinerary proof and insurance are blocking a confident checklist match.</p>
+          <p>Visa With Ease found a strong identity baseline, but itinerary proof and insurance are blocking a confident checklist match.</p>
         </article>
         <div className="analysis-stack">
           {factors.map(([label, score, detail]) => (
@@ -1021,7 +1024,7 @@ function ApplicationDetail() {
         <article className="panel wide" id="chat">
           <h2>Application chat</h2>
           <div className="bubble ai">
-            <strong>VisaIQ AI</strong>
+            <strong>Visa With Ease AI</strong>
             Insurance and itinerary remain the two current blockers for this application.
           </div>
           <div className="escalation-card">
@@ -1077,7 +1080,7 @@ function Chat() {
   return (
     <section className="page chat-page">
       <div className="page-title">
-        <div><p>VisaIQ Assistant</p><h1>Ask visa-scoped questions</h1></div>
+        <div><p>Visa With Ease Assistant</p><h1>Ask visa-scoped questions</h1></div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 12px', borderRadius: 20, background: '#D1FAE5', fontSize: 12, fontWeight: 700, color: '#065F46' }}>
           <div style={{ width: 8, height: 8, borderRadius: 4, background: '#10B981' }} /> AI ready · {active.destinationCountry} {active.visaType} context
         </div>
@@ -1092,7 +1095,7 @@ function Chat() {
         {messages.map((item) => (
           <div key={item.id}>
             <div className={`bubble ${item.role}`}>
-              {item.role === 'ai' && <div className="ai-label"><Bot size={13} /> VisaIQ AI</div>}
+              {item.role === 'ai' && <div className="ai-label"><Bot size={13} /> Visa With Ease AI</div>}
               {item.text}
             </div>
             {item.role === 'ai' && item.suggestions && (
@@ -1106,7 +1109,7 @@ function Chat() {
         ))}
         {sending && (
           <div className="bubble ai">
-            <div className="ai-label"><Bot size={13} /> VisaIQ AI</div>
+            <div className="ai-label"><Bot size={13} /> Visa With Ease AI</div>
             <div className="typing-dots"><span /><span /><span /></div>
           </div>
         )}
@@ -1430,7 +1433,7 @@ function AuditReport() {
   const [unlocked] = useState(false);
   const { data: audit, loading, error } = useApi<AuditResult>(`/audit/${docId}?v=${version}`, fallbackAuditResult);
   const reportText = encodeURIComponent(
-    `VisaIQ Audit Report\nDocument: ${audit.documentType}\nScore: ${audit.score}\nStatus: ${audit.status}\n\n${audit.findings
+    `Visa With Ease Audit Report\nDocument: ${audit.documentType}\nScore: ${audit.score}\nStatus: ${audit.status}\n\n${audit.findings
       .map((finding) => `- ${finding.title}: ${finding.description} (${finding.confidence}% confidence)`)
       .join('\n')}\n\nAI guidance is not legal advice. Verify with official embassy.`
   );
@@ -1456,7 +1459,7 @@ function AuditReport() {
         </div>
         <div className="two-actions">
           <button className="primary-button" type="button" onClick={() => setVersion((value) => value + 1)}>{loading ? 'Refreshing...' : 'Refresh report'}</button>
-          {unlocked && <a className="primary-button" href={`data:text/plain;charset=utf-8,${reportText}`} download={`visaiq-${docId}-audit-report.txt`}>Download report</a>}
+          {unlocked && <a className="primary-button" href={`data:text/plain;charset=utf-8,${reportText}`} download={`visawithease-${docId}-audit-report.txt`}>Download report</a>}
         </div>
       </div>
       {error && <div className="action-status error">{error}</div>}
@@ -2512,7 +2515,7 @@ function VisaWaiverChecker() {
 const WEB_REJECTION_KB: Record<string, { cause: string; fix: string; severity: string }> = {
   'insufficient funds':  { cause: 'Financial evidence below threshold', fix: 'Upload 3 months of bank statements showing €65+/day. Add a salary slip and employer letter confirming your income.', severity: 'high' },
   'no ties':            { cause: 'Insufficient ties to home country',   fix: 'Provide employment letter, property ownership docs, or evidence of family responsibilities showing you will return.', severity: 'high' },
-  'incomplete':         { cause: 'Missing required documents',          fix: 'Use the VisaIQ requirements checklist to identify every missing item and upload before reapplying.', severity: 'medium' },
+  'incomplete':         { cause: 'Missing required documents',          fix: 'Use the Visa With Ease requirements checklist to identify every missing item and upload before reapplying.', severity: 'medium' },
   'purpose unclear':    { cause: 'Travel purpose not established',      fix: 'Add a detailed cover letter, day-by-day itinerary, hotel bookings, and return flight confirmation.', severity: 'medium' },
   'previous overstay':  { cause: 'Prior immigration violation detected', fix: 'Disclose the overstay honestly. Provide evidence of changed circumstances. Consult a verified expert before reapplying.', severity: 'high' },
   'refused previously': { cause: 'Prior visa refusal not disclosed',    fix: 'Always disclose all prior refusals — concealment leads to bans. Explain what changed and provide stronger evidence.', severity: 'high' },
@@ -2588,8 +2591,8 @@ const FAQ_ITEMS = [
   { q: 'Are my uploaded documents stored permanently?', a: 'No. All original files auto-delete within 72 hours of upload. Only validated AI findings (scores, severity labels) are retained. Raw OCR text is never stored or exposed in the UI.' },
   { q: 'Who sees my visa documents?', a: 'Only you — unless you explicitly share via the consent screen before booking a consultant. Even then, only the specific categories you approve are shared, and access expires after 7 days.' },
   { q: 'How accurate is the AI requirements guidance?', a: 'Requirements are sourced directly from official embassy and consulate websites and cached for up to 24 hours. A staleness banner appears when data is over 18 hours old. Always verify with the official source before applying.' },
-  { q: 'Can I use VisaIQ for multiple countries at once?', a: 'Yes — create a separate application per destination. Each has its own checklist, requirements and readiness score. The dashboard shows all active applications.' },
-  { q: 'What is the AI disclaimer?', a: 'VisaIQ provides AI-powered guidance to help you prepare — not legal advice. A consulate decision depends on many factors beyond document quality. We recommend verified consultant review for complex cases or prior refusals.' },
+  { q: 'Can I use Visa With Ease for multiple countries at once?', a: 'Yes — create a separate application per destination. Each has its own checklist, requirements and readiness score. The dashboard shows all active applications.' },
+  { q: 'What is the AI disclaimer?', a: 'Visa With Ease provides AI-powered guidance to help you prepare — not legal advice. A consulate decision depends on many factors beyond document quality. We recommend verified consultant review for complex cases or prior refusals.' },
   { q: 'How does consultant data sharing work?', a: 'Before any consultant can access your information, you go through a consent screen where you choose exactly what to share (requirements, audit findings, chat messages, contact details). Nothing is shared automatically.' },
   { q: 'How do I delete my account and data?', a: 'Go to Settings → Privacy & Data → Delete my data. Type DELETE to confirm. A deletion request is created and processed within 30 days per GDPR / UAE PDPL requirements.' },
 ];
@@ -2645,7 +2648,7 @@ function HelpCenter() {
 function Referrals() {
   const [copied, setCopied] = useState(false);
   const referralCode = 'SARAH2026';
-  const referralLink = `https://visaiq.app/join?ref=${referralCode}`;
+  const referralLink = `https://visawithease.app/join?ref=${referralCode}`;
   const copy = () => { navigator.clipboard?.writeText(referralLink); setCopied(true); setTimeout(() => setCopied(false), 2000); showToast('Referral link copied!', 'success'); };
 
   const stats = [{ label: 'Friends invited', value: '3' }, { label: 'Signed up', value: '2' }, { label: 'Credits earned', value: '$20' }, { label: 'Pending payout', value: '$10' }];
@@ -2669,8 +2672,8 @@ function Referrals() {
               <button onClick={copy} style={{ padding: '6px 14px', borderRadius: 8, border: 'none', background: copied ? '#10B981' : '#fff', color: copied ? '#fff' : '#0B1F4B', fontWeight: 700, fontSize: 12, cursor: 'pointer', flexShrink: 0 }}>{copied ? 'Copied!' : 'Copy'}</button>
             </div>
             <div style={{ display: 'flex', gap: 8, justifyContent: 'center' }}>
-              <button onClick={() => window.open('https://wa.me/?text=' + encodeURIComponent('Join VisaIQ — AI-powered visa guidance. Use my referral code: VISAIQ-REF'), '_blank')} style={{ padding: '9px 20px', borderRadius: 10, border: '1.5px solid rgba(255,255,255,0.3)', background: 'transparent', color: '#fff', fontWeight: 700, fontSize: 13, cursor: 'pointer' }}>Share via WhatsApp</button>
-              <button onClick={() => window.open('mailto:?subject=Join%20VisaIQ&body=' + encodeURIComponent('Join VisaIQ — AI-powered visa guidance. Use my referral code: VISAIQ-REF'), '_blank')} style={{ padding: '9px 20px', borderRadius: 10, border: '1.5px solid rgba(255,255,255,0.3)', background: 'transparent', color: '#fff', fontWeight: 700, fontSize: 13, cursor: 'pointer' }}>Share via Email</button>
+              <button onClick={() => window.open('https://wa.me/?text=' + encodeURIComponent('Join Visa With Ease — AI-powered visa guidance. Use my referral code: VWE-REF'), '_blank')} style={{ padding: '9px 20px', borderRadius: 10, border: '1.5px solid rgba(255,255,255,0.3)', background: 'transparent', color: '#fff', fontWeight: 700, fontSize: 13, cursor: 'pointer' }}>Share via WhatsApp</button>
+              <button onClick={() => window.open('mailto:?subject=Join%20Visa%20With%20Ease&body=' + encodeURIComponent('Join Visa With Ease — AI-powered visa guidance. Use my referral code: VWE-REF'), '_blank')} style={{ padding: '9px 20px', borderRadius: 10, border: '1.5px solid rgba(255,255,255,0.3)', background: 'transparent', color: '#fff', fontWeight: 700, fontSize: 13, cursor: 'pointer' }}>Share via Email</button>
             </div>
           </article>
           <article className="panel">
@@ -2781,7 +2784,7 @@ function CookieBanner() {
       <div style={{ flex: 1, minWidth: 280 }}>
         <strong style={{ fontSize: 14, color: '#0F172A' }}>We use cookies</strong>
         <p style={{ margin: '4px 0 0', fontSize: 13, color: '#64748B', lineHeight: 1.5 }}>
-          VisaIQ uses essential cookies for session management and analytics cookies to improve the product. No personal data is shared with third parties. See our <a href="#" style={{ color: '#1A56DB' }}>Privacy Policy</a>.
+          Visa With Ease uses essential cookies for session management and analytics cookies to improve the product. No personal data is shared with third parties. See our <a href="#" style={{ color: '#1A56DB' }}>Privacy Policy</a>.
         </p>
       </div>
       <div style={{ display: 'flex', gap: 10, flexShrink: 0 }}>
@@ -2945,22 +2948,22 @@ function PricingPage() {
 
 // ─── FEAT C: B2B API Developer Portal ────────────────────────────────────────
 const API_SNIPPETS: Record<string, string> = {
-  curl: `curl -X POST https://api.visaiq.io/v1/audit \\
+  curl: `curl -X POST https://api.visawithease.app/v1/audit \\
   -H "Authorization: Bearer viq_live_•••••••••••••••" \\
   -H "Content-Type: application/json" \\
   -d '{"documentType":"passport","fileUrl":"https://cdn.example.com/doc.jpg"}'`,
-  js: `import VisaIQ from '@visaiq/sdk';
+  js: `import VisaWithEase from '@visawithease/sdk';
 
-const client = new VisaIQ({ apiKey: 'viq_live_•••••••••••••••' });
+const client = new VisaWithEase({ apiKey: 'viq_live_•••••••••••••••' });
 
 const audit = await client.audit.create({
   documentType: 'passport',
   fileUrl: 'https://cdn.example.com/doc.jpg',
 });
 console.log(audit.score, audit.findings);`,
-  python: `import visaiq
+  python: `import visawithease
 
-client = visaiq.Client(api_key="viq_live_•••••••••••••••")
+client = visawithease.Client(api_key="viq_live_•••••••••••••••")
 
 audit = client.audit.create(
     document_type="passport",
@@ -2988,7 +2991,7 @@ function ApiPortal() {
   }>('/usage', { period: '', apiCalls: { used: 3841, limit: 5000 }, auditsRun: 127, avgLatencyMs: 480, errorRate: 0.3, webhookDeliveries: 0, updatedAt: '' });
   const [lang, setLang] = useState<'curl' | 'js' | 'python'>('curl');
   const [copied, setCopied] = useState(false);
-  const [webhookUrl, setWebhookUrl] = useState('https://yourapp.com/webhooks/visaiq');
+  const [webhookUrl, setWebhookUrl] = useState('https://yourapp.com/webhooks/visawithease');
   const [webhooks, setWebhooks] = useState(WEBHOOK_EVENTS);
   const MASKED_KEY = 'viq_live_sk_•••••••••••••••••••••••';
 
@@ -3005,7 +3008,7 @@ function ApiPortal() {
 
   return (
     <section className="page">
-      <div className="page-title"><div><p>Developer</p><h1>B2B API Portal</h1></div><a href="https://docs.visaiq.app" target="_blank" rel="noopener noreferrer" style={{ padding: '10px 20px', borderRadius: 10, background: '#0B1F4B', color: '#fff', fontWeight: 700, fontSize: 13, textDecoration: 'none', display: 'flex', alignItems: 'center', gap: 8 }}><ExternalLink size={15} /> API Docs</a></div>
+      <div className="page-title"><div><p>Developer</p><h1>B2B API Portal</h1></div><a href="https://docs.visawithease.app" target="_blank" rel="noopener noreferrer" style={{ padding: '10px 20px', borderRadius: 10, background: '#0B1F4B', color: '#fff', fontWeight: 700, fontSize: 13, textDecoration: 'none', display: 'flex', alignItems: 'center', gap: 8 }}><ExternalLink size={15} /> API Docs</a></div>
 
       {/* API Key */}
       <article className="panel">
@@ -3064,7 +3067,7 @@ function ApiPortal() {
       <article className="panel">
         <h2 style={{ marginBottom: 14 }}>Webhooks</h2>
         <div style={{ display: 'flex', gap: 10, marginBottom: 16 }}>
-          <input value={webhookUrl} onChange={e => setWebhookUrl(e.target.value)} style={{ flex: 1, padding: '10px 14px', borderRadius: 10, border: '1.5px solid #E2E8F0', fontSize: 13, fontFamily: 'monospace', outline: 'none' }} placeholder="https://yourapp.com/webhooks/visaiq" />
+          <input value={webhookUrl} onChange={e => setWebhookUrl(e.target.value)} style={{ flex: 1, padding: '10px 14px', borderRadius: 10, border: '1.5px solid #E2E8F0', fontSize: 13, fontFamily: 'monospace', outline: 'none' }} placeholder="https://yourapp.com/webhooks/visawithease" />
           <button onClick={() => showToast('Webhook endpoint saved.', 'success')} style={{ padding: '10px 18px', borderRadius: 10, border: 'none', background: '#0B1F4B', color: '#fff', fontWeight: 700, fontSize: 13, cursor: 'pointer' }}>Save</button>
         </div>
         <div className="cards-list compact">
@@ -3131,7 +3134,7 @@ function EcosystemPartners() {
   const category = categories.find(c => c.id === activeCategory) ?? categories[0];
   return (
     <section className="page">
-      <div className="page-title"><div><p>Marketplace</p><h1>Ecosystem Partners</h1><p style={{ color: '#64748B', margin: '4px 0 0', fontSize: 14 }}>Trusted partners integrated into your visa journey — exclusive discounts for VisaIQ members.</p></div></div>
+      <div className="page-title"><div><p>Marketplace</p><h1>Ecosystem Partners</h1><p style={{ color: '#64748B', margin: '4px 0 0', fontSize: 14 }}>Trusted partners integrated into your visa journey — exclusive discounts for Visa With Ease members.</p></div></div>
       <div style={{ display: 'flex', gap: 10, marginBottom: 20, flexWrap: 'wrap' }}>
         {categories.map(cat => {
           const CatIcon = cat.icon;
@@ -3164,7 +3167,7 @@ function EcosystemPartners() {
         ))}
       </div>
       <div style={{ marginTop: 24, padding: 18, background: '#F8FAFC', borderRadius: 14, border: '1px solid #E2E8F0' }}>
-        <p style={{ margin: 0, fontSize: 13, color: '#64748B' }}><strong style={{ color: '#0F172A' }}>Partnership programme:</strong> VisaIQ earns a referral commission (3–8%) when you use partner links. This funds our free tier and keeps the platform ad-free. Partner offers may change — check the partner's site for current terms.</p>
+        <p style={{ margin: 0, fontSize: 13, color: '#64748B' }}><strong style={{ color: '#0F172A' }}>Partnership programme:</strong> Visa With Ease earns a referral commission (3–8%) when you use partner links. This funds our free tier and keeps the platform ad-free. Partner offers may change — check the partner's site for current terms.</p>
       </div>
     </section>
   );

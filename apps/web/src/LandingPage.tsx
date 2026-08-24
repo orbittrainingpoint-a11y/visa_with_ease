@@ -1,4 +1,8 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
+import {
+  Bot, BarChart3, CalendarClock, Globe2, FileText, Gift,
+  Apple, PlayCircle, Play, Sparkles, User, Users, Building2, ShieldCheck,
+} from 'lucide-react';
 import { gsap } from 'gsap';
 import { ScrollTrigger } from 'gsap/ScrollTrigger';
 import { useGSAP } from '@gsap/react';
@@ -8,7 +12,7 @@ gsap.registerPlugin(ScrollTrigger, useGSAP);
 
 // ── Data ─────────────────────────────────────────────────────────────────────
 const SLIDES = [
-  { src: '/screenshots/welcome.png',        step: '01', label: 'Onboard',      caption: 'Sign up in 30 seconds. Email and destination — that\'s it. VisaIQ takes it from here.' },
+  { src: '/screenshots/welcome.png',        step: '01', label: 'Onboard',      caption: 'Sign up in 30 seconds. Email and destination — that\'s it. Visa With Ease takes it from here.' },
   { src: '/screenshots/dashboard.png',      step: '02', label: 'Dashboard',    caption: 'Your visa health score pulled from every document you\'ve uploaded, live.' },
   { src: '/screenshots/audit-report.png',   step: '03', label: 'AI Audit',     caption: 'AI reads every clause and flags every error — automatically.' },
   { src: '/screenshots/realtime.png',       step: '04', label: 'Live Scan',    caption: 'Watch the AI parse your document in real-time, field by field.' },
@@ -17,7 +21,7 @@ const SLIDES = [
 ];
 
 const STORY_PANELS = [
-  { screen: '/screenshots/welcome.png',      tag: '01 — Onboard', title: 'Sign up in 30 seconds.',      body: 'No paperwork upfront. Just email and destination — VisaIQ handles everything from here.' },
+  { screen: '/screenshots/welcome.png',      tag: '01 — Onboard', title: 'Sign up in 30 seconds.',      body: 'No paperwork upfront. Just email and destination — Visa With Ease handles everything from here.' },
   { screen: '/screenshots/new-app.png',      tag: '02 — Upload',  title: 'Drop your document.',          body: 'Photo, PDF, or live camera. OCR extracts every field in seconds, automatically.' },
   { screen: '/screenshots/audit-report.png', tag: '03 — AI Audit',title: 'AI checks every clause.',      body: 'Our AI cross-references your document against live, scraped embassy requirements.' },
   { screen: '/screenshots/booking.png',      tag: '04 — Expert',  title: 'Book a certified consultant.', body: 'Real-time calendar matching. Consultants filtered by visa type, language, and time zone.' },
@@ -197,9 +201,16 @@ function Hero({ onStart }: { onStart: () => void }) {
     });
   }, { scope: heroRef });
 
+  const handlePointerMove = (e: ReactMouseEvent<HTMLElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    e.currentTarget.style.setProperty('--mx', `${e.clientX - rect.left}px`);
+    e.currentTarget.style.setProperty('--my', `${e.clientY - rect.top}px`);
+  };
+
   return (
-    <section className="hero" ref={heroRef}>
+    <section className="hero" ref={heroRef} onMouseMove={handlePointerMove}>
       <div className="hero-grid" aria-hidden />
+      <div className="hero-spotlight" aria-hidden />
       <div className="hero-blob hero-blob-1" aria-hidden />
       <div className="hero-blob hero-blob-2" aria-hidden />
 
@@ -217,13 +228,13 @@ function Hero({ onStart }: { onStart: () => void }) {
           </h1>
 
           <p className="hero-sub" ref={subRef}>
-            VisaIQ scans every document, scores your application,
+            Visa With Ease scans every document, scores your application,
             and connects you with certified consultants — in under&nbsp;5&nbsp;minutes.
           </p>
 
           <div className="hero-cta" ref={ctaRef}>
             <button className="btn-primary" onClick={onStart}>Start free audit</button>
-            <button className="btn-ghost"  onClick={onStart}>Watch demo ▶</button>
+            <button className="btn-ghost"  onClick={onStart}>Watch demo <Play size={14} style={{ display: 'inline', verticalAlign: '-2px' }} fill="currentColor" /></button>
           </div>
 
           <div className="hero-tags" ref={badgeRef}>
@@ -238,6 +249,11 @@ function Hero({ onStart }: { onStart: () => void }) {
             <div className="phone-frame phone-back">
               <div className="phone-notch" />
               <img src="/screenshots/audit-report.png" alt="" />
+              <div className="scan-line" aria-hidden />
+              <div className="verify-badge">
+                <span className="dot">✓</span>
+                <span>Document verified</span>
+              </div>
             </div>
             <div className="phone-frame phone-front">
               <div className="phone-notch" />
@@ -288,13 +304,25 @@ function StatsBar() {
 
 // ── Feature Grid ──────────────────────────────────────────────────────────────
 const FEATURES = [
-  { e: '🤖', t: 'AI Document Audit',       b: 'Automated compliance checks against live embassy rules. Every error flagged with a fix suggestion.', s: '/screenshots/audit-report.png',     c: '#3B82F6' },
-  { e: '📊', t: 'Visa Health Score',        b: 'A single 0–100 score from document quality, completeness, and embassy history patterns.',    s: '/screenshots/dashboard.png',        c: '#10B981' },
-  { e: '📅', t: 'Consultant Booking',       b: 'Real-time calendar slots. Certified consultants matched by visa type and language.',         s: '/screenshots/booking-calendar.png', c: '#8B5CF6' },
-  { e: '🌍', t: '24+ Country Compliance DB',b: 'Embassy data scraped daily. Requirement changes flagged the moment they go live.',           s: '/screenshots/realtime.png',         c: '#EF4444' },
-  { e: '📄', t: 'PDF Audit Report',         b: 'Shareable, branded PDF with per-field status, risk rating, and recommended fixes.',         s: '/screenshots/audit-pdf.png',        c: '#F59E0B' },
-  { e: '🔗', t: 'Referral & Partners',      b: 'Earn credits for referrals. 40+ partners — flights, housing, insurance.',                   s: '/screenshots/referral.png',         c: '#06B6D4' },
+  { icon: Bot,          t: 'AI Document Audit',       b: 'Automated compliance checks against live embassy rules. Every error flagged with a fix suggestion.', s: '/screenshots/audit-report.png',     c: '#3B82F6' },
+  { icon: BarChart3,    t: 'Visa Health Score',        b: 'A single 0–100 score from document quality, completeness, and embassy history patterns.',    s: '/screenshots/dashboard.png',        c: '#10B981' },
+  { icon: CalendarClock,t: 'Consultant Booking',       b: 'Real-time calendar slots. Certified consultants matched by visa type and language.',         s: '/screenshots/booking-calendar.png', c: '#8B5CF6' },
+  { icon: Globe2,       t: '24+ Country Compliance DB',b: 'Embassy data scraped daily. Requirement changes flagged the moment they go live.',           s: '/screenshots/realtime.png',         c: '#EF4444' },
+  { icon: FileText,     t: 'PDF Audit Report',         b: 'Shareable, branded PDF with per-field status, risk rating, and recommended fixes.',         s: '/screenshots/audit-pdf.png',        c: '#F59E0B' },
+  { icon: Gift,         t: 'Referral & Partners',      b: 'Earn credits for referrals. 40+ partners — flights, housing, insurance.',                   s: '/screenshots/referral.png',         c: '#06B6D4' },
 ];
+
+// Subtle 3D tilt that follows the cursor — shared by feature and blog-style cards.
+function handleCardTilt(e: ReactMouseEvent<HTMLDivElement>) {
+  const el = e.currentTarget;
+  const rect = el.getBoundingClientRect();
+  const rotateX = ((e.clientY - rect.top) / rect.height - 0.5) * -9;
+  const rotateY = ((e.clientX - rect.left) / rect.width - 0.5) * 9;
+  el.style.transform = `perspective(1000px) rotateX(${rotateX}deg) rotateY(${rotateY}deg) translateY(-6px)`;
+}
+function resetCardTilt(e: ReactMouseEvent<HTMLDivElement>) {
+  e.currentTarget.style.transform = '';
+}
 
 function FeatureGrid() {
   const ref = useRef<HTMLDivElement>(null);
@@ -313,9 +341,9 @@ function FeatureGrid() {
       </div>
       <div className="feat-grid">
         {FEATURES.map(f => (
-          <div className="feat-card" key={f.t}>
+          <div className="feat-card" key={f.t} onMouseMove={handleCardTilt} onMouseLeave={resetCardTilt}>
             <div className="feat-top">
-              <span className="feat-icon" style={{ background: f.c + '22', color: f.c }}>{f.e}</span>
+              <span className="feat-icon" style={{ background: f.c + '1a', color: f.c }}><f.icon size={22} strokeWidth={2.25} /></span>
               <h3 className="feat-title">{f.t}</h3>
               <p className="feat-body">{f.b}</p>
             </div>
@@ -391,7 +419,7 @@ function Testimonials({ onNavigate }: { onNavigate: (p: string) => void }) {
       <div className="sec-head">
         <h2 className="lp-h2 tc bb-reveal">Built for applicants<br /><span className="c-gold">across 24+ countries.</span></h2>
         <p className="sec-sub tc bb-reveal" style={{ maxWidth: '520px', margin: '0 auto' }}>
-          VisaIQ is in early access. We're onboarding applicants and consultants — join to be among the first.
+          Visa With Ease is in early access. We're onboarding applicants and consultants — join to be among the first.
         </p>
         <div style={{ textAlign: 'center', marginTop: '2rem' }}>
           <button className="btn-primary btn-lg" onClick={() => onNavigate('/app')}>Request early access</button>
@@ -400,16 +428,18 @@ function Testimonials({ onNavigate }: { onNavigate: (p: string) => void }) {
           <p style={{ color: '#94a3b8', fontSize: '0.75rem', fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: '0.75rem' }}>Try a demo account</p>
           <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'center', flexWrap: 'wrap' }}>
             {[
-              { persona: 'consumer',       label: 'Consumer',    desc: 'Apply for a visa' },
-              { persona: 'consultant',     label: 'Consultant',  desc: 'Review client cases' },
-              { persona: 'hr_admin',       label: 'HR Admin',    desc: 'Manage team relocation' },
-              { persona: 'platform_admin', label: 'Platform',    desc: 'System overview' },
-            ].map(({ persona, label, desc }) => (
-              <button key={persona} className="btn-outline"
-                style={{ padding: '0.5rem 1rem', fontSize: '0.8rem' }}
+              { persona: 'consumer',       label: 'Consumer',    desc: 'Apply for a visa',        icon: User },
+              { persona: 'consultant',     label: 'Consultant',  desc: 'Review client cases',      icon: Users },
+              { persona: 'hr_admin',       label: 'HR Admin',    desc: 'Manage team relocation',   icon: Building2 },
+              { persona: 'platform_admin', label: 'Platform',    desc: 'System overview',          icon: ShieldCheck },
+            ].map(({ persona, label, desc, icon: Icon }) => (
+              <button key={persona} className="btn-outline demo-persona-btn"
                 onClick={() => onNavigate(`/app?demo=${persona}`)}>
-                <span style={{ fontWeight: 700 }}>{label}</span>
-                <span style={{ display: 'block', fontSize: '0.7rem', opacity: 0.65 }}>{desc}</span>
+                <Icon size={18} />
+                <span>
+                  <b>{label}</b>
+                  <small>{desc}</small>
+                </span>
               </button>
             ))}
           </div>
@@ -461,10 +491,10 @@ function DownloadCTA({ onStart }: { onStart: () => void }) {
         <p className="sec-sub tc">Free on iOS and Android. Pro features available inside.</p>
         <div className="store-row">
           <button className="store-btn" onClick={onStart}>
-            <span>🍎</span><span><small>Download on the</small><strong>App Store</strong></span>
+            <Apple size={26} /><span><small>Download on the</small><strong>App Store</strong></span>
           </button>
           <button className="store-btn" onClick={onStart}>
-            <span>▶</span><span><small>Get it on</small><strong>Google Play</strong></span>
+            <PlayCircle size={26} /><span><small>Get it on</small><strong>Google Play</strong></span>
           </button>
         </div>
         <button className="btn-primary btn-lg" style={{ marginTop: '1.75rem' }} onClick={onStart}>
@@ -490,6 +520,7 @@ function Footer({ nav }: { nav: (p: string) => void }) {
     ['Tools',    '/country-comparison','Country Compare'],
     ['Tools',    '/visa-waiver',     'Visa Waiver'],
     ['Tools',    '/rejection-analyzer','Rejection Analyzer'],
+    ['Company',  '/blog',            'Blog'],
     ['Company',  '/investor',        'Investors'],
     ['Company',  '/referrals',       'Referrals'],
     ['Company',  '/help',            'Help Centre'],
@@ -502,9 +533,9 @@ function Footer({ nav }: { nav: (p: string) => void }) {
     <footer className="footer">
       <div className="footer-inner">
         <div className="footer-brand">
-          <div className="logo"><span>✈</span> VisaIQ</div>
+          <div className="logo"><img src="/logo-icon.png" alt="" /><span className="logo-word"><b>Visa</b> With <b className="logo-ease">Ease</b></span></div>
           <p className="footer-tag">AI-powered visa auditing for the modern traveller.</p>
-          <p className="footer-legal">© 2026 VisaIQ Inc. · GDPR · UAE PDPL · SOC 2</p>
+          <p className="footer-legal">© 2026 Visa With Ease Inc. · GDPR · UAE PDPL · SOC 2</p>
         </div>
         {Object.entries(groups).map(([cat, links]) => (
           <div key={cat} className="footer-col">
@@ -533,10 +564,10 @@ function TopNav({ nav }: { nav: (p: string) => void }) {
   return (
     <nav className="top-nav" ref={ref}>
       <button className="logo nav-logo" onClick={() => nav('/app')}>
-        <span>✈</span> VisaIQ
+        <img src="/logo-icon.png" alt="" /><span className="logo-word"><b>Visa</b> With <b className="logo-ease">Ease</b></span>
       </button>
       <div className="nav-links">
-        {[['Pricing', '/pricing'], ['Compliance', '/compliance-db'],
+        {[['Blog', '/blog'], ['Pricing', '/pricing'], ['Compliance', '/compliance-db'],
           ['Partners', '/partners'], ['API', '/api-portal'], ['Investors', '/investor']
         ].map(([l, p]) => (
           <button key={p} className="nav-lnk" onClick={() => nav(p)}>{l}</button>

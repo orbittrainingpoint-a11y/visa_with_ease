@@ -122,7 +122,7 @@ test.describe('Dashboard', () => {
   test('shows greeting with user name, not raw email', async ({ page }) => {
     await page.goto('/app');
     const bodyText = await page.locator('body').innerText();
-    expect(bodyText).not.toContain('@demo.visaiq.app');
+    expect(bodyText).not.toContain('@demo.visawithease.app');
   });
 });
 

@@ -65,7 +65,7 @@ const tabs = [
 
 const onboardingSteps = [
   { key: 'nationality', title: 'Nationality', body: 'Your passport country changes visa rules, fees and document checks.', value: 'India' },
-  { key: 'residence', title: 'Residence', body: 'VisaIQ uses your application jurisdiction to find the correct submission route.', value: 'United Arab Emirates' },
+  { key: 'residence', title: 'Residence', body: 'Visa With Ease uses your application jurisdiction to find the correct submission route.', value: 'United Arab Emirates' },
   { key: 'destination', title: 'Destination', body: 'Pick the country and travel dates for the next journey.', value: 'France, Jul 18-27' },
   { key: 'purpose', title: 'Visa type', body: 'Choose the category so requirements stay scoped and source-backed.', value: 'Schengen Tourist' }
 ] as const;
@@ -709,7 +709,7 @@ function Header({ onSearch, onNotifications, userName, unreadCount }: { onSearch
   return (
     <View style={styles.header}>
       <View style={styles.avatar}><Text style={styles.avatarText}>{initials}</Text></View>
-      <Text style={styles.logo}>VISA<Text style={styles.logoAccent}>IQ</Text></Text>
+      <Image source={require('./assets/logo-icon.png')} style={{ width: 40, height: 40, borderRadius: 8 }} resizeMode="contain" />
       <View style={styles.headerActions}>
         <IconButton icon="search-outline" onPress={onSearch} />
         <Pressable style={styles.iconButton} onPress={onNotifications}>
@@ -1494,7 +1494,7 @@ function AuditReportScreen({ docId, back, openRequirements, fetchedAudit, onMoun
 
   const handleSharePdf = async () => {
     try {
-      const html = `<html><body style="font-family:sans-serif;padding:24px"><h1>VisaIQ Audit Report</h1><h2>${title}</h2><p><strong>Score:</strong> ${score}/100 — ${status}</p><p><em>Generated: ${generatedAt}</em></p><hr/>${findings.map(f => `<p><strong>[${f.severity}]</strong> ${f.title}<br/>${f.description}<br/><em>Confidence: ${f.confidence}%</em></p>`).join('')}</body></html>`;
+      const html = `<html><body style="font-family:sans-serif;padding:24px"><h1>Visa With Ease Audit Report</h1><h2>${title}</h2><p><strong>Score:</strong> ${score}/100 — ${status}</p><p><em>Generated: ${generatedAt}</em></p><hr/>${findings.map(f => `<p><strong>[${f.severity}]</strong> ${f.title}<br/>${f.description}<br/><em>Confidence: ${f.confidence}%</em></p>`).join('')}</body></html>`;
       const { uri } = await Print.printToFileAsync({ html });
       if (await Sharing.isAvailableAsync()) {
         await Sharing.shareAsync(uri, { mimeType: 'application/pdf', dialogTitle: 'Share Audit Report' });
@@ -1796,7 +1796,7 @@ function ChatScreen({ message, setMessage, sessionMessages, isTyping, sendMessag
   const activeApp = appList[0] ?? null;
   return (
     <View style={styles.chatScreen}>
-      <Text style={styles.eyebrow}>VisaIQ Assistant</Text>
+      <Text style={styles.eyebrow}>Visa With Ease Assistant</Text>
       <Text style={styles.title}>Visa-scoped chat</Text>
       {activeApp && (
         <View style={styles.contextRow}>
@@ -1807,7 +1807,7 @@ function ChatScreen({ message, setMessage, sessionMessages, isTyping, sendMessag
       )}
       {sessionMessages.length === 0 && (
         <View style={styles.aiBubble}>
-          <Text style={styles.bodyText}>{activeApp ? `I can see your ${activeApp.destinationCountry} ${activeApp.visaType} application (score ${activeApp.readinessScore}). How can I help?` : "Hello! I'm your VisaIQ assistant. Ask me anything about visa requirements, documents, or your application."}</Text>
+          <Text style={styles.bodyText}>{activeApp ? `I can see your ${activeApp.destinationCountry} ${activeApp.visaType} application (score ${activeApp.readinessScore}). How can I help?` : "Hello! I'm your Visa With Ease assistant. Ask me anything about visa requirements, documents, or your application."}</Text>
         </View>
       )}
       {sessionMessages.map((item) => (
@@ -2117,7 +2117,7 @@ function ConfirmationScreen({ consultantId, consultantList, booking, done, score
               <Ionicons name="star" size={22} color="#FCD34D" />
               <View style={styles.flex}>
                 <Text style={{ color: '#fff', fontWeight: '900', fontSize: 15 }}>Your score is visa-ready!</Text>
-                <Text style={{ color: 'rgba(255,255,255,0.7)', fontSize: 12, marginTop: 2 }}>Exclusive partner offers for VisaIQ members</Text>
+                <Text style={{ color: 'rgba(255,255,255,0.7)', fontSize: 12, marginTop: 2 }}>Exclusive partner offers for Visa With Ease members</Text>
               </View>
             </View>
             {PARTNER_HIGHLIGHTS.map((p) => (
@@ -2759,8 +2759,8 @@ function SettingsScreen({ back, authUser, onSignOut, openProfileHub }: { back: (
       </Section>
 
       <Section title="About">
-        <LinkRow title="Contact support" meta="support@visaiq.app" onPress={() => Linking.openURL('mailto:support@visaiq.app')} />
-        <Finding title="Terms & privacy" meta="visaiq.app/legal" />
+        <LinkRow title="Contact support" meta="support@visawithease.app" onPress={() => Linking.openURL('mailto:support@visawithease.app')} />
+        <Finding title="Terms & privacy" meta="visawithease.app/legal" />
       </Section>
 
       <OfflineCacheCard />
@@ -2962,7 +2962,7 @@ function ProTierScreen({ back, appList }: { back: () => void; appList: ReturnTyp
       <LinearGradient colors={['#F59E0B','#D97706']} style={{ borderRadius: 20, padding: 20, marginBottom: 16, gap: 8 }}>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
           <Ionicons name="star" size={22} color="#fff" />
-          <Text style={{ color: '#fff', fontSize: 18, fontWeight: '900' }}>VisaIQ Pro</Text>
+          <Text style={{ color: '#fff', fontSize: 18, fontWeight: '900' }}>Visa With Ease Pro</Text>
         </View>
         <Text style={{ color: 'rgba(255,255,255,0.85)', fontSize: 13, lineHeight: 20 }}>Manage up to 7 simultaneous applications with live AI analysis, PDF exports and priority consultant matching.</Text>
         <View style={{ flexDirection: 'row', gap: 8, marginTop: 4 }}>
@@ -3112,7 +3112,7 @@ function EcosystemPartnersScreen({ back, score }: { back: () => void; score?: nu
         ))}
       </Section>
       <View style={{ backgroundColor: '#F8FAFC', borderRadius: 12, borderWidth: 1, borderColor: '#E2E8F0', padding: 14, marginTop: 4 }}>
-        <Text style={{ color: '#64748B', fontSize: 12, lineHeight: 18 }}><Text style={{ color: '#0F172A', fontWeight: '700' }}>Transparency note: </Text>VisaIQ earns a referral commission (3–8%) when you use partner links. This funds the free tier and keeps the app ad-free.</Text>
+        <Text style={{ color: '#64748B', fontSize: 12, lineHeight: 18 }}><Text style={{ color: '#0F172A', fontWeight: '700' }}>Transparency note: </Text>Visa With Ease earns a referral commission (3–8%) when you use partner links. This funds the free tier and keeps the app ad-free.</Text>
       </View>
     </View>
   );
@@ -3642,15 +3642,15 @@ function SplashScreen({ onDone }: { onDone: () => void }) {
   return (
     <View style={{ minHeight: 720, backgroundColor: colors.navy900, alignItems: 'center', justifyContent: 'center', margin: -18 }}>
       <StatusBar barStyle="light-content" />
-      {/* Gradient IQ tile */}
-      <LinearGradient colors={['#1A56DB', '#0EA5E9']} style={{ width: 96, height: 96, borderRadius: 28, alignItems: 'center', justifyContent: 'center', marginBottom: 20, shadowColor: '#0EA5E9', shadowOpacity: 0.5, shadowRadius: 24, elevation: 12 }}>
-        <Text style={{ color: '#fff', fontSize: 38, fontWeight: '900' }}>IQ</Text>
-      </LinearGradient>
-      {/* Logo */}
-      <Text style={{ color: '#fff', fontSize: 32, fontWeight: '900', letterSpacing: -1 }}>
-        VISA<Text style={{ color: colors.teal500 }}>IQ</Text>
+      {/* Logo mark */}
+      <View style={{ width: 112, height: 112, borderRadius: 28, backgroundColor: '#fff', alignItems: 'center', justifyContent: 'center', marginBottom: 20, shadowColor: '#0EA5E9', shadowOpacity: 0.5, shadowRadius: 24, elevation: 12 }}>
+        <Image source={require('./assets/logo-icon.png')} style={{ width: 84, height: 84 }} resizeMode="contain" />
+      </View>
+      {/* Wordmark */}
+      <Text style={{ color: '#fff', fontSize: 30, fontWeight: '900', letterSpacing: -0.5 }}>
+        VISA WITH <Text style={{ color: colors.teal500 }}>EASE</Text>
       </Text>
-      <Text style={{ color: 'rgba(255,255,255,0.45)', fontSize: 13, marginTop: 8, fontWeight: '500' }}>AI-Powered Visa Intelligence</Text>
+      <Text style={{ color: 'rgba(255,255,255,0.45)', fontSize: 13, marginTop: 8, fontWeight: '500' }}>Smart check. Stronger application. Smoother journey.</Text>
       {/* Progress bar */}
       <View style={{ position: 'absolute', bottom: 48, left: 40, right: 40 }}>
         <View style={{ height: 3, backgroundColor: 'rgba(255,255,255,0.12)', borderRadius: 2, overflow: 'hidden' }}>
@@ -3701,7 +3701,7 @@ function RegisterScreen({ back, onSuccess }: { back: () => void; onSuccess: (ses
     <View style={styles.welcome}>
       <BackButton label="Sign in" onPress={back} />
       <Text style={styles.title}>Create account</Text>
-      <Text style={styles.bodyText}>Join VisaIQ to get AI-powered visa readiness, document audit and expert matching.</Text>
+      <Text style={styles.bodyText}>Join Visa With Ease to get AI-powered visa readiness, document audit and expert matching.</Text>
       <View style={styles.stepCard}>
         <Text style={[styles.rowMeta, { marginBottom: 6 }]}>Full name</Text>
         <TextInput value={name} onChangeText={setName} placeholder="Your full name" style={styles.searchInput} />
@@ -3823,7 +3823,7 @@ function CameraScreen({ docType, back, onCapture }: { docType: string; back: () 
       <View style={{ flex: 1, backgroundColor: colors.navy900, padding: 32, alignItems: 'center', justifyContent: 'center', gap: 20 }}>
         <Ionicons name="camera-outline" size={64} color="rgba(255,255,255,0.4)" />
         <Text style={{ color: '#fff', fontSize: 22, fontWeight: '900', textAlign: 'center' }}>Camera access needed</Text>
-        <Text style={{ color: 'rgba(255,255,255,0.6)', textAlign: 'center', lineHeight: 22 }}>VisaIQ needs camera access to capture your documents. No images leave your device until you confirm upload.</Text>
+        <Text style={{ color: 'rgba(255,255,255,0.6)', textAlign: 'center', lineHeight: 22 }}>Visa With Ease needs camera access to capture your documents. No images leave your device until you confirm upload.</Text>
         <Pressable style={[styles.primaryButton, { width: '100%' }]} onPress={requestPermission}>
           <Text style={styles.primaryButtonText}>Allow camera</Text>
         </Pressable>
@@ -4247,7 +4247,7 @@ function ProfileTravelScreen({ back, profile, onSave }: { back: () => void; prof
         </View>
         {hasRejection && (
           <View style={[styles.notice, { marginTop: 8 }]}>
-            <Text style={styles.noticeText}>Disclosing rejections is mandatory on most visa forms. VisaIQ will help you address refusal reasons in your new application.</Text>
+            <Text style={styles.noticeText}>Disclosing rejections is mandatory on most visa forms. Visa With Ease will help you address refusal reasons in your new application.</Text>
           </View>
         )}
       </Section>
@@ -4619,7 +4619,7 @@ function VisaWaiverScreen({ back }: { back: () => void }) {
 const REJECTION_REASONS: Record<string, { cause: string; fix: string; severity: 'high' | 'medium' }> = {
   'insufficient funds':   { cause: 'Financial evidence below threshold', fix: 'Upload 3 months of statements showing €65+/day available. Add a salary slip and employer letter.', severity: 'high' },
   'no ties':             { cause: 'Insufficient ties to home country',   fix: 'Provide employment letter, property documents, or family ties evidence. Show you will return.', severity: 'high' },
-  'incomplete':          { cause: 'Missing required documents',          fix: 'Use the VisaIQ requirements checklist to identify all missing items before reapplying.', severity: 'medium' },
+  'incomplete':          { cause: 'Missing required documents',          fix: 'Use the Visa With Ease requirements checklist to identify all missing items before reapplying.', severity: 'medium' },
   'purpose unclear':     { cause: 'Travel purpose not established',      fix: 'Provide a detailed itinerary, hotel bookings, and a clear cover letter explaining your trip.', severity: 'medium' },
   'previous overstay':   { cause: 'Prior immigration violation',         fix: 'Disclose the overstay honestly. Provide evidence of changed circumstances. Consult a visa expert.', severity: 'high' },
 };

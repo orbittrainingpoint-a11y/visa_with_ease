@@ -73,9 +73,9 @@ const authLimiter = rateLimit({
 
 // In-memory audit log — events are appended during the server's lifetime
 const auditLog: Array<{ id: string; actor: string; action: string; resource: string; at: string; ip: string }> = [
-  { id: 'al-001', actor: 'admin@demo.visaiq.app', action: 'LOGIN',         resource: 'auth',         at: new Date(Date.now() - 120000).toISOString(),    ip: '127.0.0.1' },
-  { id: 'al-002', actor: 'admin@demo.visaiq.app', action: 'VIEW_USERS',    resource: '/admin/users', at: new Date(Date.now() - 90000).toISOString(),     ip: '127.0.0.1' },
-  { id: 'al-003', actor: 'hr@demo.visaiq.app',    action: 'VIEW_HR',       resource: '/hr',          at: new Date(Date.now() - 3600000).toISOString(),   ip: '10.0.0.1'  },
+  { id: 'al-001', actor: 'admin@demo.visawithease.app', action: 'LOGIN',         resource: 'auth',         at: new Date(Date.now() - 120000).toISOString(),    ip: '127.0.0.1' },
+  { id: 'al-002', actor: 'admin@demo.visawithease.app', action: 'VIEW_USERS',    resource: '/admin/users', at: new Date(Date.now() - 90000).toISOString(),     ip: '127.0.0.1' },
+  { id: 'al-003', actor: 'hr@demo.visawithease.app',    action: 'VIEW_HR',       resource: '/hr',          at: new Date(Date.now() - 3600000).toISOString(),   ip: '10.0.0.1'  },
 ];
 
 // In-memory OTP store (replace with Redis in production)
@@ -281,10 +281,10 @@ export function createApp(services: Services = createServices()) {
 
   // Demo login — gives pre-configured sessions for different roles (dev/demo only)
   const DEMO_PERSONAS = {
-    consumer:        { email: 'consumer@demo.visaiq.app',  name: 'Demo Consumer',       roles: ['consumer'] },
-    consultant:      { email: 'consultant@demo.visaiq.app',name: 'Demo Consultant',      roles: ['consumer', 'consultant'] },
-    hr_admin:        { email: 'hr@demo.visaiq.app',        name: 'Demo HR Admin',        roles: ['consumer', 'hr_admin'] },
-    platform_admin:  { email: 'admin@demo.visaiq.app',     name: 'Demo Platform Admin',  roles: ['consumer', 'consultant', 'hr_admin', 'platform_admin'] },
+    consumer:        { email: 'consumer@demo.visawithease.app',  name: 'Demo Consumer',       roles: ['consumer'] },
+    consultant:      { email: 'consultant@demo.visawithease.app',name: 'Demo Consultant',      roles: ['consumer', 'consultant'] },
+    hr_admin:        { email: 'hr@demo.visawithease.app',        name: 'Demo HR Admin',        roles: ['consumer', 'hr_admin'] },
+    platform_admin:  { email: 'admin@demo.visawithease.app',     name: 'Demo Platform Admin',  roles: ['consumer', 'consultant', 'hr_admin', 'platform_admin'] },
   } as const;
 
   app.post('/auth/demo', authLimiter, (req, res) => {
@@ -525,10 +525,10 @@ export function createApp(services: Services = createServices()) {
       // For now returns the in-memory sessions as a user list
       res.json({
         users: [
-          { uid: 'demo-consumer',       email: 'consumer@demo.visaiq.app',  name: 'Demo Consumer',      roles: ['consumer'],                                              status: 'active',    createdAt: new Date(Date.now() - 7 * 86400000).toISOString() },
-          { uid: 'demo-consultant',     email: 'consultant@demo.visaiq.app', name: 'Demo Consultant',    roles: ['consumer', 'consultant'],                                status: 'active',    createdAt: new Date(Date.now() - 14 * 86400000).toISOString() },
-          { uid: 'demo-hr_admin',       email: 'hr@demo.visaiq.app',        name: 'Demo HR Admin',       roles: ['consumer', 'hr_admin'],                                  status: 'active',    createdAt: new Date(Date.now() - 21 * 86400000).toISOString() },
-          { uid: 'demo-platform_admin', email: 'admin@demo.visaiq.app',     name: 'Demo Platform Admin', roles: ['consumer', 'consultant', 'hr_admin', 'platform_admin'],   status: 'active',    createdAt: new Date(Date.now() - 30 * 86400000).toISOString() },
+          { uid: 'demo-consumer',       email: 'consumer@demo.visawithease.app',  name: 'Demo Consumer',      roles: ['consumer'],                                              status: 'active',    createdAt: new Date(Date.now() - 7 * 86400000).toISOString() },
+          { uid: 'demo-consultant',     email: 'consultant@demo.visawithease.app', name: 'Demo Consultant',    roles: ['consumer', 'consultant'],                                status: 'active',    createdAt: new Date(Date.now() - 14 * 86400000).toISOString() },
+          { uid: 'demo-hr_admin',       email: 'hr@demo.visawithease.app',        name: 'Demo HR Admin',       roles: ['consumer', 'hr_admin'],                                  status: 'active',    createdAt: new Date(Date.now() - 21 * 86400000).toISOString() },
+          { uid: 'demo-platform_admin', email: 'admin@demo.visawithease.app',     name: 'Demo Platform Admin', roles: ['consumer', 'consultant', 'hr_admin', 'platform_admin'],   status: 'active',    createdAt: new Date(Date.now() - 30 * 86400000).toISOString() },
           { uid: 'user-test-1',         email: 'alice@example.com',          name: 'Alice Chen',          roles: ['consumer'],                                              status: 'active',    createdAt: new Date(Date.now() - 3 * 86400000).toISOString() },
           { uid: 'user-test-2',         email: 'bob@example.com',            name: 'Bob Tanaka',          roles: ['consumer'],                                              status: 'suspended', createdAt: new Date(Date.now() - 5 * 86400000).toISOString() },
         ],
@@ -825,7 +825,7 @@ export function createApp(services: Services = createServices()) {
       if (notifications.length === 0) {
         notifications.push({
           id: 'welcome',
-          title: 'Welcome to VisaIQ',
+          title: 'Welcome to Visa With Ease',
           body: 'Start by creating your first visa application.',
           time: 'Just now',
           type: 'system',
@@ -939,7 +939,7 @@ export function createApp(services: Services = createServices()) {
       const referralCode = `REF-${uid.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8)}`;
       res.json({
         referralCode,
-        referralLink: `https://visaiq.app/r/${referralCode}`,
+        referralLink: `https://visawithease.app/r/${referralCode}`,
         stats: { pending: 0, converted: 0, totalEarned: 0 },
         history: [],
       });

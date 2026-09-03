@@ -1,14 +1,18 @@
 # Backend runs on plain Node's built-in TypeScript execution (type-stripping,
-# on by default since Node 23.6) — the two workspace packages this service
-# imports (@visaiq/contracts, @visaiq/mock-data) point their package.json
-# "main" straight at src/*.ts, so this MUST stay on Node 24+. Node 20/22 will
-# fail to start with "Unknown file extension .ts".
+# on by default since Node 23.6), which MUST stay on Node 24+ — Node 20/22
+# fail immediately with "Unknown file extension .ts". Node also refuses to
+# strip types for any .ts file that resolves to a path under node_modules
+# (ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING) — `pnpm deploy` below copies
+# workspace packages into node_modules rather than symlinking to the real
+# packages/ directory outside it, which is exactly that case. That's why
+# @visaiq/contracts and @visaiq/mock-data are built to real dist/*.js here
+# instead of being consumed as raw .ts source — building them is required,
+# not optional, for this image to start at all.
 #
 # Build context is the repo root (see docker-compose.yml) and the whole
 # monorepo is copied in — pnpm's lockfile is a single file for all workspace
 # packages, so installing against only a subset of them risks a
-# --frozen-lockfile mismatch. `pnpm deploy` below is what actually trims this
-# down to a lean, backend-only output.
+# --frozen-lockfile mismatch.
 FROM node:24-alpine AS build
 RUN corepack enable && corepack prepare pnpm@9.15.4 --activate
 WORKDIR /repo
@@ -16,6 +20,8 @@ WORKDIR /repo
 COPY . .
 RUN pnpm install --frozen-lockfile
 
+RUN pnpm --filter @visaiq/contracts build
+RUN pnpm --filter @visaiq/mock-data build
 RUN pnpm --filter @visaiq/backend build
 RUN pnpm --filter @visaiq/backend deploy --prod /out
 

@@ -40,7 +40,7 @@ import {
   Zap,
 } from 'lucide-react';
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Link, NavLink, Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom';
+import { Link, NavLink, Navigate, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import LandingPage from './LandingPage';
 import { BlogIndexPage, BlogPostPage } from './Blog';
 import type { AuditResult, AuthSessionResponse, ChatResponse, RequirementsResponse, VisaApplication } from '@visaiq/contracts';
@@ -176,6 +176,10 @@ export function App() {
 
   if (location.pathname === '/auth') {
     return <AuthPage onSession={setSession} />;
+  }
+
+  if (location.pathname === '/reset-password') {
+    return <ResetPasswordPage />;
   }
 
   if (!session) {
@@ -435,6 +439,63 @@ function AuthPage({ onSession }: { onSession: (session: AuthSessionResponse | nu
             ))}
           </div>
         </div>
+      </section>
+      <section className="auth-side">
+        <ShieldCheck size={34} />
+        <h2>Consent-first visa intelligence</h2>
+        <p>Documents, consultant sharing, HR access and admin actions stay scoped to authenticated sessions.</p>
+      </section>
+    </main>
+  );
+}
+
+function ResetPasswordPage() {
+  const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
+  const token = searchParams.get('token') ?? '';
+  const [password, setPassword] = useState('');
+  const [confirm, setConfirm] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [done, setDone] = useState(false);
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    setError(null);
+    if (password.length < 8) { setError('Password must be at least 8 characters'); return; }
+    if (password !== confirm) { setError('Passwords do not match'); return; }
+    setLoading(true);
+    try {
+      await postJson('/auth/reset-password', { token, newPassword: password });
+      setDone(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not reset password');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <main className="auth-page">
+      <section className="auth-panel">
+        <Link className="brand" to="/"><img src="/logo-icon.png" alt="" /><span className="brand-word"><b>Visa</b> With <b className="brand-ease">Ease</b></span></Link>
+        <p>Secure sign in</p>
+        <h1>Reset your password</h1>
+        {!token ? (
+          <div className="form-error">This reset link is missing its token. Request a new one from the sign-in page.</div>
+        ) : done ? (
+          <>
+            <p style={{ color: '#334155' }}>Your password has been reset. You can sign in with it now.</p>
+            <button className="primary-button" onClick={() => navigate('/auth')}>Back to sign in</button>
+          </>
+        ) : (
+          <form className="auth-form" onSubmit={submit}>
+            <label>New password<input value={password} onChange={(event) => setPassword(event.target.value)} type="password" minLength={8} required /></label>
+            <label>Confirm new password<input value={confirm} onChange={(event) => setConfirm(event.target.value)} type="password" minLength={8} required /></label>
+            {error && <div className="form-error">{error}</div>}
+            <button className="primary-button" type="submit" disabled={loading}>{loading ? 'Resetting...' : 'Reset password'}</button>
+          </form>
+        )}
       </section>
       <section className="auth-side">
         <ShieldCheck size={34} />

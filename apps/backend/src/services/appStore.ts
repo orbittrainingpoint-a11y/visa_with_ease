@@ -113,6 +113,48 @@ export async function setUserStatus(uid: string, status: 'active' | 'suspended')
   return { ...(doc.data() as UserRecord), status };
 }
 
+export async function updateUserPassword(email: string, passwordHash: string): Promise<boolean> {
+  const key = email.toLowerCase();
+  const db = getDb();
+  if (!db) {
+    const existing = memUsers.get(key);
+    if (!existing) return false;
+    memUsers.set(key, { ...existing, passwordHash });
+    return true;
+  }
+  const doc = await db.collection('users').doc(key).get();
+  if (!doc.exists) return false;
+  await doc.ref.set({ passwordHash }, { merge: true });
+  return true;
+}
+
+const memResetTokens = new Map<string, { email: string; expiresAt: number }>();
+
+export async function setResetToken(token: string, entry: { email: string; expiresAt: number }): Promise<void> {
+  const db = getDb();
+  if (!db) {
+    memResetTokens.set(token, entry);
+    return;
+  }
+  await db.collection('resetTokens').doc(token).set(entry);
+}
+
+export async function getResetToken(token: string): Promise<{ email: string; expiresAt: number } | null> {
+  const db = getDb();
+  if (!db) return memResetTokens.get(token) ?? null;
+  const doc = await db.collection('resetTokens').doc(token).get();
+  return doc.exists ? (doc.data() as { email: string; expiresAt: number }) : null;
+}
+
+export async function deleteResetToken(token: string): Promise<void> {
+  const db = getDb();
+  if (!db) {
+    memResetTokens.delete(token);
+    return;
+  }
+  await db.collection('resetTokens').doc(token).delete();
+}
+
 export async function getOtp(email: string): Promise<{ code: string; expiresAt: number } | null> {
   const db = getDb();
   if (!db) return memOtps.get(email) ?? null;

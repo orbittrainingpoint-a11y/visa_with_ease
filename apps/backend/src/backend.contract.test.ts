@@ -7,6 +7,7 @@ process.env.RATE_LIMIT_DISABLED = 'true';
 process.env.JWT_SECRET = 'contract-test-secret-do-not-use-in-production';
 process.env.FIRESTORE_DISABLED = 'true';
 process.env.ENABLE_DEMO_LOGIN = 'true';
+process.env.AI_MOCK = 'true';
 
 import assert from 'node:assert/strict';
 import type { AddressInfo } from 'node:net';
@@ -98,6 +99,50 @@ test('POST /auth/register — valid registration returns session', async () => {
   assert.equal(res.status, 201);
   assert.equal(body.user.email, email);
   assert.ok(body.token, 'token present');
+});
+
+test('POST /auth/forgot-password — issues a reset link for a real account and it actually resets the password', async () => {
+  const email = `resettest${Date.now()}@example.com`;
+  await post('/auth/register', { name: 'Reset Test', email, password: 'OriginalPass123' });
+
+  const { res: forgotRes, body: forgotBody } = await post('/auth/forgot-password', { email });
+  assert.equal(forgotRes.status, 200);
+  assert.ok(forgotBody.devResetUrl, 'dev mode should surface the reset link');
+  const token = new URL(forgotBody.devResetUrl).searchParams.get('token');
+  assert.ok(token, 'reset URL should carry a token');
+
+  const { res: resetRes } = await post('/auth/reset-password', { token, newPassword: 'BrandNewPass456' });
+  assert.equal(resetRes.status, 200);
+
+  // Old password no longer works, new one does.
+  const oldLogin = await post('/auth/session', { email, password: 'OriginalPass123' });
+  assert.equal(oldLogin.res.status, 401);
+  const newLogin = await post('/auth/session', { email, password: 'BrandNewPass456' });
+  assert.equal(newLogin.res.status, 201);
+});
+
+test('POST /auth/forgot-password — unknown email still returns 200 (no account enumeration)', async () => {
+  const { res, body } = await post('/auth/forgot-password', { email: 'no-such-account@example.com' });
+  assert.equal(res.status, 200);
+  assert.equal(body.devResetUrl, undefined);
+});
+
+test('POST /auth/reset-password — rejects an invalid or expired token', async () => {
+  const { res, body } = await post('/auth/reset-password', { token: 'not-a-real-token', newPassword: 'WhateverPass123' });
+  assert.equal(res.status, 400);
+  assert.equal(body.error.code, 'INVALID_TOKEN');
+});
+
+test('POST /auth/reset-password — reused token is rejected the second time', async () => {
+  const email = `resetreuse${Date.now()}@example.com`;
+  await post('/auth/register', { name: 'Reset Reuse', email, password: 'OriginalPass123' });
+  const { body: forgotBody } = await post('/auth/forgot-password', { email });
+  const token = new URL(forgotBody.devResetUrl).searchParams.get('token');
+
+  const first = await post('/auth/reset-password', { token, newPassword: 'FirstNewPass123' });
+  assert.equal(first.res.status, 200);
+  const second = await post('/auth/reset-password', { token, newPassword: 'SecondNewPass123' });
+  assert.equal(second.res.status, 400);
 });
 
 test('POST /auth/demo — all four personas return correct roles', async () => {

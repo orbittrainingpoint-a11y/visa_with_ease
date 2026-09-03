@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import cors from 'cors';
 import express from 'express';
 import { OAuth2Client } from 'google-auth-library';
@@ -20,10 +21,12 @@ import {
   createUser,
   createWebhook,
   deleteOtp,
+  deleteResetToken,
   disable2FA,
   enable2FA,
   getAuditOwnerApplication,
   getOtp,
+  getResetToken,
   getUserByEmail,
   has2FA,
   hashPassword,
@@ -33,9 +36,12 @@ import {
   listWebhooksForUser,
   markNotificationRead,
   setOtp,
+  setResetToken,
   setUserStatus,
+  updateUserPassword,
   verifyPassword
 } from './services/appStore.js';
+import { isEmailConfigured, send2faCodeEmail, sendPasswordResetEmail, sendVerificationEmail } from './services/email.js';
 import { isFirestoreConfigured } from './services/firestore.js';
 import { createServices, providerHealth } from './services/index.js';
 import type { Services } from './services/types.js';
@@ -165,29 +171,69 @@ export function createApp(services: Services = createServices()) {
     }
   });
 
-  app.post('/auth/forgot-password', authLimiter, async (req, res) => {
-    const { email } = req.body ?? {};
-    if (!email || typeof email !== 'string' || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-      return res.status(400).json({ error: { code: 'INVALID_EMAIL', message: 'A valid email address is required' } });
-    }
-    // In production: send a real password-reset email via SendGrid/SES
-    // For now: acknowledge the request without revealing whether the email exists
-    res.json({ ok: true, message: 'If an account with that email exists, a reset link has been sent.' });
+  app.post('/auth/forgot-password', authLimiter, async (req, res, next) => {
+    try {
+      const { email } = req.body ?? {};
+      if (!email || typeof email !== 'string' || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        return res.status(400).json({ error: { code: 'INVALID_EMAIL', message: 'A valid email address is required' } });
+      }
+      // Always respond the same way regardless of whether the account exists,
+      // so this endpoint can't be used to enumerate registered emails.
+      const user = await getUserByEmail(email);
+      if (user) {
+        const token = randomBytes(32).toString('hex');
+        const expiresAt = Date.now() + 30 * 60 * 1000;
+        await setResetToken(token, { email: email.toLowerCase(), expiresAt });
+        const resetUrl = `${process.env.FRONTEND_URL ?? 'http://localhost:5174'}/reset-password?token=${token}`;
+        if (isEmailConfigured()) {
+          await sendPasswordResetEmail(email, resetUrl);
+        } else if (process.env.AI_MOCK === 'true' || process.env.NODE_ENV === 'development') {
+          return res.json({ ok: true, message: 'If an account with that email exists, a reset link has been sent.', devResetUrl: resetUrl });
+        }
+      }
+      res.json({ ok: true, message: 'If an account with that email exists, a reset link has been sent.' });
+    } catch (err) { next(err); }
   });
 
-  app.post('/auth/send-verification-email', authLimiter, async (req, res) => {
-    const { email } = req.body ?? {};
-    if (!email || typeof email !== 'string') {
-      return res.status(400).json({ error: { code: 'INVALID_BODY', message: 'email is required' } });
-    }
-    const code = String(Math.floor(100000 + Math.random() * 900000));
-    await setOtp(email, { code, expiresAt: Date.now() + 10 * 60 * 1000 });
-    // In production: deliver via SendGrid/SES. In mock/dev mode, return the
-    // code directly so the UI can display it — there is no real mail transport.
-    if (process.env.AI_MOCK === 'true' || process.env.NODE_ENV === 'development') {
-      return res.json({ ok: true, devCode: code });
-    }
-    res.json({ ok: true });
+  app.post('/auth/reset-password', authLimiter, async (req, res, next) => {
+    try {
+      const { token, newPassword } = req.body ?? {};
+      if (!token || typeof token !== 'string') {
+        return res.status(400).json({ error: { code: 'INVALID_BODY', message: 'token is required' } });
+      }
+      if (!newPassword || typeof newPassword !== 'string' || newPassword.length < 8) {
+        return res.status(400).json({ error: { code: 'WEAK_PASSWORD', message: 'Password must be at least 8 characters' } });
+      }
+      const entry = await getResetToken(token);
+      if (!entry || Date.now() > entry.expiresAt) {
+        return res.status(400).json({ error: { code: 'INVALID_TOKEN', message: 'This reset link is invalid or has expired' } });
+      }
+      await updateUserPassword(entry.email, hashPassword(newPassword));
+      await deleteResetToken(token);
+      res.json({ ok: true });
+    } catch (err) { next(err); }
+  });
+
+  app.post('/auth/send-verification-email', authLimiter, async (req, res, next) => {
+    try {
+      const { email } = req.body ?? {};
+      if (!email || typeof email !== 'string') {
+        return res.status(400).json({ error: { code: 'INVALID_BODY', message: 'email is required' } });
+      }
+      const code = String(Math.floor(100000 + Math.random() * 900000));
+      await setOtp(email, { code, expiresAt: Date.now() + 10 * 60 * 1000 });
+      if (isEmailConfigured()) {
+        await sendVerificationEmail(email, code);
+        return res.json({ ok: true });
+      }
+      // No SMTP configured — fall back to returning the code directly so the
+      // UI can still display it in dev/mock mode. There is no real mail
+      // transport in this branch.
+      if (process.env.AI_MOCK === 'true' || process.env.NODE_ENV === 'development') {
+        return res.json({ ok: true, devCode: code });
+      }
+      res.json({ ok: true });
+    } catch (err) { next(err); }
   });
 
   app.post('/auth/verify-email', authLimiter, async (req, res) => {
@@ -216,19 +262,26 @@ export function createApp(services: Services = createServices()) {
   });
 
   // Two-factor authentication — send a one-time code to the signed-in user's email
-  app.post('/auth/2fa/send-code', requireAuth, authLimiter, async (req, res) => {
-    const email = req.user!.email;
-    if (!email) {
-      return res.status(400).json({ error: { code: 'NO_EMAIL', message: 'Account has no email on file' } });
-    }
-    const code = String(Math.floor(100000 + Math.random() * 900000));
-    await setOtp(email, { code, expiresAt: Date.now() + 10 * 60 * 1000 });
-    // In production: deliver via SendGrid/SES/SMS. In mock/dev mode, return the
-    // code directly so the UI can display it — there is no real mail transport.
-    if (process.env.AI_MOCK === 'true' || process.env.NODE_ENV === 'development') {
-      return res.json({ ok: true, devCode: code });
-    }
-    res.json({ ok: true });
+  app.post('/auth/2fa/send-code', requireAuth, authLimiter, async (req, res, next) => {
+    try {
+      const email = req.user!.email;
+      if (!email) {
+        return res.status(400).json({ error: { code: 'NO_EMAIL', message: 'Account has no email on file' } });
+      }
+      const code = String(Math.floor(100000 + Math.random() * 900000));
+      await setOtp(email, { code, expiresAt: Date.now() + 10 * 60 * 1000 });
+      if (isEmailConfigured()) {
+        await send2faCodeEmail(email, code);
+        return res.json({ ok: true });
+      }
+      // No SMTP configured — fall back to returning the code directly so the
+      // UI can still display it in dev/mock mode. There is no real mail
+      // transport in this branch.
+      if (process.env.AI_MOCK === 'true' || process.env.NODE_ENV === 'development') {
+        return res.json({ ok: true, devCode: code });
+      }
+      res.json({ ok: true });
+    } catch (err) { next(err); }
   });
 
   // Two-factor authentication — verify the code and enroll the account

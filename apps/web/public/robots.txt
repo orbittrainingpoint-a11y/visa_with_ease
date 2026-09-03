@@ -1,0 +1,17 @@
+User-agent: *
+Allow: /
+Disallow: /app
+Disallow: /admin
+Disallow: /settings
+Disallow: /auth
+Disallow: /reset-password
+Disallow: /onboarding
+Disallow: /applications
+Disallow: /upload
+Disallow: /audit
+Disallow: /chat
+Disallow: /consultant-console
+Disallow: /hr
+Disallow: /employee
+
+Sitemap: https://www.visawithease.com/sitemap.xml

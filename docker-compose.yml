@@ -7,7 +7,9 @@ services:
     env_file:
       - apps/backend/.env.production
     ports:
-      - "3001:3001"
+      # Host:container — 3011 on the host (3001 was already taken by another
+      # service on this VPS). Container still listens on 3001 internally.
+      - "3011:3001"
     volumes:
       # Only needed if using a Firebase service-account JSON file instead of
       # Application Default Credentials — see apps/backend/.env.production.example.
@@ -25,10 +27,11 @@ services:
         VITE_GOOGLE_WEB_CLIENT_ID: ${VITE_GOOGLE_WEB_CLIENT_ID}
     restart: unless-stopped
     ports:
-      - "8080:80"
+      # 8080 was already taken by another service on this VPS.
+      - "8081:80"
     depends_on:
       - backend
 
 # Nothing here terminates TLS or owns a domain — put your own nginx/Caddy
-# reverse proxy in front of ports 3001 (backend) and 8080 (web), pointed at
+# reverse proxy in front of ports 3011 (backend) and 8081 (web), pointed at
 # your real domain, and let it handle Let's Encrypt certificates. See DEPLOY.md.

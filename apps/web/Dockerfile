@@ -8,6 +8,8 @@ WORKDIR /repo
 
 COPY . .
 RUN pnpm install --frozen-lockfile
+RUN pnpm --filter @visaiq/contracts build
+RUN pnpm --filter @visaiq/mock-data build
 
 # Build-time env (VITE_* vars are baked into the JS bundle, not read at
 # runtime) — pass with --build-arg when building the image, e.g.:

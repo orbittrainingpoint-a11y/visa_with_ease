@@ -5,6 +5,8 @@
 // Must be set before importing the app so signToken/verifyIdToken use real JWTs
 process.env.RATE_LIMIT_DISABLED = 'true';
 process.env.JWT_SECRET = 'contract-test-secret-do-not-use-in-production';
+process.env.FIRESTORE_DISABLED = 'true';
+process.env.ENABLE_DEMO_LOGIN = 'true';
 
 import assert from 'node:assert/strict';
 import type { AddressInfo } from 'node:net';
@@ -147,6 +149,24 @@ test('POST /applications — creates application with correct shape', async () =
   assert.equal(body.application.status, 'draft');
 });
 
+test('POST /applications — persists nationality and residenceCountry when provided', async () => {
+  const token = await demoToken('consumer');
+  const { res, body } = await post('/applications', {
+    destinationCountry: 'France',
+    visaType: 'Tourist',
+    intendedFrom: '2026-08-01',
+    nationality: 'India',
+    residenceCountry: 'United Arab Emirates'
+  }, token);
+  assert.equal(res.status, 201);
+  assert.equal(body.application.nationality, 'India');
+  assert.equal(body.application.residenceCountry, 'United Arab Emirates');
+
+  const { body: fetched } = await get(`/applications/${body.application.id}`, token);
+  assert.equal(fetched.application.nationality, 'India');
+  assert.equal(fetched.application.residenceCountry, 'United Arab Emirates');
+});
+
 test('POST /applications — missing required fields returns 400', async () => {
   const token = await demoToken('consumer');
   const { res, body } = await post('/applications', { destinationCountry: 'France' }, token);
@@ -215,12 +235,32 @@ test('POST /audit — requires auth', async () => {
 
 test('POST /audit — accepts valid input when authenticated', async () => {
   const token = await demoToken('consumer');
+  const create = await post('/applications', { destinationCountry: 'France', visaType: 'Tourist', intendedFrom: '2026-09-01' }, token);
+  const applicationId = create.body.application.id;
   const { res, body } = await post('/audit', {
-    applicationId: 'app-fr-2026', documentId: 'doc-passport'
+    applicationId, documentId: 'doc-passport'
   }, token);
   assert.equal(res.status, 202);
   assert.equal(body.jobId, 'audit-doc-passport');
   assert.equal(body.result.documentId, 'doc-passport');
+});
+
+test('POST /audit — 404 for an application the caller does not own', async () => {
+  const token = await demoToken('consumer');
+  const { res } = await post('/audit', { applicationId: 'someone-elses-app', documentId: 'doc-not-owned' }, token);
+  assert.equal(res.status, 404);
+});
+
+test('POST /audit — 409 when documentId is already claimed by a different application', async () => {
+  const token = await demoToken('consumer');
+  const otherToken = await demoToken('consultant');
+  const create1 = await post('/applications', { destinationCountry: 'France', visaType: 'Tourist', intendedFrom: '2026-09-01' }, token);
+  const create2 = await post('/applications', { destinationCountry: 'Germany', visaType: 'Business', intendedFrom: '2026-10-01' }, otherToken);
+  const sharedDocId = 'doc-shared-conflict-test';
+  const first = await post('/audit', { applicationId: create1.body.application.id, documentId: sharedDocId }, token);
+  assert.equal(first.res.status, 202);
+  const second = await post('/audit', { applicationId: create2.body.application.id, documentId: sharedDocId }, otherToken);
+  assert.equal(second.res.status, 409);
 });
 
 test('POST /audit — rejects missing applicationId', async () => {

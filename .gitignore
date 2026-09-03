@@ -7,6 +7,8 @@ build/
 .env
 .env.*
 !.env.example
+!.env.production.example
+!apps/backend/.env.production.example
 coverage/
 *.log
 app_logcat.txt
@@ -15,3 +17,5 @@ apps/mobile/ios/
 test-results/
 playwright-report/
 *.md
+!DEPLOY.md
+apps/backend/firebase-service-account*.json

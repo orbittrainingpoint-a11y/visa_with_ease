@@ -1,5 +1,4 @@
 import cors from 'cors';
-import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import express from 'express';
 import { OAuth2Client } from 'google-auth-library';
 import helmet from 'helmet';
@@ -15,6 +14,29 @@ import {
 } from '@visaiq/contracts';
 import { attachAuth, requireAuth, requireRole } from './auth.js';
 import { errorHandler, notFound, traceMiddleware } from './errors.js';
+import {
+  appendAuditLog,
+  claimAuditOwner,
+  createUser,
+  createWebhook,
+  deleteOtp,
+  disable2FA,
+  enable2FA,
+  getAuditOwnerApplication,
+  getOtp,
+  getUserByEmail,
+  has2FA,
+  hashPassword,
+  isNotificationRead,
+  listAuditLog,
+  listUsers,
+  listWebhooksForUser,
+  markNotificationRead,
+  setOtp,
+  setUserStatus,
+  verifyPassword
+} from './services/appStore.js';
+import { isFirestoreConfigured } from './services/firestore.js';
 import { createServices, providerHealth } from './services/index.js';
 import type { Services } from './services/types.js';
 import { validateBody, validateVisaContextBody } from './validation.js';
@@ -29,37 +51,9 @@ function signToken(payload: { uid: string; email: string; roles: string[] }, exp
   return jwt.sign(payload, secret, { algorithm: 'HS256', expiresIn } as jwt.SignOptions);
 }
 
-// In-memory user credential store (replace with a real user DB in production).
-// Keyed by lowercased email. Passwords are salted+hashed with scrypt — never stored
-// or logged in plaintext.
-interface UserRecord { uid: string; email: string; name: string; passwordHash: string; roles: string[] }
-const userStore = new Map<string, UserRecord>();
-
-function hashPassword(password: string): string {
-  const salt = randomBytes(16).toString('hex');
-  const hash = scryptSync(password, salt, 64).toString('hex');
-  return `${salt}:${hash}`;
-}
-
-function verifyPassword(password: string, stored: string): boolean {
-  const [salt, hash] = stored.split(':');
-  if (!salt || !hash) return false;
-  const hashBuf = Buffer.from(hash, 'hex');
-  const candidateBuf = scryptSync(password, salt, 64);
-  if (hashBuf.length !== candidateBuf.length) return false;
-  return timingSafeEqual(hashBuf, candidateBuf);
-}
-
-// Seed the demo account referenced by the web/mobile login screens' pre-filled
-// credentials (sarah.mathew@example.com / demo1234) so the documented demo flow
-// keeps working now that /auth/session actually checks the password.
-userStore.set('sarah.mathew@example.com', {
-  uid: `user-${Buffer.from('sarah.mathew@example.com').toString('base64url').slice(0, 12)}`,
-  email: 'sarah.mathew@example.com',
-  name: 'Sarah Mathew',
-  passwordHash: hashPassword('demo1234'),
-  roles: ['consumer']
-});
+// User credentials, OTPs, 2FA enrollment, notification read-state, webhooks,
+// and the audit log all live in ./services/appStore.js now — real Firestore
+// when configured, the same in-memory behavior as before otherwise.
 
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
@@ -70,34 +64,6 @@ const authLimiter = rateLimit({
   skip: () => process.env.RATE_LIMIT_DISABLED === 'true',
   message: { error: { code: 'RATE_LIMITED', message: 'Too many requests, please try again later' } }
 });
-
-// In-memory audit log — events are appended during the server's lifetime
-const auditLog: Array<{ id: string; actor: string; action: string; resource: string; at: string; ip: string }> = [
-  { id: 'al-001', actor: 'admin@demo.visawithease.app', action: 'LOGIN',         resource: 'auth',         at: new Date(Date.now() - 120000).toISOString(),    ip: '127.0.0.1' },
-  { id: 'al-002', actor: 'admin@demo.visawithease.app', action: 'VIEW_USERS',    resource: '/admin/users', at: new Date(Date.now() - 90000).toISOString(),     ip: '127.0.0.1' },
-  { id: 'al-003', actor: 'hr@demo.visawithease.app',    action: 'VIEW_HR',       resource: '/hr',          at: new Date(Date.now() - 3600000).toISOString(),   ip: '10.0.0.1'  },
-];
-
-// In-memory OTP store (replace with Redis in production)
-const otpStore = new Map<string, { code: string; expiresAt: number }>();
-
-// In-memory two-factor-auth enrollment (replace with DB in production)
-const twoFactorEnabledUids = new Set<string>();
-
-// In-memory read-notification state (replace with DB in production)
-// Per-user read-notification state: uid -> set of notification ids marked read.
-const readNotificationIds = new Map<string, Set<string>>();
-function getReadSet(uid: string): Set<string> {
-  let set = readNotificationIds.get(uid);
-  if (!set) {
-    set = new Set();
-    readNotificationIds.set(uid, set);
-  }
-  return set;
-}
-
-// Webhook store
-const webhookStore = new Map<string, { url: string; events: string[]; createdAt: string }>();
 
 export function createApp(services: Services = createServices()) {
   const app = express();
@@ -122,7 +88,7 @@ export function createApp(services: Services = createServices()) {
         status: 'ok',
         uptime: process.uptime(),
         redis: services.auditQueue.health(),
-        firestore: services.auth.health(),
+        firestore: isFirestoreConfigured() ? 'configured' : 'mock',
         storage: services.storage.health(),
         fcm: services.notifications.health(),
         claude: providerHealth('ANTHROPIC_API_KEY'),
@@ -136,14 +102,14 @@ export function createApp(services: Services = createServices()) {
 
   app.post('/auth/session', authLimiter, validateBody(authSessionRequestSchema), async (req, res) => {
     const { email, password, remember } = req.body;
-    const record = userStore.get(email.toLowerCase());
+    const record = await getUserByEmail(email);
     if (!record || !verifyPassword(password, record.passwordHash)) {
       return res.status(401).json({ error: { code: 'INVALID_CREDENTIALS', message: 'Incorrect email or password' } });
     }
     const expiresIn = remember ? '7d' : '1d';
     const expiresAt = new Date(Date.now() + (remember ? 7 : 1) * 24 * 60 * 60 * 1000).toISOString();
     const token = signToken({ uid: record.uid, email: record.email, roles: record.roles }, expiresIn);
-    auditLog.push({ id: `al-${Date.now()}`, actor: email, action: 'LOGIN', resource: 'auth', at: new Date().toISOString(), ip: req.ip ?? '?' });
+    await appendAuditLog({ actor: email, action: 'LOGIN', resource: 'auth', ip: req.ip ?? '?' });
     res.status(201).json({ token, user: { uid: record.uid, email: record.email, name: record.name, roles: record.roles }, expiresAt });
   });
 
@@ -159,14 +125,13 @@ export function createApp(services: Services = createServices()) {
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
       return res.status(400).json({ error: { code: 'INVALID_EMAIL', message: 'Invalid email address' } });
     }
-    const key = email.toLowerCase();
-    if (userStore.has(key)) {
+    if (await getUserByEmail(email)) {
       return res.status(409).json({ error: { code: 'EMAIL_TAKEN', message: 'An account with that email already exists' } });
     }
     const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
     const uid = `user-${Buffer.from(email).toString('base64url').slice(0, 12)}`;
     const roles = ['consumer'];
-    userStore.set(key, { uid, email, name, passwordHash: hashPassword(password), roles });
+    await createUser({ uid, email, name, passwordHash: hashPassword(password), roles });
     const token = signToken({ uid, email, roles }, '7d');
     res.status(201).json({ token, user: { uid, email, name, roles }, expiresAt });
   });
@@ -210,12 +175,27 @@ export function createApp(services: Services = createServices()) {
     res.json({ ok: true, message: 'If an account with that email exists, a reset link has been sent.' });
   });
 
+  app.post('/auth/send-verification-email', authLimiter, async (req, res) => {
+    const { email } = req.body ?? {};
+    if (!email || typeof email !== 'string') {
+      return res.status(400).json({ error: { code: 'INVALID_BODY', message: 'email is required' } });
+    }
+    const code = String(Math.floor(100000 + Math.random() * 900000));
+    await setOtp(email, { code, expiresAt: Date.now() + 10 * 60 * 1000 });
+    // In production: deliver via SendGrid/SES. In mock/dev mode, return the
+    // code directly so the UI can display it — there is no real mail transport.
+    if (process.env.AI_MOCK === 'true' || process.env.NODE_ENV === 'development') {
+      return res.json({ ok: true, devCode: code });
+    }
+    res.json({ ok: true });
+  });
+
   app.post('/auth/verify-email', authLimiter, async (req, res) => {
     const { email, code } = req.body ?? {};
     if (!email || !code) {
       return res.status(400).json({ error: { code: 'INVALID_BODY', message: 'email and code are required' } });
     }
-    const entry = otpStore.get(email);
+    const entry = await getOtp(email);
     if (!entry || Date.now() > entry.expiresAt) {
       // In dev mode: accept any 6-digit code for demo purposes
       if (process.env.NODE_ENV === 'development' || process.env.AI_MOCK === 'true') {
@@ -226,23 +206,23 @@ export function createApp(services: Services = createServices()) {
     if (entry.code !== code) {
       return res.status(400).json({ error: { code: 'INVALID_OTP', message: 'Incorrect verification code' } });
     }
-    otpStore.delete(email);
+    await deleteOtp(email);
     res.json({ ok: true, verified: true });
   });
 
   // Two-factor authentication — enrollment status
-  app.get('/auth/2fa/status', requireAuth, (req, res) => {
-    res.json({ enabled: twoFactorEnabledUids.has(req.user!.uid) });
+  app.get('/auth/2fa/status', requireAuth, async (req, res) => {
+    res.json({ enabled: await has2FA(req.user!.uid) });
   });
 
   // Two-factor authentication — send a one-time code to the signed-in user's email
-  app.post('/auth/2fa/send-code', requireAuth, authLimiter, (req, res) => {
+  app.post('/auth/2fa/send-code', requireAuth, authLimiter, async (req, res) => {
     const email = req.user!.email;
     if (!email) {
       return res.status(400).json({ error: { code: 'NO_EMAIL', message: 'Account has no email on file' } });
     }
     const code = String(Math.floor(100000 + Math.random() * 900000));
-    otpStore.set(email, { code, expiresAt: Date.now() + 10 * 60 * 1000 });
+    await setOtp(email, { code, expiresAt: Date.now() + 10 * 60 * 1000 });
     // In production: deliver via SendGrid/SES/SMS. In mock/dev mode, return the
     // code directly so the UI can display it — there is no real mail transport.
     if (process.env.AI_MOCK === 'true' || process.env.NODE_ENV === 'development') {
@@ -252,7 +232,7 @@ export function createApp(services: Services = createServices()) {
   });
 
   // Two-factor authentication — verify the code and enroll the account
-  app.post('/auth/2fa/verify', requireAuth, authLimiter, (req, res) => {
+  app.post('/auth/2fa/verify', requireAuth, authLimiter, async (req, res) => {
     const { code } = req.body ?? {};
     const email = req.user!.email;
     if (!email) {
@@ -261,21 +241,21 @@ export function createApp(services: Services = createServices()) {
     if (!code || typeof code !== 'string') {
       return res.status(400).json({ error: { code: 'INVALID_BODY', message: 'code is required' } });
     }
-    const entry = otpStore.get(email);
+    const entry = await getOtp(email);
     if (!entry || Date.now() > entry.expiresAt) {
       return res.status(400).json({ error: { code: 'INVALID_OTP', message: 'Invalid or expired verification code' } });
     }
     if (entry.code !== code) {
       return res.status(400).json({ error: { code: 'INVALID_OTP', message: 'Incorrect verification code' } });
     }
-    otpStore.delete(email);
-    twoFactorEnabledUids.add(req.user!.uid);
+    await deleteOtp(email);
+    await enable2FA(req.user!.uid);
     res.json({ enabled: true });
   });
 
   // Two-factor authentication — disable
-  app.post('/auth/2fa/disable', requireAuth, authLimiter, (req, res) => {
-    twoFactorEnabledUids.delete(req.user!.uid);
+  app.post('/auth/2fa/disable', requireAuth, authLimiter, async (req, res) => {
+    await disable2FA(req.user!.uid);
     res.json({ enabled: false });
   });
 
@@ -287,13 +267,26 @@ export function createApp(services: Services = createServices()) {
     platform_admin:  { email: 'admin@demo.visawithease.app',     name: 'Demo Platform Admin',  roles: ['consumer', 'consultant', 'hr_admin', 'platform_admin'] },
   } as const;
 
-  app.post('/auth/demo', authLimiter, (req, res) => {
+  // Fail-closed always — an unauthenticated endpoint that hands out real
+  // (including platform_admin) tokens must be an explicit opt-in everywhere,
+  // not inferred from NODE_ENV. A deployment that simply forgets to set
+  // NODE_ENV=production would otherwise leave this open by accident. Local
+  // dev, CI, and Playwright each set ENABLE_DEMO_LOGIN=true explicitly
+  // (see .env / playwright.config.ts / the contract test files).
+  function isDemoLoginEnabled(): boolean {
+    return process.env.ENABLE_DEMO_LOGIN === 'true';
+  }
+
+  app.post('/auth/demo', authLimiter, async (req, res) => {
+    if (!isDemoLoginEnabled()) {
+      return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Not found' } });
+    }
     const persona = (req.body?.persona ?? 'consumer') as keyof typeof DEMO_PERSONAS;
     const p = DEMO_PERSONAS[persona] ?? DEMO_PERSONAS.consumer;
     const uid = `demo-${persona}`;
     const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
     const token = signToken({ uid, email: p.email, roles: [...p.roles] }, '24h');
-    auditLog.push({ id: `al-${Date.now()}`, actor: p.email, action: 'LOGIN', resource: 'auth', at: new Date().toISOString(), ip: req.ip ?? '?' });
+    await appendAuditLog({ actor: p.email, action: 'LOGIN', resource: 'auth', ip: req.ip ?? '?' });
     res.status(201).json({ token, user: { uid, email: p.email, name: p.name, roles: p.roles }, expiresAt });
   });
 
@@ -319,7 +312,7 @@ export function createApp(services: Services = createServices()) {
 
   app.post('/applications', requireAuth, async (req, res, next) => {
     try {
-      const { destinationCountry, visaType, intendedFrom, intendedTo, purpose } = req.body ?? {};
+      const { destinationCountry, visaType, intendedFrom, intendedTo, purpose, nationality, residenceCountry } = req.body ?? {};
       if (!destinationCountry || !visaType || !intendedFrom) {
         return res.status(400).json({ error: { code: 'INVALID_BODY', message: 'destinationCountry, visaType and intendedFrom are required' } });
       }
@@ -328,7 +321,7 @@ export function createApp(services: Services = createServices()) {
         : 'Applicant';
       const applicantName = req.body.applicantName ?? derivedName;
       const application = await services.applications.createApplication(
-        { destinationCountry, visaType, intendedFrom, applicantName, purpose: purpose ?? visaType },
+        { destinationCountry, visaType, intendedFrom, applicantName, purpose: purpose ?? visaType, nationality, residenceCountry },
         req.user?.uid
       );
       res.status(201).json({ application });
@@ -345,12 +338,21 @@ export function createApp(services: Services = createServices()) {
       if (!SAFE_ID_RE.test(applicationId) || !SAFE_ID_RE.test(documentId)) {
         return res.status(400).json({ error: { code: 'INVALID_PARAM', message: 'applicationId and documentId may only contain letters, numbers, - and _' } });
       }
-      // NOTE: this does not verify the caller owns `applicationId` — see
-      // CRITICAL_ISSUES_AND_BUGS.md ("upload-slots ownership"). The mock backend
-      // has no per-user persistence for the demo application IDs the frontend
-      // references (app-fr-2026 etc.), so an ownership check would break the
-      // current demo upload flow. Add real ownership enforcement once
-      // applications are persisted consistently per user.
+      // Real ownership check — applications now persist consistently per user
+      // (Firestore, see services/firestoreServices.ts), so this can finally be
+      // enforced instead of deferred.
+      const owned = await services.applications.getApplication(applicationId, req.user!.uid);
+      if (!owned) {
+        return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Application not found' } });
+      }
+      // Claim which application this document belongs to, so GET /audit/:docId
+      // can check the same ownership when the result is read back later.
+      // First-claim-wins — refuses to let a different application take over a
+      // documentId another application already claimed (documentId is
+      // client-chosen and not guaranteed unique across users).
+      if (!(await claimAuditOwner(documentId, applicationId))) {
+        return res.status(409).json({ error: { code: 'CONFLICT', message: 'This document ID is already associated with a different application' } });
+      }
       res.status(201).json(await services.storage.createUploadSlot(req.body));
     } catch (err) {
       next(err);
@@ -359,6 +361,17 @@ export function createApp(services: Services = createServices()) {
 
   app.post('/audit', requireAuth, validateBody(auditRequestSchema), async (req, res, next) => {
     try {
+      const { applicationId, documentId } = req.body as { applicationId: string; documentId: string };
+      if (!SAFE_ID_RE.test(applicationId) || !SAFE_ID_RE.test(documentId)) {
+        return res.status(400).json({ error: { code: 'INVALID_PARAM', message: 'applicationId and documentId may only contain letters, numbers, - and _' } });
+      }
+      const owned = await services.applications.getApplication(applicationId, req.user!.uid);
+      if (!owned) {
+        return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Application not found' } });
+      }
+      if (!(await claimAuditOwner(documentId, applicationId))) {
+        return res.status(409).json({ error: { code: 'CONFLICT', message: 'This document ID is already associated with a different application' } });
+      }
       res.status(202).json(await services.auditQueue.enqueueAudit(req.body));
     } catch (err) {
       next(err);
@@ -369,6 +382,14 @@ export function createApp(services: Services = createServices()) {
     try {
       const docId = req.params.docId as string;
       if (!docId || docId.length > 256) return res.status(400).json({ error: { code: 'INVALID_PARAM', message: 'Invalid docId' } });
+      // If we know which application this document belongs to (recorded at
+      // upload-slot time), only that application's owner may read the result.
+      // A docId nothing was ever uploaded for (e.g. a canned demo id) has no
+      // recorded owner and stays open, matching existing demo behavior.
+      const ownerAppId = await getAuditOwnerApplication(docId);
+      if (ownerAppId && !(await services.applications.getApplication(ownerAppId, req.user!.uid))) {
+        return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Audit result not found' } });
+      }
       res.json(await services.auditQueue.getAuditResult(docId));
     } catch (err) {
       next(err);
@@ -493,7 +514,7 @@ export function createApp(services: Services = createServices()) {
 
   app.put('/profile', requireAuth, async (req, res, next) => {
     try {
-      const allowed = ['personal', 'passport', 'employment', 'financials', 'travelHistory', 'contacts'] as const;
+      const allowed = ['personal', 'passport', 'employment', 'financials', 'travelHistory', 'contacts', 'notificationPrefs'] as const;
       const patch: Record<string, unknown> = {};
       for (const key of allowed) {
         if (req.body?.[key] !== undefined) patch[key] = req.body[key];
@@ -519,20 +540,15 @@ export function createApp(services: Services = createServices()) {
     }
   });
 
-  app.get('/admin/users', requireAuth, requireRole('platform_admin'), async (req, res, next) => {
+  app.get('/admin/users', requireAuth, requireRole('platform_admin'), async (_req, res, next) => {
     try {
-      // In production this would query the user database
-      // For now returns the in-memory sessions as a user list
+      const users = await listUsers();
       res.json({
-        users: [
-          { uid: 'demo-consumer',       email: 'consumer@demo.visawithease.app',  name: 'Demo Consumer',      roles: ['consumer'],                                              status: 'active',    createdAt: new Date(Date.now() - 7 * 86400000).toISOString() },
-          { uid: 'demo-consultant',     email: 'consultant@demo.visawithease.app', name: 'Demo Consultant',    roles: ['consumer', 'consultant'],                                status: 'active',    createdAt: new Date(Date.now() - 14 * 86400000).toISOString() },
-          { uid: 'demo-hr_admin',       email: 'hr@demo.visawithease.app',        name: 'Demo HR Admin',       roles: ['consumer', 'hr_admin'],                                  status: 'active',    createdAt: new Date(Date.now() - 21 * 86400000).toISOString() },
-          { uid: 'demo-platform_admin', email: 'admin@demo.visawithease.app',     name: 'Demo Platform Admin', roles: ['consumer', 'consultant', 'hr_admin', 'platform_admin'],   status: 'active',    createdAt: new Date(Date.now() - 30 * 86400000).toISOString() },
-          { uid: 'user-test-1',         email: 'alice@example.com',          name: 'Alice Chen',          roles: ['consumer'],                                              status: 'active',    createdAt: new Date(Date.now() - 3 * 86400000).toISOString() },
-          { uid: 'user-test-2',         email: 'bob@example.com',            name: 'Bob Tanaka',          roles: ['consumer'],                                              status: 'suspended', createdAt: new Date(Date.now() - 5 * 86400000).toISOString() },
-        ],
-        total: 6,
+        users: users.map((u) => ({
+          uid: u.uid, email: u.email, name: u.name, roles: u.roles,
+          status: u.status ?? 'active', createdAt: u.createdAt ?? new Date().toISOString()
+        })),
+        total: users.length,
       });
     } catch (err) {
       next(err);
@@ -543,7 +559,9 @@ export function createApp(services: Services = createServices()) {
     try {
       const uid = req.params.uid as string;
       if (!uid || uid.length > 128) return res.status(400).json({ error: { code: 'INVALID_PARAM', message: 'Invalid uid' } });
-      // In production: update the user status in the database
+      const updated = await setUserStatus(uid, 'suspended');
+      if (!updated) return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'User not found' } });
+      await appendAuditLog({ actor: req.user!.email ?? uid, action: 'SUSPEND_USER', resource: uid, ip: req.ip ?? '?' });
       res.json({ uid, status: 'suspended', suspendedAt: new Date().toISOString() });
     } catch (err) {
       next(err);
@@ -554,6 +572,9 @@ export function createApp(services: Services = createServices()) {
     try {
       const uid = req.params.uid as string;
       if (!uid || uid.length > 128) return res.status(400).json({ error: { code: 'INVALID_PARAM', message: 'Invalid uid' } });
+      const updated = await setUserStatus(uid, 'active');
+      if (!updated) return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'User not found' } });
+      await appendAuditLog({ actor: req.user!.email ?? uid, action: 'RESTORE_USER', resource: uid, ip: req.ip ?? '?' });
       res.json({ uid, status: 'active', restoredAt: new Date().toISOString() });
     } catch (err) {
       next(err);
@@ -562,7 +583,8 @@ export function createApp(services: Services = createServices()) {
 
   app.get('/admin/audit-log', requireAuth, requireRole('platform_admin'), async (_req, res, next) => {
     try {
-      res.json({ entries: auditLog.slice().reverse(), total: auditLog.length });
+      const entries = await listAuditLog();
+      res.json({ entries, total: entries.length });
     } catch (err) {
       next(err);
     }
@@ -834,8 +856,9 @@ export function createApp(services: Services = createServices()) {
       }
 
       // Apply persisted read state from mark-read calls (scoped to this user)
-      const readSet = getReadSet(uid);
-      const enriched = notifications.map(n => ({ ...n, read: n.read || readSet.has(n.id) }));
+      const enriched = await Promise.all(
+        notifications.map(async (n) => ({ ...n, read: n.read || (await isNotificationRead(uid, n.id)) }))
+      );
       res.json({ notifications: enriched });
     } catch (err) {
       next(err);
@@ -848,7 +871,7 @@ export function createApp(services: Services = createServices()) {
       if (!id || id.length > 128) {
         return res.status(400).json({ error: { code: 'INVALID_PARAM', message: 'Invalid notification id' } });
       }
-      getReadSet(req.user!.uid).add(id);
+      await markNotificationRead(req.user!.uid, id);
       res.json({ ok: true });
     } catch (err) {
       next(err);
@@ -962,9 +985,7 @@ export function createApp(services: Services = createServices()) {
 
   app.get('/webhooks', requireAuth, async (req, res, next) => {
     try {
-      const userWebhooks = [...webhookStore.entries()]
-        .filter(([key]) => key.startsWith(`${req.user!.uid}-wh-`))
-        .map(([id, wh]) => ({ id, ...wh }));
+      const userWebhooks = await listWebhooksForUser(req.user!.uid);
       res.json({ webhooks: userWebhooks });
     } catch (err) {
       next(err);
@@ -977,9 +998,8 @@ export function createApp(services: Services = createServices()) {
       if (!url || typeof url !== 'string' || !url.startsWith('https://')) {
         return res.status(400).json({ error: { code: 'INVALID_URL', message: 'A valid HTTPS URL is required' } });
       }
-      const id = `${req.user!.uid}-wh-${Date.now()}`;
       const webhook = { url, events: Array.isArray(events) ? events : ['audit.complete'], createdAt: new Date().toISOString() };
-      webhookStore.set(id, webhook);
+      const id = await createWebhook(req.user!.uid, webhook);
       res.status(201).json({ id, ...webhook });
     } catch (err) {
       next(err);

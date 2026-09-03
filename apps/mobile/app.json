@@ -7,16 +7,33 @@
     "scheme": "visaiq",
     "userInterfaceStyle": "automatic",
     "platforms": ["android", "ios"],
+    "icon": "./assets/app-icon-1024.png",
     "android": {
       "package": "app.visaiq.mobile",
       "minSdkVersion": 26,
       "targetSdkVersion": 35,
       "googleServicesFile": "./google-services.json",
-      "allowBackup": false
+      "allowBackup": false,
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/app-icon-1024.png",
+        "backgroundColor": "#FFFFFF"
+      }
     },
     "ios": {
       "bundleIdentifier": "app.visaiq.mobile",
       "supportsTablet": false
-    }
+    },
+    "plugins": [
+      "@react-native-google-signin/google-signin",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/logo-icon.png",
+          "imageWidth": 200,
+          "resizeMode": "contain",
+          "backgroundColor": "#FFFFFF"
+        }
+      ]
+    ]
   }
 }

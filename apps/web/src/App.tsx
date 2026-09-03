@@ -48,6 +48,7 @@ import { applications as fallbackApplications, auditResult as fallbackAuditResul
 import { scoreColor } from '@visaiq/design-system';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:3001';
+const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_WEB_CLIENT_ID ?? '';
 const SESSION_KEY = 'visaiq.session';
 
 // Safely read the stored session — localStorage can contain a partial/corrupted
@@ -83,6 +84,23 @@ type Toast = { id: string; message: string; type: 'success' | 'error' | 'info' }
 let toastEmitter: ((t: Toast) => void) | null = null;
 function showToast(message: string, type: Toast['type'] = 'info') {
   toastEmitter?.({ id: Date.now().toString(), message, type });
+}
+
+// Builds and downloads a real CSV from real rows — no fake "exported" toast
+// with nothing behind it.
+function downloadCsv(filename: string, headers: string[], rows: (string | number)[][]) {
+  const escape = (v: string | number) => {
+    const s = String(v);
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  const csv = [headers, ...rows].map((row) => row.map(escape).join(',')).join('\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
 }
 
 const nav = [
@@ -134,7 +152,7 @@ function ToastContainer() {
         <div key={t.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 18px', borderRadius: 12, background: '#fff', boxShadow: '0 8px 24px rgba(0,0,0,0.14)', border: `1px solid ${colors[t.type]}30`, minWidth: 280, maxWidth: 380, animation: 'slideIn 0.25s ease' }}>
           <div style={{ width: 8, height: 8, borderRadius: 4, background: colors[t.type], flexShrink: 0 }} />
           <span style={{ flex: 1, fontSize: 13, color: '#0F172A', fontWeight: 500 }}>{t.message}</span>
-          <button onClick={() => setToasts(p => p.filter(x => x.id !== t.id))} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#94A3B8', padding: 0 }}><X size={14} /></button>
+          <button onClick={() => setToasts(p => p.filter(x => x.id !== t.id))} aria-label="Dismiss notification" style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#94A3B8', padding: 0 }}><X size={14} /></button>
         </div>
       ))}
     </div>
@@ -229,6 +247,7 @@ export function App() {
           } />
           <Route path="/employee" element={<EmployeePortal />} />
           <Route path="/booking" element={<Booking />} />
+          <Route path="/booking/:consultantId" element={<Booking />} />
           <Route path="/settings" element={<SettingsPage />} />
           <Route path="/admin" element={
             session.user.roles.includes('platform_admin')
@@ -330,6 +349,53 @@ function AuthPage({ onSession }: { onSession: (session: AuthSessionResponse | nu
     }
   }
 
+  const googleButtonRef = useRef<HTMLDivElement>(null);
+
+  async function handleGoogleCredential(idToken: string) {
+    setLoading(true);
+    setError(null);
+    try {
+      const response = await fetch(`${API_BASE_URL}/auth/google`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ idToken })
+      });
+      if (!response.ok) throw new Error(`Google sign-in failed (${response.status})`);
+      const payload = (await response.json()) as AuthSessionResponse;
+      onSession(payload);
+      navigate(from, { replace: true });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Google sign-in failed');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    if (!GOOGLE_CLIENT_ID || !googleButtonRef.current) return;
+    const google = (window as unknown as { google?: any }).google;
+    function render() {
+      const g = (window as unknown as { google?: any }).google;
+      if (!g || !googleButtonRef.current) return;
+      g.accounts.id.initialize({
+        client_id: GOOGLE_CLIENT_ID,
+        callback: (response: { credential: string }) => { void handleGoogleCredential(response.credential); }
+      });
+      g.accounts.id.renderButton(googleButtonRef.current, { theme: 'outline', size: 'large', width: 320 });
+    }
+    if (google) {
+      render();
+      return;
+    }
+    const script = document.createElement('script');
+    script.src = 'https://accounts.google.com/gsi/client';
+    script.async = true;
+    script.onload = render;
+    document.head.appendChild(script);
+    // Script is left in place — Google's SDK expects a single persistent load per page.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   return (
     <main className="auth-page">
       <section className="auth-panel">
@@ -343,6 +409,16 @@ function AuthPage({ onSession }: { onSession: (session: AuthSessionResponse | nu
           {error && <div className="form-error">{error}</div>}
           <button className="primary-button" type="submit" disabled={loading}>{loading ? 'Signing in...' : 'Sign in'}</button>
         </form>
+        {GOOGLE_CLIENT_ID && (
+          <div style={{ marginTop: 16, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, width: '100%' }}>
+              <div style={{ flex: 1, height: 1, background: '#E2E8F0' }} />
+              <span style={{ fontSize: 11, color: '#94A3B8', fontWeight: 600 }}>OR</span>
+              <div style={{ flex: 1, height: 1, background: '#E2E8F0' }} />
+            </div>
+            <div ref={googleButtonRef} />
+          </div>
+        )}
         <div className="auth-note">
           Demo login is local and validated by the API. Firebase Auth verification is already behind the backend service interface for production credentials.
         </div>
@@ -441,7 +517,24 @@ function PublicSite() {
       <Route path="/faq" element={<LandingWrapper />} />
       <Route path="/blog" element={<BlogIndexPage />} />
       <Route path="/blog/:slug" element={<BlogPostPage />} />
+      <Route path="/privacy" element={<LegalPlaceholderPage title="Privacy Policy" />} />
+      <Route path="/terms" element={<LegalPlaceholderPage title="Terms of Service" />} />
     </Routes>
+  );
+}
+
+function LegalPlaceholderPage({ title }: { title: string }) {
+  return (
+    <section className="page" style={{ maxWidth: 640, margin: '0 auto' }}>
+      <div className="page-title"><div><p>Legal</p><h1>{title}</h1></div></div>
+      <article className="panel">
+        <p style={{ color: '#334155', lineHeight: 1.7 }}>
+          Our {title} is being finalized and will be published here before launch. In the meantime,
+          if you have any questions about how your data is collected, stored, or used, please contact
+          us at <a href="mailto:support@visawithease.app" style={{ color: '#1A56DB' }}>support@visawithease.app</a>.
+        </p>
+      </article>
+    </section>
   );
 }
 
@@ -459,6 +552,9 @@ function Dashboard() {
   const { data: applicationData } = useApi<{ applications: VisaApplication[] }>('/applications', { applications: fallbackApplications });
   const { data: requirements } = useApi<RequirementsResponse>('/requirements', fallbackRequirements);
   const active = applicationData.applications[0] ?? fallbackApplications[0];
+  const { data: documentData } = useApi<{ documents: Array<{ id: string; title: string; status: string; issue: string }> }>(
+    `/documents?applicationId=${encodeURIComponent(active.id)}`, { documents: [] }
+  );
   const tripLabel = relativeTripLabel(active.intendedFrom);
   const daysLeft = Math.max(0, Math.ceil((new Date(active.intendedFrom).getTime() - Date.now()) / 86400000));
 
@@ -541,27 +637,20 @@ function Dashboard() {
         )}
       </div>
 
-      {/* Document expiry tracker */}
+      {/* Document status tracker */}
       <article className="panel">
-        <h2>Document expiry alerts</h2>
+        <h2>Document status</h2>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
-          {[
-            { name: 'Passport',          expires: 'Apr 12, 2028',         daysLeft: 675, ok: true  },
-            { name: 'Travel insurance',  expires: 'Not uploaded',          daysLeft: -1,  ok: false },
-            { name: 'Bank statement',    expires: 'Sep 3, 2026 (3-month)', daysLeft: 88,  ok: true  },
-            { name: 'Employment letter', expires: 'Queued for audit',      daysLeft: 0,   ok: false },
-          ].map((d, i) => (
-            <div key={d.name} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 0', borderTop: i > 0 ? '1px solid #F8FAFC' : 'none' }}>
-              <div style={{ width: 32, height: 32, borderRadius: 8, background: d.ok ? '#D1FAE5' : '#FEF2F2', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                {d.ok ? <CheckCircle2 size={16} color="#10B981" /> : <AlertTriangle size={16} color="#DC2626" />}
+          {documentData.documents.map((d, i) => (
+            <div key={d.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 0', borderTop: i > 0 ? '1px solid #F8FAFC' : 'none' }}>
+              <div style={{ width: 32, height: 32, borderRadius: 8, background: d.status === 'Audited' ? '#D1FAE5' : d.status === 'Queued' ? '#FEF3C7' : '#FEF2F2', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                {d.status === 'Audited' ? <CheckCircle2 size={16} color="#10B981" /> : <AlertTriangle size={16} color={d.status === 'Queued' ? '#F59E0B' : '#DC2626'} />}
               </div>
               <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 13, fontWeight: 700, color: '#0F172A' }}>{d.name}</div>
-                <div style={{ fontSize: 12, color: '#64748B' }}>{d.expires}</div>
+                <div style={{ fontSize: 13, fontWeight: 700, color: '#0F172A' }}>{d.title}</div>
+                <div style={{ fontSize: 12, color: '#64748B' }}>{d.issue}</div>
               </div>
-              {d.daysLeft > 0 && (
-                <span style={{ padding: '3px 10px', borderRadius: 20, background: d.daysLeft < 90 ? '#FEF3C7' : '#D1FAE5', color: d.daysLeft < 90 ? '#92400E' : '#065F46', fontSize: 12, fontWeight: 700 }}>{d.daysLeft}d left</span>
-              )}
+              <span style={{ padding: '3px 10px', borderRadius: 20, background: d.status === 'Audited' ? '#D1FAE5' : d.status === 'Queued' ? '#FEF3C7' : '#FEF2F2', color: d.status === 'Audited' ? '#065F46' : d.status === 'Queued' ? '#92400E' : '#991B1B', fontSize: 12, fontWeight: 700 }}>{d.status}</span>
             </div>
           ))}
         </div>
@@ -638,39 +727,45 @@ function Applications() {
 }
 
 function Analysis() {
-  const tripLabel = relativeTripLabel(fallbackApplications[0].intendedFrom);
-  const freshness = sourceFreshnessLabel(fallbackRequirements.freshness);
-  const factors = [
-    ['Identity consistency', 94, 'Passport and bank statement names match after normalization.'],
-    ['Financial evidence', 78, 'Bank statement exists, but average balance and salary proof need stronger linking.'],
-    ['Purpose and itinerary', 64, 'Travel dates, hotel and insurance need tighter alignment.'],
-    ['Document quality', 81, 'Passport glare warning should be fixed before portal upload.'],
-    ['Timing risk', 72, `Travel is ${tripLabel} away; appointment availability should be checked now.`]
-  ];
+  const { data: applicationData } = useApi<{ applications: VisaApplication[] }>('/applications', { applications: fallbackApplications });
+  const active = applicationData.applications[0] ?? fallbackApplications[0];
+  const docId = `${active.id}-passport`;
+  const { data: audit } = useApi<AuditResult>(`/audit/${docId}`, fallbackAuditResult);
+  const { data: reqs } = useApi<RequirementsResponse>('/requirements', fallbackRequirements);
+  const freshness = sourceFreshnessLabel(reqs.freshness);
+  const riskLabel = active.readinessScore >= 85 ? 'low' : active.readinessScore >= 60 ? 'medium' : 'high';
+  const blockers = audit.findings.filter(f => f.severity === 'warn' || f.severity === 'red_flag');
+  const passing = audit.findings.filter(f => f.severity === 'pass');
+  const summaryText = blockers.length > 0
+    ? `Visa With Ease found ${passing.length} passing check${passing.length === 1 ? '' : 's'}, but ${blockers.map(f => f.title.toLowerCase()).slice(0, 2).join(' and ')} ${blockers.length > 1 ? 'are' : 'is'} blocking a confident checklist match.`
+    : 'All audited checks are currently passing for this application.';
+  const routeCoverage = active.nationality && active.residenceCountry
+    ? `Supported for ${active.nationality} national resident in ${active.residenceCountry} applying for ${active.destinationCountry} ${active.visaType}.`
+    : `Coverage for ${active.destinationCountry} ${active.visaType} — add your nationality and residence in the application for a fully personalized route check.`;
 
   return (
     <section className="page">
       <div className="page-title">
         <div>
           <p>Visa analysis</p>
-          <h1>France Schengen readiness intelligence</h1>
+          <h1>{active.destinationCountry} {active.visaType} readiness intelligence</h1>
         </div>
         <Link className="primary-button" to="/upload">Improve score</Link>
       </div>
       <div className="analysis-layout">
         <article className="analysis-summary">
-          <Score value={79} size="large" />
-          <h2>Submission risk: medium</h2>
-          <p>Visa With Ease found a strong identity baseline, but itinerary proof and insurance are blocking a confident checklist match.</p>
+          <Score value={active.readinessScore} size="large" />
+          <h2>Submission risk: {riskLabel}</h2>
+          <p>{summaryText}</p>
         </article>
         <div className="analysis-stack">
-          {factors.map(([label, score, detail]) => (
-            <article className="analysis-factor" key={label}>
+          {audit.findings.map((f) => (
+            <article className="analysis-factor" key={f.id}>
               <div>
-                <strong>{label}</strong>
-                <span>{detail}</span>
+                <strong>{f.title}</strong>
+                <span>{f.description}</span>
               </div>
-              <Score value={Number(score)} />
+              <Score value={f.confidence} />
             </article>
           ))}
         </div>
@@ -678,15 +773,17 @@ function Analysis() {
       <div className="section-grid">
         <article className="panel">
           <h2>Recommended fixes</h2>
-          <div className="activity-row"><AlertTriangle size={18} /><div><strong>Upload travel insurance</strong><span>Must cover at least EUR 30,000 across Schengen.</span></div></div>
-          <div className="activity-row"><AlertTriangle size={18} /><div><strong>Align itinerary dates</strong><span>Flight, hotel and insurance dates should match intended travel.</span></div></div>
-          <div className="activity-row"><CheckCircle2 size={18} /><div><strong>Retake passport scan</strong><span>Fix glare before embassy upload portal rejects quality.</span></div></div>
+          {blockers.length > 0 ? blockers.map(f => (
+            <div className="activity-row" key={f.id}><AlertTriangle size={18} /><div><strong>{f.title}</strong><span>{f.description}</span></div></div>
+          )) : (
+            <div className="activity-row"><CheckCircle2 size={18} /><div><strong>No fixes needed right now</strong><span>All audited findings are currently passing.</span></div></div>
+          )}
         </article>
         <article className="panel">
           <h2>Coverage and source confidence</h2>
-          <div className="activity-row"><ShieldCheck size={18} /><div><strong>Route coverage</strong><span>Supported for India resident in UAE applying for France Schengen Tourist.</span></div></div>
+          <div className="activity-row"><ShieldCheck size={18} /><div><strong>Route coverage</strong><span>{routeCoverage}</span></div></div>
           <div className="activity-row"><Globe2 size={18} /><div><strong>Source freshness</strong><span>{freshness}</span></div></div>
-          <div className="activity-row"><CalendarClock size={18} /><div><strong>Processing estimate</strong><span>10-15 business days after appointment submission.</span></div></div>
+          <div className="activity-row"><CalendarClock size={18} /><div><strong>Processing estimate</strong><span>{reqs.processingTime}</span></div></div>
         </article>
       </div>
     </section>
@@ -695,15 +792,23 @@ function Analysis() {
 
 function Onboarding() {
   const navigate = useNavigate();
+  const [nationality, setNationality] = useState('');
+  const [residenceCountry, setResidenceCountry] = useState('');
   const [destinationCountry, setDestinationCountry] = useState('France');
   const [visaType, setVisaType] = useState('Schengen Tourist');
   const [intendedFrom, setIntendedFrom] = useState('2026-07-18');
   const [submitting, setSubmitting] = useState(false);
 
   async function createApplication() {
+    if (!nationality.trim() || !residenceCountry.trim() || !destinationCountry.trim() || !visaType.trim() || !intendedFrom) {
+      showToast('Nationality, residence, destination, visa type, and travel date are all required.', 'error');
+      return;
+    }
     setSubmitting(true);
     try {
-      const result = await postJson<{ application: { id: string } }>('/applications', { destinationCountry, visaType, intendedFrom });
+      const result = await postJson<{ application: { id: string } }>('/applications', {
+        destinationCountry, visaType, intendedFrom, nationality, residenceCountry
+      });
       navigate(`/applications/${result.application.id}`);
     } catch {
       showToast('Could not create application via API — opening applications list.', 'info');
@@ -714,8 +819,8 @@ function Onboarding() {
   }
 
   const steps = [
-    { title: 'Nationality', value: 'India', body: 'Passport country controls visa eligibility, fees and document rules.' },
-    { title: 'Residence', value: 'United Arab Emirates', body: 'Application jurisdiction determines where you submit and which centre rules apply.' },
+    { title: 'Nationality', value: nationality || 'Not entered yet', body: 'Passport country controls visa eligibility, fees and document rules.' },
+    { title: 'Residence', value: residenceCountry || 'Not entered yet', body: 'Application jurisdiction determines where you submit and which centre rules apply.' },
     { title: 'Destination', value: `${destinationCountry} · ${intendedFrom}`, body: 'Destination and dates scope requirements, processing time and insurance validity.' },
     { title: 'Visa type', value: visaType, body: 'Visa category keeps AI guidance grounded to the right checklist.' }
   ];
@@ -732,6 +837,16 @@ function Onboarding() {
         </button>
       </div>
       <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 16 }}>
+        <label style={{ fontSize: 13, color: '#64748B', display: 'flex', flexDirection: 'column', gap: 4 }}>
+          Nationality (passport country)
+          <input value={nationality} onChange={e => setNationality(e.target.value)} placeholder="e.g. India"
+            style={{ padding: '7px 12px', borderRadius: 8, border: '1px solid #E2E8F0', fontSize: 13, outline: 'none', minWidth: 160 }} />
+        </label>
+        <label style={{ fontSize: 13, color: '#64748B', display: 'flex', flexDirection: 'column', gap: 4 }}>
+          Country of residence
+          <input value={residenceCountry} onChange={e => setResidenceCountry(e.target.value)} placeholder="e.g. United Arab Emirates"
+            style={{ padding: '7px 12px', borderRadius: 8, border: '1px solid #E2E8F0', fontSize: 13, outline: 'none', minWidth: 180 }} />
+        </label>
         <label style={{ fontSize: 13, color: '#64748B', display: 'flex', flexDirection: 'column', gap: 4 }}>
           Destination country
           <input value={destinationCountry} onChange={e => setDestinationCountry(e.target.value)}
@@ -767,6 +882,10 @@ function UploadFlow() {
   const navigate = useNavigate();
   const [file, setFile] = useState<File | null>(null);
   const [status, setStatus] = useState<'idle' | 'slot' | 'uploading' | 'audit' | 'done' | 'error'>('idle');
+  const { data: applicationData } = useApi<{ applications: VisaApplication[] }>('/applications', { applications: [] });
+  const active = applicationData.applications[0];
+  // The "no application yet" case renders its own early-return UI below, so
+  // this only ever needs the normal idle message.
   const [message, setMessage] = useState('Choose a PDF or image to create an upload slot.');
   const [reportId, setReportId] = useState('doc-passport');
   const stages = [
@@ -778,6 +897,11 @@ function UploadFlow() {
   ] as const;
 
   async function runUpload() {
+    if (!active) {
+      setStatus('error');
+      setMessage('Create an application first, then come back here to upload documents.');
+      return;
+    }
     if (!file) {
       setStatus('error');
       setMessage('Select a document first.');
@@ -788,13 +912,13 @@ function UploadFlow() {
     try {
       setStatus('slot');
       setMessage('Creating encrypted upload slot...');
-      const slot = await postJson<{ uploadUrl: string; expiresAt: string }>('/upload-slots', { applicationId: 'app-fr-2026', documentId });
+      const slot = await postJson<{ uploadUrl: string; expiresAt: string }>('/upload-slots', { applicationId: active.id, documentId });
       setStatus('uploading');
       setMessage(`Upload slot ready. Handoff expires ${formatDateTime(slot.expiresAt)}.`);
       await new Promise((resolve) => setTimeout(resolve, 450));
       setStatus('audit');
       setMessage('Queuing AI audit with the uploaded document reference...');
-      await postJson('/audit', { applicationId: 'app-fr-2026', documentId });
+      await postJson('/audit', { applicationId: active.id, documentId });
       setStatus('done');
       setMessage('Audit completed. Opening the live report now.');
       setTimeout(() => navigate(`/audit/${documentId}`), 550);
@@ -802,6 +926,26 @@ function UploadFlow() {
       setStatus('error');
       setMessage(err instanceof Error ? err.message : 'Upload flow failed');
     }
+  }
+
+  if (!active) {
+    return (
+      <section className="page">
+        <div className="page-title">
+          <div>
+            <p>Document upload</p>
+            <h1>Upload and audit progress</h1>
+          </div>
+        </div>
+        <article className="panel">
+          <h2>Create an application first</h2>
+          <p>Documents are audited against a specific visa application, so start one before uploading.</p>
+          <Link className="primary-button" to="/onboarding" onClick={() => showToast('Starting new application wizard', 'info')}>
+            <PlaneTakeoff size={18} /> New application
+          </Link>
+        </article>
+      </section>
+    );
   }
 
   return (
@@ -861,7 +1005,7 @@ const REQ_FEE_RATES: Record<string, { symbol: string; rate: number }> = {
 };
 
 function Requirements() {
-  const { data: requirements } = useApi<RequirementsResponse>('/requirements', fallbackRequirements);
+  const { data: requirements, refetch } = useApi<RequirementsResponse>('/requirements', fallbackRequirements);
   const expiresIn = Math.max(0, Math.ceil((Date.parse(requirements.freshness.expiresAt) - Date.now()) / 3_600_000));
   const [feeCurrency, setFeeCurrency] = useState<keyof typeof REQ_FEE_RATES>('AED');
   const feeEUR = 80;
@@ -903,7 +1047,7 @@ function Requirements() {
           <div style={{ fontSize: 13, color: '#94A3B8' }}>official source backed</div>
         </article>
       </div>
-      <StalenessBanner ageHours={requirements.freshness.ageHours} onRefresh={() => showToast('Requirements refreshed from official source', 'success')} />
+      <StalenessBanner ageHours={requirements.freshness.ageHours} onRefresh={() => { refetch(); showToast('Refreshing requirements from official source…', 'info'); }} />
       <div className="warning-banner">
         <Sparkles size={18} />
         AI guidance — not legal advice. Verify with official embassy.
@@ -941,7 +1085,8 @@ function ApplicationDetail() {
   const { data: audit } = useApi<AuditResult>(`/audit/${docId}`, fallbackAuditResult);
   const { data: reqs } = useApi<RequirementsResponse>('/requirements', fallbackRequirements);
   const application = appData.application;
-  const missingCount = reqs.requirements.filter((item) => !item.satisfied).length;
+  const missingRequirements = reqs.requirements.filter((item) => !item.satisfied);
+  const missingCount = missingRequirements.length;
 
   return (
     <section className="page">
@@ -975,6 +1120,18 @@ function ApplicationDetail() {
               <span>{application.intendedFrom}</span>
             </div>
           </div>
+          {(application.nationality || application.residenceCountry) && (
+            <div className="activity-row">
+              <Globe2 size={18} />
+              <div>
+                <strong>Applicant context</strong>
+                <span>
+                  {application.nationality ? `${application.nationality} national` : 'Nationality not entered'}
+                  {application.residenceCountry ? ` · living in ${application.residenceCountry}` : ''}
+                </span>
+              </div>
+            </div>
+          )}
           <div className="activity-row">
             <AlertTriangle size={18} />
             <div>
@@ -1025,7 +1182,9 @@ function ApplicationDetail() {
           <h2>Application chat</h2>
           <div className="bubble ai">
             <strong>Visa With Ease AI</strong>
-            Insurance and itinerary remain the two current blockers for this application.
+            {missingCount > 0
+              ? `${missingRequirements.slice(0, 2).map((r) => r.title).join(' and ')}${missingCount > 2 ? `, and ${missingCount - 2} more` : ''} remain the current blocker${missingCount === 1 ? '' : 's'} for this application.`
+              : 'All requirement checklist items are satisfied for this application.'}
           </div>
           <div className="escalation-card">
             <Sparkles size={18} />
@@ -1043,19 +1202,29 @@ function ApplicationDetail() {
 
 type ChatMsg = { id: string; role: 'user' | 'ai'; text: string; suggestions?: string[] };
 
-const INITIAL_MESSAGES: ChatMsg[] = [
-  { id: 'ai-1', role: 'ai', text: 'Hi Sarah! I\'ve reviewed your France Schengen application (score 87/100). You\'re missing travel insurance and flight/hotel proof — fixing both would push your score to 96+. What would you like to work on?', suggestions: ['What insurance do I need?', 'Check all requirements', 'Book a consultant'] },
-  { id: 'user-1', role: 'user', text: 'Can I submit without confirmed flights?' },
-  { id: 'ai-2', role: 'ai', text: 'A flight reservation (not a paid ticket) is usually sufficient for Schengen. Use a tool like Visa Reservation for a 48-hour hold. Key: flight dates, hotel dates and insurance dates must all align — mismatches are the top rejection reason.', suggestions: ['What insurance do I need?', 'Check the visa fee', 'View requirements'] },
-];
+function greetingFor(active: VisaApplication, firstName: string): ChatMsg {
+  const missing = active.documentsRequired - active.documentsUploaded;
+  const status = missing > 0
+    ? `You have ${missing} document${missing === 1 ? '' : 's'} left to upload and ${active.issuesCount} open issue${active.issuesCount === 1 ? '' : 's'}.`
+    : active.issuesCount > 0
+      ? `All documents are uploaded, but ${active.issuesCount} issue${active.issuesCount === 1 ? '' : 's'} still need${active.issuesCount === 1 ? 's' : ''} attention.`
+      : 'All documents are uploaded and no open issues remain.';
+  return {
+    id: 'ai-greeting',
+    role: 'ai',
+    text: `Hi ${firstName}! I've reviewed your ${active.destinationCountry} ${active.visaType} application (score ${active.readinessScore}/100). ${status} What would you like to work on?`,
+    suggestions: ['Check all requirements', 'Upload documents', 'Book a consultant']
+  };
+}
 
 function Chat() {
   const [draft, setDraft] = useState('');
-  const [messages, setMessages] = useState<ChatMsg[]>(INITIAL_MESSAGES);
   const [sending, setSending] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const { data: applicationData } = useApi<{ applications: VisaApplication[] }>('/applications', { applications: fallbackApplications });
   const active = applicationData.applications[0] ?? fallbackApplications[0];
+  const firstName = getStoredSession()?.user.name.split(' ')[0] ?? 'there';
+  const [messages, setMessages] = useState<ChatMsg[]>(() => [greetingFor(active, firstName)]);
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, sending]);
 
@@ -1244,7 +1413,7 @@ function ConsultantProfile() {
           <h1>{consultant.name}</h1>
           <span>{consultant.specialty} · {consultant.languages.join(', ')}</span>
         </div>
-        <Link className="primary-button" to="/booking"><CalendarClock size={18} /> Book ${consultant.rate}</Link>
+        <Link className="primary-button" to={`/booking/${consultant.id}`}><CalendarClock size={18} /> Book ${consultant.rate}</Link>
       </div>
       <div className="section-grid">
         <article className="panel">
@@ -1279,59 +1448,18 @@ function ConsultantConsole() {
     crm: []
   });
 
-  const COMMISSION_RATE = 17.5;
-  const EARNINGS = [
-    { month: 'Mar 2026', sessions: 14, gross: 1246, commission: 218 },
-    { month: 'Apr 2026', sessions: 18, gross: 1602, commission: 280 },
-    { month: 'May 2026', sessions: 22, gross: 1958, commission: 343 },
-    { month: 'Jun 2026', sessions: 9,  gross: 801,  commission: 140 },
-  ];
-  const totalGross = EARNINGS.reduce((a, e) => a + e.gross, 0);
-  const totalCommission = EARNINGS.reduce((a, e) => a + e.commission, 0);
-  const totalNet = totalGross - totalCommission;
-
   return (
     <section className="page">
       <div className="page-title"><div><p>Consultant console</p><h1>Case queue, conversations and CRM</h1></div></div>
       <div className="admin-grid">{data.crm.map((item) => <Metric key={item.label} icon={BarChart3} label={item.label} value={item.value} />)}</div>
 
-      {/* FEAT F: Commission tracking */}
+      {/* Commission tracking — not yet backed by a real payments ledger */}
       <article className="panel" style={{ marginBottom: 0 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
           <h2 style={{ margin: 0 }}>Commission tracking</h2>
-          <span style={{ background: '#EFF6FF', color: '#1A56DB', fontWeight: 700, fontSize: 12, padding: '4px 12px', borderRadius: 20 }}>{COMMISSION_RATE}% platform rate</span>
+          <span style={{ background: '#F1F5F9', color: '#64748B', fontWeight: 700, fontSize: 12, padding: '4px 12px', borderRadius: 20 }}>Coming soon</span>
         </div>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 14, marginBottom: 18 }}>
-          {[['Gross earnings', `$${totalGross.toLocaleString()}`, '#0F172A'],['Platform commission', `−$${totalCommission.toLocaleString()}`, '#DC2626'],['Net to consultant', `$${totalNet.toLocaleString()}`, '#059669']].map(([l,v,c]) => (
-            <div key={String(l)} style={{ background: '#F8FAFC', borderRadius: 12, padding: '14px 18px', border: '1px solid #E2E8F0' }}>
-              <p style={{ margin: '0 0 4px', fontSize: 12, color: '#64748B', fontWeight: 600 }}>{l}</p>
-              <p style={{ margin: 0, fontSize: 22, fontWeight: 900, color: String(c) }}>{v}</p>
-            </div>
-          ))}
-        </div>
-        <div style={{ overflow: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-            <thead>
-              <tr style={{ borderBottom: '2px solid #F1F5F9' }}>
-                {['Month','Sessions','Gross','Platform fee (17.5%)','Net payout'].map(h => (
-                  <th key={h} style={{ padding: '10px 14px', textAlign: 'left', fontWeight: 700, color: '#64748B', fontSize: 12 }}>{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {EARNINGS.map((e, i) => (
-                <tr key={e.month} style={{ borderBottom: '1px solid #F8FAFC', background: i % 2 === 0 ? '#fff' : '#FAFAFA' }}>
-                  <td style={{ padding: '9px 14px', fontWeight: 700, color: '#0F172A' }}>{e.month}</td>
-                  <td style={{ padding: '9px 14px', color: '#334155' }}>{e.sessions}</td>
-                  <td style={{ padding: '9px 14px', color: '#334155' }}>${e.gross.toLocaleString()}</td>
-                  <td style={{ padding: '9px 14px', color: '#DC2626', fontWeight: 700 }}>−${e.commission.toLocaleString()}</td>
-                  <td style={{ padding: '9px 14px', color: '#059669', fontWeight: 900 }}>${(e.gross - e.commission).toLocaleString()}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-        <p style={{ margin: '10px 0 0', fontSize: 12, color: '#94A3B8' }}>Commission rate is 15–20% depending on booking tier. Current blended rate: 17.5%. Payouts processed monthly on the 1st.</p>
+        <p style={{ margin: 0, fontSize: 13, color: '#64748B', lineHeight: 1.6 }}>Earnings and payout tracking will appear here once a payment provider is connected. No commission data is collected yet.</p>
       </article>
 
       <div className="section-grid">
@@ -1349,48 +1477,37 @@ function HrPortal() {
     bulkUploads: Array<{ id: string; fileName: string; status: string }>;
   }>('/hr', { teams: [], reports: [], bulkUploads: [] });
 
-  const TIER = { name: 'Business', seatsUsed: 34, seatsTotal: 50, auditsUsed: 127, auditsTotal: 200, renewsOn: '2026-08-01', color: '#7C3AED' };
-  const seatPct = Math.round((TIER.seatsUsed / TIER.seatsTotal) * 100);
-  const auditPct = Math.round((TIER.auditsUsed / TIER.auditsTotal) * 100);
+  const seatsUsed = data.teams.reduce((sum, t) => sum + t.members, 0);
 
   return (
     <section className="page">
       <div className="page-title"><div><p>B2B mobility</p><h1>HR dashboard and employee visa readiness</h1></div><Link className="primary-button" to="/employee">Open employee portal</Link></div>
 
-      {/* FEAT G: Tier usage bar + audit quota */}
+      {/* Team seats are real (sum of actual team rosters below); plan/billing quota has no backing data source yet */}
       <article className="panel" style={{ marginBottom: 0 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
           <div>
-            <h2 style={{ margin: '0 0 4px' }}>Plan usage</h2>
-            <p style={{ margin: 0, fontSize: 13, color: '#64748B' }}>Renews {TIER.renewsOn}</p>
+            <h2 style={{ margin: '0 0 4px' }}>Team seats in use</h2>
+            <p style={{ margin: 0, fontSize: 13, color: '#64748B' }}>Across {data.teams.length} team{data.teams.length === 1 ? '' : 's'}</p>
           </div>
-          <span style={{ background: `${TIER.color}15`, color: TIER.color, fontWeight: 700, fontSize: 13, padding: '5px 14px', borderRadius: 20 }}>{TIER.name} plan</span>
+          <span style={{ background: '#7C3AED15', color: '#7C3AED', fontWeight: 900, fontSize: 22, padding: '5px 14px', borderRadius: 20 }}>{seatsUsed}</span>
         </div>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 18 }}>
-          <div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, color: '#334155', marginBottom: 6 }}>
-              <span style={{ fontWeight: 600 }}>Team seats</span>
-              <span style={{ fontWeight: 700 }}>{TIER.seatsUsed} / {TIER.seatsTotal}</span>
-            </div>
-            <div style={{ height: 10, background: '#E2E8F0', borderRadius: 5, overflow: 'hidden' }}>
-              <div style={{ width: `${seatPct}%`, height: '100%', background: seatPct > 85 ? '#EF4444' : TIER.color, borderRadius: 5, transition: 'width 0.6s' }} />
-            </div>
-            <p style={{ margin: '5px 0 0', fontSize: 12, color: seatPct > 85 ? '#DC2626' : '#94A3B8' }}>{100 - seatPct}% remaining{seatPct > 85 ? ' — consider upgrading' : ''}</p>
-          </div>
-          <div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, color: '#334155', marginBottom: 6 }}>
-              <span style={{ fontWeight: 600 }}>AI audits quota</span>
-              <span style={{ fontWeight: 700 }}>{TIER.auditsUsed} / {TIER.auditsTotal}</span>
-            </div>
-            <div style={{ height: 10, background: '#E2E8F0', borderRadius: 5, overflow: 'hidden' }}>
-              <div style={{ width: `${auditPct}%`, height: '100%', background: auditPct > 85 ? '#F59E0B' : '#059669', borderRadius: 5, transition: 'width 0.6s' }} />
-            </div>
-            <p style={{ margin: '5px 0 0', fontSize: 12, color: '#94A3B8' }}>{TIER.auditsTotal - TIER.auditsUsed} audits remaining this cycle</p>
-          </div>
+        <div style={{ padding: '10px 14px', borderRadius: 10, background: '#F8FAFC', fontSize: 12, color: '#64748B' }}>
+          Plan tier, seat limits and billing renewal date will appear here once billing is connected.
         </div>
         <div style={{ marginTop: 16, display: 'flex', gap: 10 }}>
           <Link to="/pricing" style={{ padding: '9px 18px', borderRadius: 10, border: '2px solid #7C3AED', background: 'transparent', color: '#7C3AED', fontWeight: 700, fontSize: 13, textDecoration: 'none', cursor: 'pointer' }}>Upgrade plan</Link>
-          <button onClick={() => showToast('Usage report exported.', 'success')} style={{ padding: '9px 18px', borderRadius: 10, border: '1px solid #E2E8F0', background: '#fff', color: '#475569', fontWeight: 700, fontSize: 13, cursor: 'pointer' }}>Export usage CSV</button>
+          <button
+            onClick={() => {
+              downloadCsv(
+                `visa-with-ease-hr-usage-${new Date().toISOString().slice(0, 10)}.csv`,
+                ['Team', 'Members', 'Open cases'],
+                data.teams.map((team) => [team.name, team.members, team.openCases])
+              );
+              showToast('Usage report downloaded.', 'success');
+            }}
+            style={{ padding: '9px 18px', borderRadius: 10, border: '1px solid #E2E8F0', background: '#fff', color: '#475569', fontWeight: 700, fontSize: 13, cursor: 'pointer' }}
+          >Export usage CSV</button>
         </div>
       </article>
 
@@ -1542,11 +1659,19 @@ function AuditReport() {
 
 const BOOKING_SLOTS_AM = ['9:00', '9:30', '10:00', '10:30', '11:00', '11:30'];
 const BOOKING_SLOTS_PM = ['14:00', '14:30', '15:00', '15:30', '16:00', '16:30'];
-const BOOKING_TAKEN = ['10:00', '14:30', '16:00'];
-
 function Booking() {
+  const { consultantId } = useParams<{ consultantId?: string }>();
+  const { data: applicationData } = useApi<{ applications: VisaApplication[] }>('/applications', { applications: fallbackApplications });
+  const active = applicationData.applications[0] ?? fallbackApplications[0];
+  const { data: consultantData } = useApi<{ consultants: ConsultantData[] }>('/consultants', { consultants: FALLBACK_CONSULTANTS });
+  const consultant = consultantData.consultants.find(c => c.id === consultantId) ?? consultantData.consultants[0] ?? FALLBACK_CONSULTANTS[0];
+  const { data: slotData } = useApi<{ slots: string[]; takenSlots: string[] }>(
+    `/booking/slots/${encodeURIComponent(consultant.id)}`, { slots: [...BOOKING_SLOTS_AM, ...BOOKING_SLOTS_PM], takenSlots: [] }
+  );
+  const initials = consultant.name.split(' ').map(p => p[0]).join('');
   const [selected, setSelected] = useState('deep-dive');
-  const [selectedDay, setSelectedDay] = useState(8);
+  const now = new Date();
+  const [selectedDay, setSelectedDay] = useState(now.getDate());
   const [selectedSlot, setSelectedSlot] = useState('11:00');
   const [share, setShare] = useState({ requirements: true, audit_findings: true, documents: false, ai_messages: false, contact: false });
   const [bookingStatus, setBookingStatus] = useState<string | null>(null);
@@ -1559,32 +1684,39 @@ function Booking() {
     { id: 'emergency', label: 'Emergency review', durationMinutes: 60, priceUsd: 149, description: 'Fast-track triage — travel within 7 days.', recommended: false },
   ];
   const selectedOption = options.find(o => o.id === selected) ?? options[1];
-  const today = 7;
-  const days = Array.from({ length: 31 }, (_, i) => i + 1);
+  const today = now.getDate();
+  const monthLabel = now.toLocaleString('en-US', { month: 'long', year: 'numeric' });
+  const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+  const days = Array.from({ length: daysInMonth }, (_, i) => i + 1);
   const weekdays = ['Mo','Tu','We','Th','Fr','Sa','Su'];
+  const selectedDate = new Date(now.getFullYear(), now.getMonth(), selectedDay);
+  const selectedDateLabel = selectedDate.toLocaleString('en-US', { month: 'short', day: 'numeric' });
 
   async function confirmBooking() {
     setBookingError(null);
     setBookingStatus('Creating booking…');
     try {
+      const [hh, mm] = selectedSlot.split(':').map(Number);
+      const slotISO = new Date(now.getFullYear(), now.getMonth(), selectedDay, hh, mm).toISOString();
       const booking = await postJson<{ bookingId: string; calendlyUrl: string }>('/bookings', {
-        consultantId: 'c-amelia', applicationId: 'app-fr-2026', sessionType: selected,
-        slotISO: new Date(`2026-07-${selectedDay}T${selectedSlot}:00+04:00`).toISOString()
+        consultantId: consultant.id, applicationId: active.id, sessionType: selected, slotISO
       });
       const categories = Object.entries(share).filter(([,e]) => e).map(([k]) => k);
-      await postJson('/access-grants', { applicationId: 'app-fr-2026', consultantId: 'c-amelia', categories, expiresAt: new Date(Date.now() + 7 * 86400000).toISOString() });
-      setBookingStatus(`Confirmed! Booking ${booking.bookingId} · Jul ${selectedDay} at ${selectedSlot} GST`);
-      showToast('Booking confirmed! Amelia will be in touch.', 'success');
+      await postJson('/access-grants', { applicationId: active.id, consultantId: consultant.id, categories, expiresAt: new Date(Date.now() + 7 * 86400000).toISOString() });
+      setBookingStatus(`Confirmed! Booking ${booking.bookingId} · ${selectedDateLabel} at ${selectedSlot} GST`);
+      showToast(`Booking confirmed! ${consultant.name} will be in touch.`, 'success');
       setStep('done');
     } catch (err) {
-      setBookingError('Booking created in demo mode · Backend keys not configured');
-      showToast('Demo booking captured — real payment requires backend keys.', 'info');
-      setStep('done');
+      // Show the real failure — a booking that didn't actually happen must
+      // not be presented as a successful "demo booking."
+      const message = err instanceof Error ? err.message : 'Booking failed';
+      setBookingError(`Booking failed: ${message}`);
+      showToast('Could not create the booking. Please try again.', 'error');
     }
   }
 
   const SlotBtn = ({ t }: { t: string }) => {
-    const taken = BOOKING_TAKEN.includes(t);
+    const taken = slotData.takenSlots.includes(t);
     const sel = selectedSlot === t && !taken;
     return (
       <button onClick={() => !taken && setSelectedSlot(t)} disabled={taken}
@@ -1600,7 +1732,7 @@ function Booking() {
           <CheckCircle2 size={36} color="#fff" />
         </div>
         <h1 style={{ margin: 0 }}>Booking requested</h1>
-        <p style={{ color: '#64748B', lineHeight: 1.6 }}>Amelia Roche receives only your consent-approved summary. You can revoke access at any time from Settings → Privacy.</p>
+        <p style={{ color: '#64748B', lineHeight: 1.6 }}>{consultant.name} receives only your consent-approved summary. You can revoke access at any time from Settings → Privacy.</p>
         {bookingStatus && <div className="action-status">{bookingStatus}</div>}
         <Link className="primary-button" to="/app">Back to dashboard</Link>
       </div>
@@ -1612,7 +1744,7 @@ function Booking() {
       <div className="booking-hero">
         <span className="eyebrow">VIP service</span>
         <h1>Book a verified visa consultant</h1>
-        <p>Pre-filtered for your France Schengen application. Context shared only after your consent.</p>
+        <p>Pre-filtered for your {active.destinationCountry} {active.visaType} application. Context shared only after your consent.</p>
       </div>
       <div style={{ display: 'flex', gap: 8, marginBottom: 24 }}>
         {['session','slot','consent'].map((s, i) => (
@@ -1627,18 +1759,18 @@ function Booking() {
       <div className="booking-grid">
         <article className="consultant-card featured">
           <div style={{ position: 'relative', display: 'inline-block' }}>
-            <div className="consultant-avatar" style={{ background: 'linear-gradient(135deg,#0B1F4B,#1A56DB)', color: '#fff' }}>AR</div>
+            <div className="consultant-avatar" style={{ background: 'linear-gradient(135deg,#0B1F4B,#1A56DB)', color: '#fff' }}>{initials}</div>
             <div style={{ position: 'absolute', bottom: -2, right: -2, width: 18, height: 18, borderRadius: 9, background: '#1A56DB', display: 'flex', alignItems: 'center', justifyContent: 'center', border: '2px solid #fff' }}><ShieldCheck size={10} color="#fff" /></div>
           </div>
-          <h3>Amelia Roche</h3>
-          <p style={{ fontSize: 13, color: '#64748B' }}>Schengen tourist & family visit · English, French</p>
-          <StarRow rating={4.9} reviews={186} />
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 6, padding: '4px 10px', borderRadius: 20, background: '#D1FAE5', alignSelf: 'flex-start' }}>
-            <div style={{ width: 6, height: 6, borderRadius: 3, background: '#10B981' }} />
-            <span style={{ fontSize: 12, fontWeight: 700, color: '#065F46' }}>Available today 7:30 PM</span>
+          <h3>{consultant.name}</h3>
+          <p style={{ fontSize: 13, color: '#64748B' }}>{consultant.specialty} · {consultant.languages.join(', ')}</p>
+          <StarRow rating={consultant.rating} reviews={consultant.reviews} />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 6, padding: '4px 10px', borderRadius: 20, background: consultant.availableToday ? '#D1FAE5' : '#F1F5F9', alignSelf: 'flex-start' }}>
+            <div style={{ width: 6, height: 6, borderRadius: 3, background: consultant.availableToday ? '#10B981' : '#94A3B8' }} />
+            <span style={{ fontSize: 12, fontWeight: 700, color: consultant.availableToday ? '#065F46' : '#475569' }}>{consultant.availableToday ? 'Available today' : consultant.responseTime + ' response'}</span>
           </div>
           <div style={{ marginTop: 10, padding: 12, borderRadius: 10, background: '#F8FAFC', fontSize: 12, color: '#475569', lineHeight: 1.5 }}>
-            97% success rate · Former French consulate reviewer · &lt;1h response
+            {consultant.successRate ? `${consultant.successRate} success rate · ` : ''}{consultant.bio ?? consultant.specialty}
           </div>
         </article>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -1666,7 +1798,7 @@ function Booking() {
           {step === 'slot' && (
             <>
               <article className="panel">
-                <h2>Pick a time — July 2026</h2>
+                <h2>Pick a time — {monthLabel}</h2>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7,1fr)', gap: 4, marginTop: 12, marginBottom: 16 }}>
                   {weekdays.map(d => <div key={d} style={{ textAlign: 'center', fontSize: 11, fontWeight: 700, color: '#94A3B8', padding: '4px 0' }}>{d}</div>)}
                   {days.map(d => {
@@ -1688,7 +1820,7 @@ function Booking() {
                 </div>
                 <div style={{ marginTop: 14, padding: '10px 14px', borderRadius: 10, background: '#EFF6FF', fontSize: 13, fontWeight: 700, color: '#1547C0' }}>
                   <CalendarClock size={15} style={{ display: 'inline', marginRight: 6 }} />
-                  Selected: Jul {selectedDay} · {selectedSlot} GST · {selectedOption.durationMinutes} min
+                  Selected: {selectedDateLabel} · {selectedSlot} GST · {selectedOption.durationMinutes} min
                 </div>
               </article>
               <div style={{ display: 'flex', gap: 10 }}>
@@ -1701,7 +1833,7 @@ function Booking() {
             <>
               <article className="panel" id="consent">
                 <h2>Choose what to share</h2>
-                <p style={{ fontSize: 13, color: '#64748B', marginTop: 4 }}>Amelia Roche will only see the categories you select. You can revoke access anytime.</p>
+                <p style={{ fontSize: 13, color: '#64748B', marginTop: 4 }}>{consultant.name} will only see the categories you select. You can revoke access anytime.</p>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginTop: 16 }}>
                   {[['requirements','Requirements snapshot','Official checklist match for your visa context'],['audit_findings','Audit findings','Document scores and AI findings (not raw files)'],['documents','Original documents','Encrypted files — off by default'],['ai_messages','Chat history','Selected AI conversation messages'],['contact','Contact details','Your email and phone number']].map(([k,label,desc]) => (
                     <label key={k} style={{ display: 'flex', gap: 14, alignItems: 'flex-start', padding: '12px 14px', borderRadius: 10, border: '1px solid #F1F5F9', cursor: 'pointer', background: share[k as keyof typeof share] ? '#EFF6FF' : '#fff' }}>
@@ -1730,9 +1862,30 @@ function Booking() {
   );
 }
 
+interface NotificationPrefs { audit: boolean; requirements: boolean; booking: boolean; message: boolean }
+const DEFAULT_NOTIFICATION_PREFS: NotificationPrefs = { audit: true, requirements: true, booking: true, message: false };
+
 function SettingsPage() {
   const [theme, setTheme] = useState<'system' | 'light' | 'dark'>('system');
-  const [notifs, setNotifs] = useState({ audit: true, requirements: true, booking: true, message: false });
+  const { data: profileData } = useApi<{ profile: { notificationPrefs?: NotificationPrefs } }>('/profile', { profile: {} });
+  const [notifs, setNotifs] = useState<NotificationPrefs>(DEFAULT_NOTIFICATION_PREFS);
+  const [savingNotifs, setSavingNotifs] = useState(false);
+  useEffect(() => {
+    if (profileData.profile.notificationPrefs) setNotifs(profileData.profile.notificationPrefs);
+  }, [profileData]);
+  async function toggleNotif(key: keyof NotificationPrefs) {
+    const next = { ...notifs, [key]: !notifs[key] };
+    setNotifs(next);
+    setSavingNotifs(true);
+    try {
+      await postJson('/profile', { notificationPrefs: next }, 'PUT');
+    } catch (err) {
+      setNotifs(notifs);
+      showToast(err instanceof Error ? err.message : 'Could not save notification preferences', 'error');
+    } finally {
+      setSavingNotifs(false);
+    }
+  }
   const [deleteInput, setDeleteInput] = useState('');
 
   useEffect(() => {
@@ -1745,7 +1898,7 @@ function SettingsPage() {
   const Toggle = ({ on, onChange, label }: { on: boolean; onChange: () => void; label: string }) => (
     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 0', borderBottom: '1px solid #F1F5F9' }}>
       <span style={{ fontSize: 13, color: '#334155' }}>{label}</span>
-      <button onClick={onChange}
+      <button onClick={onChange} role="switch" aria-checked={on} aria-label={label}
         style={{ width: 44, height: 24, borderRadius: 12, border: 'none', cursor: 'pointer', position: 'relative', background: on ? '#1A56DB' : '#E2E8F0', transition: 'background 0.2s' }}>
         <div style={{ position: 'absolute', top: 2, left: on ? 22 : 2, width: 20, height: 20, borderRadius: 10, background: '#fff', transition: 'left 0.2s', boxShadow: '0 1px 3px rgba(0,0,0,0.2)' }} />
       </button>
@@ -1768,11 +1921,11 @@ function SettingsPage() {
           <p style={{ marginTop: 10, fontSize: 12, color: '#94A3B8' }}>System follows your OS setting. Change takes effect immediately.</p>
         </article>
         <article className="settings-card">
-          <h3>Notifications</h3>
-          <Toggle on={notifs.audit}         onChange={() => setNotifs(n => ({ ...n, audit: !n.audit }))}         label="Audit complete" />
-          <Toggle on={notifs.requirements}  onChange={() => setNotifs(n => ({ ...n, requirements: !n.requirements }))} label="Requirements updated" />
-          <Toggle on={notifs.booking}       onChange={() => setNotifs(n => ({ ...n, booking: !n.booking }))}       label="Booking reminder" />
-          <Toggle on={notifs.message}       onChange={() => setNotifs(n => ({ ...n, message: !n.message }))}       label="Consultant message" />
+          <h3>Notifications{savingNotifs ? ' · saving…' : ''}</h3>
+          <Toggle on={notifs.audit}         onChange={() => toggleNotif('audit')}         label="Audit complete" />
+          <Toggle on={notifs.requirements}  onChange={() => toggleNotif('requirements')}  label="Requirements updated" />
+          <Toggle on={notifs.booking}       onChange={() => toggleNotif('booking')}       label="Booking reminder" />
+          <Toggle on={notifs.message}       onChange={() => toggleNotif('message')}       label="Consultant message" />
         </article>
         <SettingsCard title="Biometric sign-in" body="Android fingerprint setup via Expo Local Authentication. Ready for native build wiring." />
         <article className="settings-card danger">
@@ -1800,12 +1953,12 @@ function SettingsPage() {
   );
 }
 
-function SettingsCard({ title, body, danger }: { title: string; body: string; danger?: boolean }) {
+function SettingsCard({ title, body, danger, actionLabel, to }: { title: string; body: string; danger?: boolean; actionLabel?: string; to?: string }) {
   return (
     <article className={`settings-card ${danger ? 'danger' : ''}`}>
       <h3>{title}</h3>
       <p>{body}</p>
-      <Link to={danger ? '/settings#privacy' : '/settings#preferences'}>{danger ? 'Review deletion flow' : 'Configure'}</Link>
+      {to && <Link to={to}>{actionLabel ?? 'Configure'}</Link>}
     </article>
   );
 }
@@ -1826,6 +1979,8 @@ function useApi<T>(path: string, fallback: T) {
   const [data, setData] = useState<T>(fallback);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [refreshKey, setRefreshKey] = useState(0);
+  const refetch = useCallback(() => setRefreshKey((k) => k + 1), []);
 
   const url = useMemo(() => `${API_BASE_URL}${path}`, [path]);
 
@@ -1839,7 +1994,10 @@ function useApi<T>(path: string, fallback: T) {
       })()
     })
       .then((response) => {
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        // 401 is an expected shape for public/pre-login views — don't treat
+        // it as a backend failure worth surfacing to the user.
+        if (!response.ok && response.status !== 401) throw new Error(`HTTP ${response.status}`);
+        if (!response.ok) throw new Error('UNAUTHORIZED');
         return response.json() as Promise<T>;
       })
       .then((payload) => {
@@ -1849,7 +2007,15 @@ function useApi<T>(path: string, fallback: T) {
         }
       })
       .catch((err: unknown) => {
-        if (alive) setError(err instanceof Error ? err.message : 'API unavailable');
+        if (!alive) return;
+        const message = err instanceof Error ? err.message : 'API unavailable';
+        setError(message);
+        // Surfacing this centrally means every page using this hook gets
+        // honest error feedback instead of silently showing fallback/demo
+        // data that looks indistinguishable from the user's real account.
+        if (message !== 'UNAUTHORIZED') {
+          showToast("Couldn't load the latest data — showing cached content instead.", 'error');
+        }
       })
       .finally(() => {
         if (alive) setLoading(false);
@@ -1857,15 +2023,15 @@ function useApi<T>(path: string, fallback: T) {
     return () => {
       alive = false;
     };
-  }, [url]);
+  }, [url, refreshKey]);
 
-  return { data, loading, error };
+  return { data, loading, error, refetch };
 }
 
-async function postJson<T>(path: string, body: unknown): Promise<T> {
+async function postJson<T>(path: string, body: unknown, method: 'POST' | 'PUT' | 'DELETE' = 'POST'): Promise<T> {
   const token = getStoredToken() ?? undefined;
   const response = await fetch(`${API_BASE_URL}${path}`, {
-    method: 'POST',
+    method,
     headers: {
       'content-type': 'application/json',
       ...(token ? { authorization: `Bearer ${token}` } : {})
@@ -2704,23 +2870,33 @@ function Referrals() {
 }
 
 // ─── Admin User Management ────────────────────────────────────────────────────
-const ADMIN_USERS = [
-  { name: 'Sarah Mathew',    email: 'sarah@example.com',   plan: 'Free',  apps: 2, country: 'IN→AE', ltv: '$0',   lastActive: '12m ago',  status: 'active' },
-  { name: 'Adeel Khan',      email: 'adeel@example.com',   plan: 'Pro',   apps: 4, country: 'PK→AE', ltv: '$89',  lastActive: '2h ago',   status: 'active' },
-  { name: 'Elena Rossi',     email: 'elena@example.com',   plan: 'Pro',   apps: 1, country: 'IT→IT', ltv: '$149', lastActive: 'Yesterday', status: 'active' },
-  { name: 'Mira Nair',       email: 'mira@example.com',    plan: 'Free',  apps: 1, country: 'IN→AE', ltv: '$0',   lastActive: '3d ago',   status: 'active' },
-  { name: 'James Okafor',    email: 'james@example.com',   plan: 'Pro',   apps: 3, country: 'NG→UK', ltv: '$268', lastActive: '1w ago',   status: 'suspended' },
-  { name: 'Priya Sharma',    email: 'priya@example.com',   plan: 'Agent', apps: 0, country: 'IN→FR', ltv: '$2.8k',lastActive: '5m ago',   status: 'active' },
-];
-const ADMIN_SEGMENTS = ['All','Free','Pro','Agent','Active today','Suspended'];
+interface AdminUser { uid: string; name: string; email: string; roles: string[]; status: 'active' | 'suspended'; createdAt: string }
+const ADMIN_SEGMENTS = ['All', 'Active', 'Suspended'];
 
 function AdminUsers() {
+  const { data, loading, refetch } = useApi<{ users: AdminUser[]; total: number }>('/admin/users', { users: [], total: 0 });
   const [segment, setSegment] = useState('All');
   const [query, setQuery] = useState('');
-  const filtered = ADMIN_USERS.filter(u =>
-    (segment === 'All' || u.plan === segment || (segment === 'Suspended' && u.status === 'suspended') || (segment === 'Active today' && ['12m ago','2h ago','5m ago'].includes(u.lastActive))) &&
+  const [pending, setPending] = useState<string | null>(null);
+  const users = data.users;
+  const filtered = users.filter(u =>
+    (segment === 'All' || (segment === 'Active' && u.status === 'active') || (segment === 'Suspended' && u.status === 'suspended')) &&
     (!query || u.name.toLowerCase().includes(query.toLowerCase()) || u.email.toLowerCase().includes(query.toLowerCase()))
   );
+
+  async function toggleStatus(uid: string, name: string, currentStatus: string) {
+    const action = currentStatus === 'active' ? 'suspend' : 'restore';
+    setPending(uid);
+    try {
+      await postJson(`/admin/users/${uid}/${action}`, {});
+      showToast(`${action === 'suspend' ? 'Suspended' : 'Restored'} ${name}`, 'success');
+      refetch();
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : `Failed to ${action} ${name}`, 'error');
+    } finally {
+      setPending(null);
+    }
+  }
 
   return (
     <section className="page">
@@ -2734,32 +2910,30 @@ function AdminUsers() {
         <Search size={16} color="#94A3B8" />
         <input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search by name or email…" style={{ border: 'none', outline: 'none', flex: 1, fontSize: 14, background: 'transparent' }} />
       </div>
+      {loading ? <Skeleton h={200} /> : (
       <article className="panel" style={{ overflow: 'auto', padding: 0 }}>
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
           <thead>
             <tr style={{ borderBottom: '2px solid #F1F5F9' }}>
-              {['User','Plan','Apps','Country','LTV','Last active','Status','Actions'].map(h => (
+              {['User','Roles','Joined','Status','Actions'].map(h => (
                 <th key={h} style={{ padding: '12px 16px', textAlign: 'left', fontWeight: 700, color: '#64748B', fontSize: 12, whiteSpace: 'nowrap' }}>{h}</th>
               ))}
             </tr>
           </thead>
           <tbody>
             {filtered.map((u, i) => (
-              <tr key={u.email} style={{ borderBottom: '1px solid #F8FAFC', background: i % 2 === 0 ? '#fff' : '#FAFAFA' }}>
+              <tr key={u.uid} style={{ borderBottom: '1px solid #F8FAFC', background: i % 2 === 0 ? '#fff' : '#FAFAFA' }}>
                 <td style={{ padding: '12px 16px' }}>
                   <div style={{ fontWeight: 700, color: '#0F172A' }}>{u.name}</div>
                   <div style={{ fontSize: 11, color: '#94A3B8' }}>{u.email}</div>
                 </td>
-                <td style={{ padding: '12px 16px' }}><span style={{ padding: '3px 10px', borderRadius: 20, background: u.plan === 'Pro' ? '#EDE9FE' : u.plan === 'Agent' ? '#EFF6FF' : '#F1F5F9', color: u.plan === 'Pro' ? '#6D28D9' : u.plan === 'Agent' ? '#1547C0' : '#64748B', fontWeight: 700, fontSize: 11 }}>{u.plan}</span></td>
-                <td style={{ padding: '12px 16px', color: '#475569' }}>{u.apps}</td>
-                <td style={{ padding: '12px 16px', color: '#475569', fontFamily: 'monospace', fontSize: 12 }}>{u.country}</td>
-                <td style={{ padding: '12px 16px', fontWeight: 700, color: '#0F172A' }}>{u.ltv}</td>
-                <td style={{ padding: '12px 16px', color: '#64748B', fontSize: 12 }}>{u.lastActive}</td>
+                <td style={{ padding: '12px 16px', color: '#475569', fontSize: 12 }}>{u.roles.join(', ')}</td>
+                <td style={{ padding: '12px 16px', color: '#64748B', fontSize: 12 }}>{new Date(u.createdAt).toLocaleDateString()}</td>
                 <td style={{ padding: '12px 16px' }}><span style={{ padding: '3px 10px', borderRadius: 20, background: u.status === 'active' ? '#D1FAE5' : '#FEF2F2', color: u.status === 'active' ? '#065F46' : '#991B1B', fontWeight: 700, fontSize: 11 }}>{u.status}</span></td>
                 <td style={{ padding: '12px 16px' }}>
                   <div style={{ display: 'flex', gap: 6 }}>
-                    <button onClick={() => showToast(`Viewing ${u.name}'s account`, 'info')} style={{ padding: '4px 10px', borderRadius: 6, border: '1px solid #E2E8F0', background: '#fff', fontSize: 11, cursor: 'pointer', fontWeight: 600 }}>View</button>
-                    <button onClick={() => showToast(`${u.status === 'active' ? 'Suspended' : 'Restored'} ${u.name}`, 'info')} style={{ padding: '4px 10px', borderRadius: 6, border: '1px solid #E2E8F0', background: '#fff', fontSize: 11, cursor: 'pointer', fontWeight: 600 }}>{u.status === 'active' ? 'Suspend' : 'Restore'}</button>
+                    <button onClick={() => showToast(`${u.name} · ${u.email} · roles: ${u.roles.join(', ')} · joined ${new Date(u.createdAt).toLocaleDateString()}`, 'info')} style={{ padding: '4px 10px', borderRadius: 6, border: '1px solid #E2E8F0', background: '#fff', fontSize: 11, cursor: 'pointer', fontWeight: 600 }}>Details</button>
+                    <button onClick={() => toggleStatus(u.uid, u.name, u.status)} disabled={pending === u.uid} style={{ padding: '4px 10px', borderRadius: 6, border: '1px solid #E2E8F0', background: '#fff', fontSize: 11, cursor: pending === u.uid ? 'default' : 'pointer', fontWeight: 600, opacity: pending === u.uid ? 0.6 : 1 }}>{pending === u.uid ? 'Working…' : u.status === 'active' ? 'Suspend' : 'Restore'}</button>
                   </div>
                 </td>
               </tr>
@@ -2768,7 +2942,8 @@ function AdminUsers() {
         </table>
         {filtered.length === 0 && <p style={{ color: '#94A3B8', textAlign: 'center', padding: 32 }}>No users match the current filter</p>}
       </article>
-      <p style={{ fontSize: 12, color: '#94A3B8', marginTop: 8 }}>Showing {filtered.length} of {ADMIN_USERS.length} users · Admin actions are logged to the audit trail.</p>
+      )}
+      <p style={{ fontSize: 12, color: '#94A3B8', marginTop: 8 }}>Showing {filtered.length} of {users.length} users · Admin actions are logged to the audit trail.</p>
     </section>
   );
 }
@@ -2784,7 +2959,7 @@ function CookieBanner() {
       <div style={{ flex: 1, minWidth: 280 }}>
         <strong style={{ fontSize: 14, color: '#0F172A' }}>We use cookies</strong>
         <p style={{ margin: '4px 0 0', fontSize: 13, color: '#64748B', lineHeight: 1.5 }}>
-          Visa With Ease uses essential cookies for session management and analytics cookies to improve the product. No personal data is shared with third parties. See our <a href="#" style={{ color: '#1A56DB' }}>Privacy Policy</a>.
+          Visa With Ease uses essential cookies for session management and analytics cookies to improve the product. No personal data is shared with third parties. See our <a href="/privacy" style={{ color: '#1A56DB' }}>Privacy Policy</a>.
         </p>
       </div>
       <div style={{ display: 'flex', gap: 10, flexShrink: 0 }}>
@@ -2820,22 +2995,23 @@ function CardSkeleton() {
 }
 
 // ─── Audit Log ────────────────────────────────────────────────────────────────
-const AUDIT_LOG_ENTRIES = [
-  { id: 'al-001', actor: 'Sarah Mathew',   action: 'Uploaded document',      target: 'Passport bio page',   time: '2026-06-07 14:32', ip: '185.42.x.x', risk: 'low'    },
-  { id: 'al-002', actor: 'Admin',          action: 'Viewed user account',     target: 'sarah@example.com',   time: '2026-06-07 13:14', ip: '10.0.0.1',   risk: 'low'    },
-  { id: 'al-003', actor: 'Amelia Roche',   action: 'Accessed audit findings', target: 'app-fr-2026',         time: '2026-06-07 12:08', ip: '92.11.x.x',  risk: 'medium' },
-  { id: 'al-004', actor: 'Sarah Mathew',   action: 'Revoked access grant',    target: 'con-omar',            time: '2026-06-07 10:55', ip: '185.42.x.x', risk: 'low'    },
-  { id: 'al-005', actor: 'Admin',          action: 'Suspended user account',  target: 'james@example.com',   time: '2026-06-06 17:22', ip: '10.0.0.1',   risk: 'high'   },
-  { id: 'al-006', actor: 'Sarah Mathew',   action: 'Requested data deletion', target: 'sarah@example.com',   time: '2026-06-06 16:00', ip: '185.42.x.x', risk: 'medium' },
-  { id: 'al-007', actor: 'Priya Nair',     action: 'Profile updated',         target: 'con-priya',           time: '2026-06-06 11:30', ip: '203.5.x.x',  risk: 'low'    },
-  { id: 'al-008', actor: 'System',         action: 'Document auto-deleted',   target: 'doc-expired-2026',    time: '2026-06-06 00:00', ip: 'system',     risk: 'low'    },
-];
 const RISK_COLORS = { low: { bg: '#D1FAE5', text: '#065F46' }, medium: { bg: '#FEF3C7', text: '#92400E' }, high: { bg: '#FEF2F2', text: '#991B1B' } };
+const HIGH_RISK_ACTIONS = ['SUSPEND_USER', 'DELETE', 'RESTORE_USER'];
+const MEDIUM_RISK_ACTIONS = ['DATA_DELETION', 'PROFILE_UPDATE'];
+function riskForAction(action: string): 'low' | 'medium' | 'high' {
+  if (HIGH_RISK_ACTIONS.some(a => action.includes(a))) return 'high';
+  if (MEDIUM_RISK_ACTIONS.some(a => action.includes(a))) return 'medium';
+  return 'low';
+}
+
+interface AuditLogEntry { id: string; actor: string; action: string; resource: string; at: string; ip: string }
 
 function AuditLog() {
+  const { data } = useApi<{ entries: AuditLogEntry[]; total: number }>('/admin/audit-log', { entries: [], total: 0 });
   const [query, setQuery] = useState('');
   const [riskFilter, setRiskFilter] = useState('all');
-  const filtered = AUDIT_LOG_ENTRIES.filter(e =>
+  const entries = data.entries.map(e => ({ ...e, target: e.resource, time: new Date(e.at).toLocaleString(), risk: riskForAction(e.action) }));
+  const filtered = entries.filter(e =>
     (riskFilter === 'all' || e.risk === riskFilter) &&
     (!query || e.actor.toLowerCase().includes(query.toLowerCase()) || e.action.toLowerCase().includes(query.toLowerCase()) || e.target.toLowerCase().includes(query.toLowerCase()))
   );
@@ -2878,7 +3054,7 @@ function AuditLog() {
         </table>
         {filtered.length === 0 && <p style={{ color: '#94A3B8', textAlign: 'center', padding: 32 }}>No entries match filter</p>}
       </article>
-      <p style={{ fontSize: 12, color: '#94A3B8', marginTop: 8 }}>Showing {filtered.length} of {AUDIT_LOG_ENTRIES.length} entries · Log is append-only and cannot be modified.</p>
+      <p style={{ fontSize: 12, color: '#94A3B8', marginTop: 8 }}>Showing {filtered.length} of {entries.length} entries · Log is append-only and cannot be modified.</p>
     </section>
   );
 }
@@ -2940,7 +3116,7 @@ function PricingPage() {
           <h3 style={{ margin: '0 0 6px', color: '#0F172A' }}>Need help choosing?</h3>
           <p style={{ margin: 0, color: '#64748B', fontSize: 13, lineHeight: 1.6 }}>Our team can walk you through the right plan for your use case — HR mobility, consultant agency, or government integration.</p>
         </div>
-        <button onClick={() => showToast('Sales team will contact you within 24h.', 'success')} style={{ padding: '12px 24px', borderRadius: 12, border: 'none', background: '#0B1F4B', color: '#fff', fontWeight: 700, fontSize: 14, cursor: 'pointer', whiteSpace: 'nowrap' }}>Talk to sales</button>
+        <button onClick={() => showToast('Sales contact form is coming soon.', 'info')} style={{ padding: '12px 24px', borderRadius: 12, border: 'none', background: '#0B1F4B', color: '#fff', fontWeight: 700, fontSize: 14, cursor: 'pointer', whiteSpace: 'nowrap' }}>Talk to sales</button>
       </div>
     </section>
   );
@@ -2990,16 +3166,9 @@ function ApiPortal() {
     updatedAt: string;
   }>('/usage', { period: '', apiCalls: { used: 3841, limit: 5000 }, auditsRun: 127, avgLatencyMs: 480, errorRate: 0.3, webhookDeliveries: 0, updatedAt: '' });
   const [lang, setLang] = useState<'curl' | 'js' | 'python'>('curl');
-  const [copied, setCopied] = useState(false);
   const [webhookUrl, setWebhookUrl] = useState('https://yourapp.com/webhooks/visawithease');
   const [webhooks, setWebhooks] = useState(WEBHOOK_EVENTS);
-  const MASKED_KEY = 'viq_live_sk_•••••••••••••••••••••••';
-
-  function copyKey() {
-    navigator.clipboard?.writeText(MASKED_KEY);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  }
+  const { data: configuredWebhooks, refetch: refetchWebhooks } = useApi<{ webhooks: Array<{ id: string; url: string; events: string[]; createdAt: string }> }>('/webhooks', { webhooks: [] });
 
   function copySnippet() {
     navigator.clipboard?.writeText(API_SNIPPETS[lang]);
@@ -3014,10 +3183,10 @@ function ApiPortal() {
       <article className="panel">
         <h2 style={{ marginBottom: 14 }}>API Key</h2>
         <div style={{ display: 'flex', gap: 10, alignItems: 'center', background: '#F8FAFC', borderRadius: 10, padding: '12px 16px', border: '1px solid #E2E8F0' }}>
-          <code style={{ flex: 1, fontSize: 13, fontFamily: 'monospace', color: '#334155', letterSpacing: 0.5 }}>{MASKED_KEY}</code>
-          <button onClick={copyKey} style={{ border: 'none', background: 'none', cursor: 'pointer', color: copied ? '#059669' : '#64748B', display: 'flex', gap: 6, alignItems: 'center', fontSize: 12, fontWeight: 700 }}><Copy size={14} />{copied ? 'Copied!' : 'Copy'}</button>
+          <code style={{ flex: 1, fontSize: 13, fontFamily: 'monospace', color: '#94A3B8' }}>No key issued yet</code>
+          <button onClick={() => showToast('API key issuance is coming soon.', 'info')} style={{ border: 'none', background: 'none', cursor: 'pointer', color: '#64748B', display: 'flex', gap: 6, alignItems: 'center', fontSize: 12, fontWeight: 700 }}><Copy size={14} />Generate key</button>
         </div>
-        <p style={{ margin: '10px 0 0', fontSize: 12, color: '#94A3B8' }}>This key carries full read/write access. Rotate it immediately if compromised.</p>
+        <p style={{ margin: '10px 0 0', fontSize: 12, color: '#94A3B8' }}>API key issuance and rotation are coming soon — the endpoints below require a real bearer token in the meantime.</p>
       </article>
 
       {/* Usage Stats */}
@@ -3068,7 +3237,23 @@ function ApiPortal() {
         <h2 style={{ marginBottom: 14 }}>Webhooks</h2>
         <div style={{ display: 'flex', gap: 10, marginBottom: 16 }}>
           <input value={webhookUrl} onChange={e => setWebhookUrl(e.target.value)} style={{ flex: 1, padding: '10px 14px', borderRadius: 10, border: '1.5px solid #E2E8F0', fontSize: 13, fontFamily: 'monospace', outline: 'none' }} placeholder="https://yourapp.com/webhooks/visawithease" />
-          <button onClick={() => showToast('Webhook endpoint saved.', 'success')} style={{ padding: '10px 18px', borderRadius: 10, border: 'none', background: '#0B1F4B', color: '#fff', fontWeight: 700, fontSize: 13, cursor: 'pointer' }}>Save</button>
+          <button
+            onClick={async () => {
+              if (!webhookUrl.startsWith('https://')) {
+                showToast('Webhook URL must start with https://', 'error');
+                return;
+              }
+              try {
+                const activeEvents = webhooks.filter((w) => w.active).map((w) => w.event);
+                await postJson('/webhooks', { url: webhookUrl, events: activeEvents });
+                showToast('Webhook endpoint saved.', 'success');
+                refetchWebhooks();
+              } catch (err) {
+                showToast(err instanceof Error ? err.message : 'Could not save webhook.', 'error');
+              }
+            }}
+            style={{ padding: '10px 18px', borderRadius: 10, border: 'none', background: '#0B1F4B', color: '#fff', fontWeight: 700, fontSize: 13, cursor: 'pointer' }}
+          >Save</button>
         </div>
         <div className="cards-list compact">
           {webhooks.map(wh => (
@@ -3083,6 +3268,17 @@ function ApiPortal() {
             </div>
           ))}
         </div>
+        {configuredWebhooks.webhooks.length > 0 && (
+          <div style={{ marginTop: 18, paddingTop: 14, borderTop: '1px solid #F1F5F9' }}>
+            <h3 style={{ margin: '0 0 10px', fontSize: 13, fontWeight: 700, color: '#334155' }}>Configured endpoints</h3>
+            {configuredWebhooks.webhooks.map(wh => (
+              <div key={wh.id} style={{ padding: '8px 0', borderBottom: '1px solid #F8FAFC', fontSize: 12 }}>
+                <div style={{ fontFamily: 'monospace', color: '#0F172A' }}>{wh.url}</div>
+                <div style={{ color: '#94A3B8', marginTop: 2 }}>{wh.events.join(', ')} · added {new Date(wh.createdAt).toLocaleDateString()}</div>
+              </div>
+            ))}
+          </div>
+        )}
       </article>
     </section>
   );
@@ -3160,7 +3356,7 @@ function EcosystemPartners() {
               <Star size={14} color={category.color} />
               <span style={{ color: category.color, fontWeight: 700, fontSize: 13 }}>{partner.discount}</span>
             </div>
-            <button onClick={() => showToast(`Redirecting to ${partner.name} — discount applied automatically.`, 'success')} style={{ padding: '11px 0', borderRadius: 10, border: `2px solid ${category.color}`, background: 'transparent', color: category.color, fontWeight: 700, fontSize: 13, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
+            <button onClick={() => showToast(`${partner.name} partner links are coming soon.`, 'info')} style={{ padding: '11px 0', borderRadius: 10, border: `2px solid ${category.color}`, background: 'transparent', color: category.color, fontWeight: 700, fontSize: 13, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
               <ExternalLink size={14} /> Claim offer
             </button>
           </article>
@@ -3409,7 +3605,7 @@ function InvestorDemo() {
           <p style={{ margin: 0, color: '#64748B', fontSize: 13, lineHeight: 1.6 }}>We are raising $750K pre-seed to accelerate the compliance database, grow the consultant network, and launch enterprise HR integrations across the GCC.</p>
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          <button onClick={() => showToast('Investor deck sent to your email!', 'success')} style={{ padding: '13px 28px', borderRadius: 12, border: 'none', background: '#0B1F4B', color: '#fff', fontWeight: 700, fontSize: 14, cursor: 'pointer' }}>Request investor deck</button>
+          <button onClick={() => showToast('Investor deck requests are coming soon.', 'info')} style={{ padding: '13px 28px', borderRadius: 12, border: 'none', background: '#0B1F4B', color: '#fff', fontWeight: 700, fontSize: 14, cursor: 'pointer' }}>Request investor deck</button>
           <button onClick={() => showToast('Meeting request sent — our team will respond within 24h.', 'info')} style={{ padding: '13px 28px', borderRadius: 12, border: '2px solid #0B1F4B', background: 'transparent', color: '#0B1F4B', fontWeight: 700, fontSize: 14, cursor: 'pointer' }}>Schedule a meeting</button>
         </div>
       </div>

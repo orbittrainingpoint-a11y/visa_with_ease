@@ -150,6 +150,32 @@ test.describe('Applications', () => {
   });
 });
 
+// ─── Onboarding ───────────────────────────────────────────────────────────────
+
+test.describe('Onboarding', () => {
+  test.beforeEach(async ({ page }) => {
+    await loginAsDemo(page, 'consumer');
+  });
+
+  test('nationality and residence are real inputs, not fixed demo text', async ({ page }) => {
+    await page.goto('/onboarding');
+    await page.getByPlaceholder(/e\.g\. india/i).fill('Philippines');
+    await page.getByPlaceholder(/e\.g\. united arab emirates/i).fill('Qatar');
+    await expect(page.getByText('Philippines', { exact: false })).toBeVisible();
+    await expect(page.getByText('Qatar', { exact: false })).toBeVisible();
+    await expect(page.getByText('India', { exact: true })).toHaveCount(0);
+  });
+
+  test('creating an application from onboarding persists nationality and residence', async ({ page }) => {
+    await page.goto('/onboarding');
+    await page.getByPlaceholder(/e\.g\. india/i).fill('Nigeria');
+    await page.getByPlaceholder(/e\.g\. united arab emirates/i).fill('South Africa');
+    await page.getByRole('button', { name: /create application/i }).click();
+    await expect(page).toHaveURL(/\/applications\//, { timeout: 15_000 });
+    await assertNoUndefined(page);
+  });
+});
+
 // ─── Requirements ─────────────────────────────────────────────────────────────
 
 test.describe('Requirements', () => {

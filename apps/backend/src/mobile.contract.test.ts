@@ -9,6 +9,8 @@
 // Must be set before importing the app so signToken/verifyIdToken use real JWTs
 process.env.RATE_LIMIT_DISABLED = 'true';
 process.env.JWT_SECRET = 'contract-test-secret-do-not-use-in-production';
+process.env.FIRESTORE_DISABLED = 'true';
+process.env.ENABLE_DEMO_LOGIN = 'true';
 
 import assert from 'node:assert/strict';
 import type { AddressInfo } from 'node:net';
@@ -154,22 +156,45 @@ test('Mobile: document list — returns typed documents with deterministic score
 
 test('Mobile: upload slot — returns URL for document upload', async () => {
   const token = await getToken('consumer');
+  const create = await api('POST', '/applications', {
+    destinationCountry: 'France', visaType: 'Tourist', intendedFrom: '2026-09-01', purpose: 'Vacation'
+  }, token);
+  const applicationId = create.body.application.id;
   const r = await api('POST', '/upload-slots', {
-    applicationId: 'app-test', documentId: 'doc-passport'
+    applicationId, documentId: 'doc-passport'
   }, token);
   assert.equal(r.status, 201);
   assert.ok(r.body.uploadUrl, 'uploadUrl present');
   assert.ok(Date.parse(r.body.expiresAt) > Date.now(), 'expiresAt in future');
 });
 
+test('Mobile: upload slot — 404 for an application the caller does not own', async () => {
+  const token = await getToken('consumer');
+  const r = await api('POST', '/upload-slots', {
+    applicationId: 'someone-elses-app', documentId: 'doc-passport'
+  }, token);
+  assert.equal(r.status, 404);
+});
+
 test('Mobile: audit enqueue — accepts and returns job', async () => {
   const token = await getToken('consumer');
+  const create = await api('POST', '/applications', {
+    destinationCountry: 'France', visaType: 'Tourist', intendedFrom: '2026-09-01', purpose: 'Vacation'
+  }, token);
   const r = await api('POST', '/audit', {
-    applicationId: 'app-fr-2026', documentId: 'doc-passport'
+    applicationId: create.body.application.id, documentId: 'doc-passport-audit-test'
   }, token);
   assert.equal(r.status, 202);
   assert.ok(r.body.jobId, 'jobId present');
   assert.ok(r.body.result?.documentId, 'result.documentId present');
+});
+
+test('Mobile: audit enqueue — 404 for an application the caller does not own', async () => {
+  const token = await getToken('consumer');
+  const r = await api('POST', '/audit', {
+    applicationId: 'someone-elses-app', documentId: 'doc-not-owned-audit'
+  }, token);
+  assert.equal(r.status, 404);
 });
 
 test('Mobile: audit result fetch — returns audit with score', async () => {

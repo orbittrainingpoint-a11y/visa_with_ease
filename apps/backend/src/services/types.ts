@@ -26,7 +26,7 @@ export interface AuthService {
 export interface ApplicationRepository {
   listApplications(userId?: string): Promise<VisaApplication[]>;
   getApplication(id: string, userId?: string): Promise<VisaApplication | null>;
-  createApplication(input: { destinationCountry: string; visaType: string; intendedFrom: string; applicantName: string; purpose?: string }, userId?: string): Promise<VisaApplication>;
+  createApplication(input: { destinationCountry: string; visaType: string; intendedFrom: string; applicantName: string; purpose?: string; nationality?: string; residenceCountry?: string }, userId?: string): Promise<VisaApplication>;
 }
 
 export interface StorageService {
@@ -94,6 +94,9 @@ export interface UserProfile {
     country: string; purpose: string; year: number;
     visaGranted: boolean; duration: string;
   }>;
+  notificationPrefs?: {
+    audit: boolean; requirements: boolean; booking: boolean; message: boolean;
+  };
   updatedAt: string;
 }
 

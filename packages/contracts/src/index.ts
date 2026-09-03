@@ -63,7 +63,9 @@ export const applicationSchema = z.object({
   documentsUploaded: z.number(),
   documentsRequired: z.number(),
   issuesCount: z.number(),
-  intendedFrom: z.string()
+  intendedFrom: z.string(),
+  nationality: z.string().optional(),
+  residenceCountry: z.string().optional()
 });
 
 export const chatResponseSchema = z.object({

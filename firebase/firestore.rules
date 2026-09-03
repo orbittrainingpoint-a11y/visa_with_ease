@@ -1,5 +1,13 @@
 rules_version = '2';
 
+// NOTE: The backend (apps/backend) talks to Firestore exclusively via the
+// Admin SDK, which bypasses these rules entirely — today's real access
+// control is the Express middleware (requireAuth/requireRole + per-route
+// ownership checks), not this file. These rules exist as defense-in-depth
+// for the day a client ever reads Firestore directly (e.g. a real-time
+// listener), and are kept accurate to the collections the backend actually
+// writes (see apps/backend/src/services/*.ts) so they aren't misleading.
+
 service cloud.firestore {
   match /databases/{database}/documents {
     function isSignedIn() {
@@ -17,10 +25,16 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    match /audits/{documentId} {
-      allow read: if ownsApplication(resource.data.applicationId);
-      allow create, update: if ownsApplication(request.resource.data.applicationId);
-      allow delete: if false;
+    match /auditResults/{documentId} {
+      // Ownership of an auditResults doc is tracked indirectly via
+      // auditOwners (documentId -> applicationId), not a field on the
+      // document itself — direct client reads aren't part of today's
+      // architecture, so this stays closed until that's designed for real.
+      allow read, write: if false;
+    }
+
+    match /auditOwners/{documentId} {
+      allow read, write: if false;
     }
 
     match /requirementsCache/{cacheKey} {
@@ -38,9 +52,44 @@ service cloud.firestore {
       allow update, delete: if false;
     }
 
-    match /notifications/{notificationId} {
+    match /notificationLog/{messageId} {
       allow read: if isSignedIn() && resource.data.userId == request.auth.uid;
       allow write: if false;
+    }
+
+    match /notificationReads/{uid} {
+      allow read, write: if isSignedIn() && uid == request.auth.uid;
+    }
+
+    match /uploadSlots/{slotId} {
+      allow read, write: if false;
+    }
+
+    match /profiles/{uid} {
+      allow read, write: if isSignedIn() && uid == request.auth.uid;
+    }
+
+    match /users/{email} {
+      // Keyed by lowercased email, not uid — contains password hashes.
+      // Never exposed to clients; admin-only via the backend Admin SDK.
+      allow read, write: if false;
+    }
+
+    match /otps/{email} {
+      allow read, write: if false;
+    }
+
+    match /twoFactor/{uid} {
+      allow read, write: if false;
+    }
+
+    match /webhooks/{webhookId} {
+      allow read, write: if false;
+    }
+
+    match /auditLog/{entryId} {
+      // Platform-admin audit trail — backend-only, never client-readable.
+      allow read, write: if false;
     }
   }
 }

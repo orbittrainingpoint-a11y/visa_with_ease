@@ -31,6 +31,8 @@ export default defineConfig({
         CORS_ORIGINS: 'http://localhost:5174,http://127.0.0.1:5174',
         AI_MOCK: 'true',
         RATE_LIMIT_DISABLED: 'true',
+        FIRESTORE_DISABLED: 'true',
+        ENABLE_DEMO_LOGIN: 'true',
       },
     },
     {

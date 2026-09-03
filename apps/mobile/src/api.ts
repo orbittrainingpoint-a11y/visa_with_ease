@@ -63,6 +63,8 @@ export interface ApiApplication {
   documentsRequired: number;
   issuesCount: number;
   intendedFrom: string;
+  nationality?: string;
+  residenceCountry?: string;
 }
 export function fetchApplications() {
   return request<{ applications: ApiApplication[] }>('GET', '/applications');
@@ -77,6 +79,8 @@ export function createApplication(body: {
   intendedTo?: string;
   applicantName?: string;
   purpose?: string;
+  nationality?: string;
+  residenceCountry?: string;
 }) {
   return request<{ application: ApiApplication }>('POST', '/applications', body);
 }
@@ -150,6 +154,16 @@ export function createBooking(body: {
   return request<ApiBooking>('POST', '/bookings', body);
 }
 
+// ── Access grants ────────────────────────────────────────────────────────────
+export function createAccessGrant(body: {
+  applicationId: string;
+  consultantId: string;
+  categories: string[];
+  expiresAt: string;
+}) {
+  return request<{ grantId: string; status: string }>('POST', '/access-grants', body);
+}
+
 // ── Chat ──────────────────────────────────────────────────────────────────────
 export interface ChatReply {
   reply: string;
@@ -161,14 +175,22 @@ export function sendChatMessage(message: string, applicationId?: string) {
 }
 
 // ── Document audit ────────────────────────────────────────────────────────────
+export interface ApiAuditResult {
+  documentId: string;
+  documentType: string;
+  score: number;
+  status: 'excellent' | 'attention_needed' | 'issues_to_fix';
+  findings: Array<{ id: string; severity: 'pass' | 'info' | 'warn' | 'red_flag'; title: string; description: string; confidence: number }>;
+  generatedAt: string;
+}
 export function createUploadSlot(body: { applicationId: string; documentId: string }) {
   return request<{ uploadUrl: string; expiresAt: string }>('POST', '/upload-slots', body);
 }
 export function enqueueAudit(body: { applicationId: string; documentId: string }) {
-  return request<{ jobId: string; status: string }>('POST', '/audit', body);
+  return request<{ jobId: string; status: string; result: ApiAuditResult }>('POST', '/audit', body);
 }
 export function fetchAuditResult(docId: string) {
-  return request<unknown>('GET', `/audit/${docId}`);
+  return request<ApiAuditResult>('GET', `/audit/${docId}`);
 }
 export function unlockReport(docId: string, paymentToken?: string) {
   return request<{ unlocked: boolean }>('POST', `/reports/${docId}/unlock`, { paymentToken });
@@ -226,9 +248,9 @@ export interface UserProfile {
   uid: string;
   personal?: { firstName: string; lastName: string; nationality: string; dateOfBirth: string; phone: string; gender: string };
   passport?: { passportNumber: string; issueDate: string; expiryDate: string; issuingCountry: string };
-  employment?: { employer: string; jobTitle: string; annualIncomeUsd: string };
-  financials?: { statementsCount: number };
-  travelHistory?: { tripsCount: number; hasRejection: boolean };
+  employment?: { employer: string; jobTitle: string; annualIncomeUsd: string; resumeUploaded?: boolean; resumeFileName?: string };
+  financials?: { statements: { label: string; score: number }[] };
+  travelHistory?: { trips: { country: string; years: string; status: string }[]; hasRejection: boolean };
   contacts?: { emergencyName: string; emergencyPhone: string; emergencyRelation: string };
   updatedAt: string;
 }
@@ -246,6 +268,10 @@ export function forgotPassword(email: string) {
 
 export function verifyEmailOtp(email: string, code: string) {
   return request<{ ok: boolean; token?: string }>('POST', '/auth/verify-email', { email, code });
+}
+
+export function sendVerificationEmail(email: string) {
+  return request<{ ok: boolean; devCode?: string }>('POST', '/auth/send-verification-email', { email });
 }
 
 // ── Two-factor authentication ──────────────────────────────────────────────────

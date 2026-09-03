@@ -43,8 +43,11 @@ function currentRequirements() {
   };
 }
 
-export function createMockServices(): Services {
-  const auth: AuthService = {
+// The real session-token verifier — shared by every backend, mock or Firestore.
+// Sessions are always our own signed JWTs (see app.ts's signToken); which
+// database backs applications/profile/etc. is a separate concern.
+export function createJwtAuthService(): AuthService {
+  return {
     async verifyIdToken(token) {
       if (!token) return null;
       const secret = process.env.JWT_SECRET;
@@ -60,6 +63,10 @@ export function createMockServices(): Services {
     },
     health: () => 'mock'
   };
+}
+
+export function createMockServices(): Services {
+  const auth: AuthService = createJwtAuthService();
 
   // Per-user application store: uid -> VisaApplication[]
   const userAppStore = new Map<string, typeof applications>();
@@ -86,7 +93,11 @@ export function createMockServices(): Services {
     France: '🇫🇷', 'United Kingdom': '🇬🇧', 'United States': '🇺🇸',
     Canada: '🇨🇦', Australia: '🇦🇺', Japan: '🇯🇵', Germany: '🇩🇪',
     Netherlands: '🇳🇱', Spain: '🇪🇸', Italy: '🇮🇹', UAE: '🇦🇪',
-    India: '🇮🇳', Singapore: '🇸🇬', 'New Zealand': '🇳🇿'
+    'United Arab Emirates': '🇦🇪', India: '🇮🇳', Singapore: '🇸🇬',
+    'New Zealand': '🇳🇿', Turkey: '🇹🇷', China: '🇨🇳', Thailand: '🇹🇭',
+    Malaysia: '🇲🇾', 'Sri Lanka': '🇱🇰', 'South Korea': '🇰🇷',
+    'Saudi Arabia': '🇸🇦', Bahrain: '🇧🇭', Oman: '🇴🇲', Kenya: '🇰🇪',
+    'South Africa': '🇿🇦', Brazil: '🇧🇷'
   };
 
   const applicationRepo: ApplicationRepository = {
@@ -119,7 +130,9 @@ export function createMockServices(): Services {
         documentsUploaded: 0,
         documentsRequired: 6,
         issuesCount: 0,
-        intendedFrom: input.intendedFrom
+        intendedFrom: input.intendedFrom,
+        ...(input.nationality ? { nationality: input.nationality } : {}),
+        ...(input.residenceCountry ? { residenceCountry: input.residenceCountry } : {})
       };
       list.push(newApp);
       userAppStore.set(uid, list);

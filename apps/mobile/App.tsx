@@ -6,10 +6,11 @@ import {
   fetchConsultants as apiFetchConsultants,
   fetchSessionOptions as apiFetchSessionOptions,
   createBooking as apiCreateBooking,
-  unlockReport,
+  createAccessGrant as apiCreateAccessGrant,
   fetchNotifications, markNotificationRead, fetchDocuments, fetchAuditResult, fetchExchangeRates,
+  createUploadSlot, enqueueAudit,
   fetchProfile, updateProfile,
-  forgotPassword, verifyEmailOtp, fetchBookingSlots,
+  forgotPassword, verifyEmailOtp, sendVerificationEmail, fetchBookingSlots, fetchVisaWaiver,
   fetch2faStatus, send2faCode, verify2faCode, disable2fa, deleteAccount,
   type AuthUser, type AuthSession, type UserProfile,
   type ApiApplication, type ApiConsultant, type ApiSessionOption, type ApiBooking,
@@ -43,6 +44,15 @@ const NAV_BAR_H = Platform.OS === 'android' ? Math.max(0, _SH - _WH) : 34;
 // Total bottom nav height including OS navigation bar
 const BOTTOM_NAV_H = 58 + NAV_BAR_H;
 
+// ─── Safe external-link opener ────────────────────────────────────────────────
+// Linking.openURL rejects if no app can handle the URL (no dialer, no email
+// client, etc.) — always handle that instead of leaving an unhandled rejection.
+function openUrlSafely(url: string) {
+  Linking.openURL(url).catch(() => {
+    Alert.alert('Could not open link', "No app is available to handle this on your device.");
+  });
+}
+
 // ─── Visa topic guard — prevents off-topic AI calls ──────────────────────────
 const VISA_RE = /visa|passport|embassy|consulate|schengen|immigrat|travel doc|residency|permit|arrival card|departure|customs|biometric|interview|overstay|appeal|rejection|refusal|bank statement|financial proof|insurance|invitation letter|sponsor|flight reserv|hotel reserv|itinerary|notarize|apostille|noc |no objection|salary certif|employment letter|work permit|study permit|student visa|tourist visa|business visa|transit visa|family visit|entry ban|blacklist|vfs|ika|appointment/i;
 const OFF_TOPIC_RE = /recipe|cook|music|song|movie|film|weather|sports|cricket|football|game|programming|code|math|physics|history|politics|religion|relationship|joke|poem|story|novel|stock|invest|crypto|bitcoin|diet|workout|fitness/i;
@@ -61,13 +71,6 @@ const tabs = [
   { id: 'docs',    label: 'Docs',    icon: 'folder'              as IoniconName, iconOff: 'folder-outline'              as IoniconName },
   { id: 'chat',    label: 'Chat',    icon: 'chatbubble-ellipses' as IoniconName, iconOff: 'chatbubble-ellipses-outline' as IoniconName },
   { id: 'profile', label: 'Profile', icon: 'person'              as IoniconName, iconOff: 'person-outline'              as IoniconName },
-] as const;
-
-const onboardingSteps = [
-  { key: 'nationality', title: 'Nationality', body: 'Your passport country changes visa rules, fees and document checks.', value: 'India' },
-  { key: 'residence', title: 'Residence', body: 'Visa With Ease uses your application jurisdiction to find the correct submission route.', value: 'United Arab Emirates' },
-  { key: 'destination', title: 'Destination', body: 'Pick the country and travel dates for the next journey.', value: 'France, Jul 18-27' },
-  { key: 'purpose', title: 'Visa type', body: 'Choose the category so requirements stay scoped and source-backed.', value: 'Schengen Tourist' }
 ] as const;
 
 type TabId = (typeof tabs)[number]['id'];
@@ -103,7 +106,7 @@ type Route =
   | { name: 'consultant'; id: string }
   | { name: 'booking'; consultantId: string; optionId?: string }
   | { name: 'calendarPicker'; consultantId: string; optionId: string }
-  | { name: 'consent'; consultantId: string; optionId: string }
+  | { name: 'consent'; consultantId: string; optionId: string; slotISO?: string }
   | { name: 'confirmation'; consultantId: string }
   | { name: 'notifications' }
   | { name: 'search' }
@@ -128,7 +131,7 @@ function normalizeApp(a: ApiApplication) {
     status: STATUS_LABEL[a.status] ?? a.status,
     statusColor: STATUS_COLOR[a.status] ?? '#64748B',
     intendedTo: a.intendedFrom,
-    jurisdiction: 'Your residence country',
+    jurisdiction: a.residenceCountry ?? 'Not specified',
     fee: '—',
     processingDays: '—',
     purpose: a.visaType,
@@ -192,14 +195,13 @@ export default function App() {
   const [notificationList, setNotificationList] = useState<ApiNotification[]>([]);
   const [documentList, setDocumentList] = useState<ApiDocument[]>([]);
   const [auditData, setAuditData] = useState<Record<string, any>>({});
+  // Carries which document is being uploaded from the picker step through to
+  // the final API call — set when the user picks a file, read when the audit
+  // actually gets enqueued a couple of screens later.
+  const [pendingDocumentId, setPendingDocumentId] = useState('doc-passport');
   const [exchangeRates, setExchangeRates] = useState<Record<string, number>>({
     USD: 1, EUR: 0.924, GBP: 0.793, AED: 3.673, CAD: 1.364, AUD: 1.529, JPY: 157.2,
     SGD: 1.342, INR: 83.5, SAR: 3.751, QAR: 3.640, CHF: 0.899, NZD: 1.634,
-  });
-
-  // Onboarding collected values
-  const [onboardingValues, setOnboardingValues] = useState({
-    nationality: '', residence: '', destination: '', travelDates: '', visaType: ''
   });
 
   // New application form
@@ -228,6 +230,26 @@ export default function App() {
       setLoadAppsError(e?.message ?? 'Failed to load applications. Please try again.');
     }
     finally { setLoadingApps(false); }
+  };
+
+  // Sends a freshly authenticated user to the real "create your first
+  // application" flow only if they don't have one yet — returning users with
+  // existing applications land straight on the dashboard instead of being
+  // routed through onboarding on every login.
+  const routeAfterAuth = async () => {
+    setLoadingApps(true);
+    setLoadAppsError('');
+    try {
+      const { applications } = await fetchApplications();
+      setAppList(applications.map(normalizeApp));
+      setRoute(applications.length === 0 ? { name: 'onboarding', step: 0 } : { name: 'tabs', tab: 'home' });
+    } catch (e: any) {
+      setLoadAppsError(e?.message ?? 'Failed to load applications. Please try again.');
+      setRoute({ name: 'tabs', tab: 'home' });
+    } finally {
+      setLoadingApps(false);
+    }
+    void Promise.all([loadConsultants(), loadSessionOpts(), loadNotifications(), loadExchangeRates()]);
   };
 
   const loadConsultants = async () => {
@@ -289,6 +311,8 @@ export default function App() {
         visaType: visaLabel,
         intendedFrom,
         applicantName: authUser?.name ?? 'Applicant',
+        nationality: newAppNationality.trim() || undefined,
+        residenceCountry: newAppResidence.trim() || undefined,
       });
       const normalized = normalizeApp(application);
       setAppList(prev => [normalized, ...prev]);
@@ -305,10 +329,16 @@ export default function App() {
     }
   };
 
-  const handleConfirmBooking = async (consultantId: string, optionId: string) => {
+  const handleConfirmBooking = async (consultantId: string, optionId: string, slotISO?: string, categories: string[] = []) => {
     const appId = appList[0]?.id ?? `app-${Date.now()}`;
     try {
-      const booking = await apiCreateBooking({ consultantId, applicationId: appId, sessionType: optionId });
+      const booking = await apiCreateBooking({ consultantId, applicationId: appId, sessionType: optionId, slotISO });
+      if (categories.length > 0) {
+        await apiCreateAccessGrant({
+          applicationId: appId, consultantId, categories,
+          expiresAt: new Date(Date.now() + 7 * 86400000).toISOString()
+        });
+      }
       setLastBooking(booking);
       setRoute({ name: 'confirmation', consultantId });
     } catch (err) {
@@ -324,9 +354,7 @@ export default function App() {
       const session = await apiLogin(authEmail, authPassword);
       setToken(session.token);
       setAuthUser(session.user);
-      // Load real data immediately after login (fire-and-forget — errors shown in UI)
-      void Promise.all([loadApplications(), loadConsultants(), loadSessionOpts(), loadNotifications(), loadExchangeRates()]);
-      setRoute({ name: 'onboarding', step: 0 });
+      await routeAfterAuth();
     } catch (e: any) {
       setLoginError(e?.message ?? 'Login failed. Check your connection.');
     } finally {
@@ -342,8 +370,7 @@ export default function App() {
       const session = await apiDemoLogin(persona);
       setToken(session.token);
       setAuthUser(session.user);
-      void Promise.all([loadApplications(), loadConsultants(), loadSessionOpts(), loadNotifications(), loadExchangeRates()]);
-      setRoute({ name: 'onboarding', step: 0 });
+      await routeAfterAuth();
     } catch (e: any) {
       setLoginError(e?.message ?? 'Demo login failed. Is the backend running?');
     } finally {
@@ -363,8 +390,7 @@ export default function App() {
       const session = await apiGoogleLogin(idToken);
       setToken(session.token);
       setAuthUser(session.user);
-      void Promise.all([loadApplications(), loadConsultants(), loadSessionOpts(), loadNotifications(), loadExchangeRates()]);
-      setRoute({ name: 'onboarding', step: 0 });
+      await routeAfterAuth();
     } catch (e: any) {
       if (e?.code === statusCodes.SIGN_IN_CANCELLED) return;
       if (e?.code === statusCodes.IN_PROGRESS) return;
@@ -405,13 +431,18 @@ export default function App() {
         <CameraScreen
           docType={route.docType}
           back={() => setRoute({ name: 'upload', state: 'select' })}
-          onCapture={() => setRoute({ name: 'liveAnalysis', docTitle: route.docType })}
+          onCapture={() => { setPendingDocumentId(`doc-passport-${Date.now()}`); setRoute({ name: 'liveAnalysis', docTitle: route.docType }); }}
         />
       )}
       {route.name === 'liveAnalysis' && (
         <LiveAnalysisScreen
           docTitle={route.docTitle}
-          onDone={() => setRoute({ name: 'auditReport', docId: 'doc-passport' })}
+          documentId={pendingDocumentId}
+          applicationId={appList[0]?.id}
+          onDone={(result) => {
+            setAuditData(prev => ({ ...prev, [pendingDocumentId]: result }));
+            setRoute({ name: 'auditReport', docId: pendingDocumentId });
+          }}
         />
       )}
       {!['camera','liveAnalysis'].includes(route.name) && route.name !== 'welcome' && route.name !== 'onboarding' && route.name !== 'splash' && route.name !== 'register' && route.name !== 'verify' && route.name !== 'forgotPassword' && (
@@ -448,10 +479,30 @@ export default function App() {
           <ForgotPasswordScreen back={() => setRoute({ name: 'welcome' })} />
         )}
         {route.name === 'onboarding' && (
-          <OnboardingScreen
+          <NewApplicationScreen
             step={route.step}
-            back={() => route.step === 0 ? setRoute({ name: 'welcome' }) : setRoute({ name: 'onboarding', step: route.step - 1 })}
-            next={() => route.step === onboardingSteps.length - 1 ? goHome() : setRoute({ name: 'onboarding', step: route.step + 1 })}
+            visaTypeId={newAppVisaType}
+            setVisaTypeId={setNewAppVisaType}
+            nationality={newAppNationality}
+            setNationality={setNewAppNationality}
+            residence={newAppResidence}
+            setResidence={setNewAppResidence}
+            destination={newAppDestination}
+            setDestination={setNewAppDestination}
+            travelFrom={newAppTravelFrom}
+            setTravelFrom={setNewAppTravelFrom}
+            creating={newAppCreating}
+            createError={createAppError}
+            backLabel={route.step === 0 ? 'Skip for now' : 'Back'}
+            back={() => { setCreateAppError(''); route.step === 0 ? goHome() : setRoute({ name: 'onboarding', step: route.step - 1 }); }}
+            next={() => {
+              if (route.step < 3) {
+                setCreateAppError('');
+                setRoute({ name: 'onboarding', step: route.step + 1 });
+              } else {
+                handleCreateApplication();
+              }
+            }}
           />
         )}
         {route.name === 'tabs' && route.tab === 'home' && (
@@ -562,11 +613,14 @@ export default function App() {
         {route.name === 'upload' && (
           <UploadScreen
             state={route.state}
+            activeApplicationId={appList[0]?.id}
+            openNewApplication={() => setRoute({ name: 'newApp', step: 0 })}
             back={() => setRoute({ name: 'tabs', tab: 'docs' })}
-            onCamera={() => setRoute({ name: 'camera', docType: 'Passport bio page' })}
-            next={() => {
+            onCamera={() => setRoute({ name: 'camera', docType: 'Document' })}
+            next={(documentId) => {
+              if (documentId) setPendingDocumentId(documentId);
               const nextState = route.state === 'select' ? 'uploading' : route.state === 'uploading' ? 'auditing' : 'done';
-              setRoute(nextState === 'done' ? { name: 'liveAnalysis', docTitle: 'Passport bio page' } : { name: 'upload', state: nextState });
+              setRoute(nextState === 'done' ? { name: 'liveAnalysis', docTitle: 'Document' } : { name: 'upload', state: nextState });
             }}
           />
         )}
@@ -622,7 +676,7 @@ export default function App() {
           <CalendarPickerScreen
             consultantId={route.consultantId}
             back={() => setRoute({ name: 'booking', consultantId: route.consultantId, optionId: route.optionId })}
-            confirm={() => setRoute({ name: 'consent', consultantId: route.consultantId, optionId: route.optionId })}
+            confirm={(slotISO) => setRoute({ name: 'consent', consultantId: route.consultantId, optionId: route.optionId, slotISO })}
           />
         )}
         {route.name === 'consent' && (
@@ -630,7 +684,7 @@ export default function App() {
             consultantId={route.consultantId}
             optionId={route.optionId}
             back={() => openBooking(route.consultantId, route.optionId)}
-            confirm={handleConfirmBooking}
+            confirm={(consultantId, optionId, categories) => handleConfirmBooking(consultantId, optionId, route.slotISO, categories)}
           />
         )}
         {route.name === 'confirmation' && (
@@ -674,7 +728,7 @@ export default function App() {
         {route.name === 'visaCalculator' && <VisaCalculatorScreen back={goHome} />}
         {route.name === 'bankBalance' && <BankBalanceScreen back={goHome} />}
         {route.name === 'embassyFinder' && <EmbassyFinderScreen back={goHome} />}
-        {route.name === 'timelineTracker' && <TimelineTrackerScreen back={goHome} openUpload={() => setRoute({ name: 'upload', state: 'select' })} />}
+        {route.name === 'timelineTracker' && <TimelineTrackerScreen back={goHome} openUpload={() => setRoute({ name: 'upload', state: 'select' })} intendedFrom={appList[0]?.intendedFrom} />}
         {route.name === 'countryComparison' && <CountryComparisonScreen back={goHome} />}
         {route.name === 'profileHub' && <ProfileHubScreen back={() => setRoute({ name: 'tabs', tab: 'profile' })} authUser={authUser} />}
         {route.name === 'visaWaiver' && <VisaWaiverScreen back={goHome} />}
@@ -687,7 +741,8 @@ export default function App() {
               setToken(session.token);
               setAuthUser(session.user);
               void Promise.all([loadApplications(), loadConsultants(), loadSessionOpts(), loadNotifications(), loadExchangeRates()]);
-              setRoute({ name: 'onboarding', step: 0 });
+              void sendVerificationEmail(session.user.email);
+              setRoute({ name: 'verify', email: session.user.email });
             }}
           />
         )}
@@ -816,7 +871,10 @@ function WelcomeScreen({
             </View>
           </View>
           <Text style={{ color: colors.slate300, fontSize: 10, textAlign: 'center', marginTop: 14, lineHeight: 16 }}>
-            By continuing you agree to our <Text style={{ color: colors.royal600 }}>Terms</Text> & <Text style={{ color: colors.royal600 }}>Privacy Policy</Text>
+            By continuing you agree to our{' '}
+            <Text style={{ color: colors.royal600 }} onPress={() => Alert.alert('Terms of Service', 'Our Terms of Service are being finalized and will be published before launch. Contact support@visawithease.app with any questions.')}>Terms</Text>
+            {' & '}
+            <Text style={{ color: colors.royal600 }} onPress={() => Alert.alert('Privacy Policy', 'Our Privacy Policy is being finalized and will be published before launch. Contact support@visawithease.app with any questions about your data.')}>Privacy Policy</Text>
           </Text>
         </View>
       </View>
@@ -901,24 +959,6 @@ function ForgotPasswordScreen({ back }: { back: () => void }) {
   );
 }
 
-function OnboardingScreen({ step, back, next }: { step: number; back: () => void; next: () => void }) {
-  const current = onboardingSteps[step];
-  return (
-    <View>
-      <BackButton label="Welcome" onPress={back} />
-      <Text style={styles.eyebrow}>Step {step + 1} of {onboardingSteps.length}</Text>
-      <Text style={styles.title}>{current.title}</Text>
-      <Text style={styles.bodyText}>{current.body}</Text>
-      <View style={styles.selectorCard}>
-        <Text style={styles.selectorValue}>{current.value}</Text>
-      </View>
-      <ProgressDots count={onboardingSteps.length} active={step} />
-      <Pressable style={styles.primaryButton} onPress={next}>
-        <Text style={styles.primaryButtonText}>{step === onboardingSteps.length - 1 ? 'Create dashboard' : 'Continue'}</Text>
-      </Pressable>
-    </View>
-  );
-}
 
 function DashboardScreen({ appList, loadingApps, loadAppsError, userName, openApplication, openUpload, openAnalysis, openRequirements, openChat, openConsultants, openCalculator, newApplication, retryLoad }: {
   appList: ReturnType<typeof normalizeApp>[];
@@ -1109,17 +1149,29 @@ function ApplicationDetailScreen({ id, appList, tab, setTab, back, upload, openA
         <ScoreRing value={app.readinessScore} large subLabel={app.status} />
       </View>
       <Segmented tabs={['overview', 'documents', 'requirements', 'chat']} active={tab} onPress={(value) => setTab(value as DetailTab)} />
-      {tab === 'overview' && (
-        <Section title="Readiness overview">
-          <TaskRow title="Profile and passport checked" meta="Identity fields are consistent across documents." done />
-          <TaskRow title="Two requirements missing" meta="Insurance and itinerary still need upload." />
-          <Pressable style={styles.primaryButton} onPress={openAnalysis}><Text style={styles.primaryButtonText}>Open visa analysis</Text></Pressable>
-          <Pressable style={styles.goldButton} onPress={openBooking}><Text style={styles.primaryButtonText}>Get expert help</Text></Pressable>
-        </Section>
-      )}
+      {tab === 'overview' && (() => {
+        const missingDocs = documents.filter((d) => d.status === 'Missing');
+        return (
+          <Section title="Readiness overview">
+            {documents.length > 0 && (
+              <TaskRow title="Passport uploaded" meta="Identity document is on file for this application." done={documents.some((d) => d.type === 'Passport' && d.status !== 'Missing')} />
+            )}
+            {missingDocs.length > 0 ? (
+              <TaskRow
+                title={`${missingDocs.length} document${missingDocs.length === 1 ? '' : 's'} missing`}
+                meta={`${missingDocs.map((d) => d.title).slice(0, 2).join(' and ')}${missingDocs.length > 2 ? `, and ${missingDocs.length - 2} more` : ''} still need upload.`}
+              />
+            ) : documents.length > 0 ? (
+              <TaskRow title="All documents uploaded" meta="No missing documents for this application." done />
+            ) : null}
+            <Pressable style={styles.primaryButton} onPress={openAnalysis}><Text style={styles.primaryButtonText}>Open visa analysis</Text></Pressable>
+            <Pressable style={styles.goldButton} onPress={openBooking}><Text style={styles.primaryButtonText}>Get expert help</Text></Pressable>
+          </Section>
+        );
+      })()}
       {tab === 'documents' && <DocumentList upload={upload} openAudit={openAudit} grid documents={documents} />}
       {tab === 'requirements' && <RequirementList documents={documents} />}
-      {tab === 'chat' && <MiniChat openBooking={openBooking} />}
+      {tab === 'chat' && <MiniChat openBooking={openBooking} documents={documents} />}
     </View>
   );
 }
@@ -1159,7 +1211,7 @@ const VISA_TYPES = [
 
 function NewApplicationScreen({
   step, visaTypeId, setVisaTypeId, nationality, setNationality, residence, setResidence,
-  destination, setDestination, travelFrom, setTravelFrom, creating, createError, back, next,
+  destination, setDestination, travelFrom, setTravelFrom, creating, createError, back, next, backLabel,
 }: {
   step: number;
   visaTypeId: string; setVisaTypeId: (v: string) => void;
@@ -1171,6 +1223,7 @@ function NewApplicationScreen({
   createError?: string;
   back: () => void;
   next: () => void;
+  backLabel?: string;
 }) {
   const ISO_DATE_RE = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
   const travelFromValid = !travelFrom.trim() || ISO_DATE_RE.test(travelFrom.trim());
@@ -1179,7 +1232,7 @@ function NewApplicationScreen({
   if (step === 0) {
     return (
       <View>
-        <BackButton label="Applications" onPress={back} />
+        <BackButton label={backLabel ?? 'Applications'} onPress={back} />
         <Text style={styles.eyebrow}>New application · Step 1 of 4</Text>
         <Text style={styles.title}>Choose visa type</Text>
         {VISA_TYPES.map(vt => (
@@ -1209,7 +1262,7 @@ function NewApplicationScreen({
   if (step === 1) {
     return (
       <View>
-        <BackButton label="Applications" onPress={back} />
+        <BackButton label={backLabel ?? 'Applications'} onPress={back} />
         <Text style={styles.eyebrow}>New application · Step 2 of 4</Text>
         <Text style={styles.title}>Your nationality</Text>
         <Text style={styles.bodyText}>Enter the country that issued your primary passport.</Text>
@@ -1244,7 +1297,7 @@ function NewApplicationScreen({
     const defaultDest = selectedVt.dest;
     return (
       <View>
-        <BackButton label="Applications" onPress={back} />
+        <BackButton label={backLabel ?? 'Applications'} onPress={back} />
         <Text style={styles.eyebrow}>New application · Step 3 of 4</Text>
         <Text style={styles.title}>Destination</Text>
         <Text style={styles.bodyText}>Confirm the destination country for your {selectedVt.label} visa.</Text>
@@ -1269,7 +1322,7 @@ function NewApplicationScreen({
   // step === 3 — travel dates + confirm
   return (
     <View>
-      <BackButton label="Applications" onPress={back} />
+      <BackButton label={backLabel ?? 'Applications'} onPress={back} />
       <Text style={styles.eyebrow}>New application · Step 4 of 4</Text>
       <Text style={styles.title}>Travel date</Text>
       <Text style={styles.bodyText}>When do you plan to start your trip? (We use this to track your timeline.)</Text>
@@ -1399,23 +1452,50 @@ function DocumentList({ upload, openAudit, grid, documents }: { upload: () => vo
   );
 }
 
-function UploadScreen({ state, back, next, onCamera }: { state: 'select' | 'uploading' | 'auditing' | 'done'; back: () => void; next: () => void; onCamera?: () => void }) {
+function slugifyDocumentId(name: string | null | undefined): string {
+  const slug = (name ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 32);
+  return slug ? `doc-${slug}` : `doc-upload-${Date.now()}`;
+}
+
+function UploadScreen({ state, activeApplicationId, openNewApplication, back, next, onCamera }: {
+  state: 'select' | 'uploading' | 'auditing' | 'done';
+  activeApplicationId?: string;
+  openNewApplication: () => void;
+  back: () => void;
+  next: (documentId?: string) => void;
+  onCamera?: () => void;
+}) {
   const copy: Record<typeof state, [string, string]> = {
     select:    ['Select document',    'Choose how to add your document below.'],
     uploading: ['Uploading securely', 'Encrypting file and preparing OCR. Retention timer starts now.'],
     auditing:  ['AI audit in progress','Only validated findings are shown. Raw OCR is never exposed in UI.'],
     done:      ['Audit complete',     'Your report is ready to view.'],
   };
+
+  if (!activeApplicationId) {
+    return (
+      <View>
+        <BackButton label="Documents" onPress={back} />
+        <Text style={styles.eyebrow}>Document flow</Text>
+        <Text style={styles.title}>Create an application first</Text>
+        <Text style={styles.bodyText}>Documents are audited against a specific visa application, so start one before uploading.</Text>
+        <Pressable style={[styles.primaryButton, { marginTop: 16 }]} onPress={openNewApplication}>
+          <Text style={styles.primaryButtonText}>New application</Text>
+        </Pressable>
+      </View>
+    );
+  }
+
   const pickFromGallery = async () => {
     try {
       const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ImagePicker.MediaTypeOptions.Images, quality: 0.9 });
-      if (!result.canceled && result.assets?.[0]) next();
+      if (!result.canceled && result.assets?.[0]) next(slugifyDocumentId(result.assets[0].fileName));
     } catch { next(); }
   };
   const pickDocument = async () => {
     try {
       const result = await DocumentPicker.getDocumentAsync({ type: ['application/pdf', 'image/jpeg', 'image/png'], copyToCacheDirectory: false });
-      if (!result.canceled && result.assets?.[0]) next();
+      if (!result.canceled && result.assets?.[0]) next(slugifyDocumentId(result.assets[0].name));
     } catch { next(); }
   };
   const sources: [IoniconName, string, string, (() => void) | undefined][] = [
@@ -1433,7 +1513,7 @@ function UploadScreen({ state, back, next, onCamera }: { state: 'select' | 'uplo
       {state === 'select' && (
         <Section title="Add from">
           {sources.map(([icon, label, sub, onPress]) => (
-            <Pressable key={label} style={styles.taskRow} onPress={onPress ?? next}>
+            <Pressable key={label} style={styles.taskRow} onPress={onPress ?? (() => next())}>
               <View style={[styles.quickIconBox, { backgroundColor: colors.royal50, width: 40, height: 40 }]}>
                 <Ionicons name={icon} size={20} color={colors.royal600} />
               </View>
@@ -1455,7 +1535,7 @@ function UploadScreen({ state, back, next, onCamera }: { state: 'select' | 'uplo
         </View>
       )}
       {state !== 'select' && (
-        <Pressable style={styles.primaryButton} onPress={next}>
+        <Pressable style={styles.primaryButton} onPress={() => next()}>
           <Text style={styles.primaryButtonText}>{state === 'uploading' ? 'Start audit' : 'View report'}</Text>
         </Pressable>
       )}
@@ -1466,8 +1546,7 @@ function UploadScreen({ state, back, next, onCamera }: { state: 'select' | 'uplo
 const AUDIT_TIMELINE = ['File received and encrypted', 'OCR text extracted', 'Identity fields compared', 'Visa rules checked', 'Validated findings published'];
 
 function AuditReportScreen({ docId, back, openRequirements, fetchedAudit, onMount }: { docId: string; back: () => void; openRequirements: () => void; fetchedAudit?: any; onMount?: () => void }) {
-  const [unlocked, setUnlocked] = useState(false);
-  const [unlocking, setUnlocking] = useState(false);
+  const [unlocked] = useState(false);
 
   useEffect(() => { onMount?.(); }, []);
 
@@ -1480,16 +1559,8 @@ function AuditReportScreen({ docId, back, openRequirements, fetchedAudit, onMoun
   const severityColor = { pass: colors.green500, info: colors.royal600, warn: colors.gold500, redflag: '#DC2626' } as Record<string, string>;
   const criticalCount = findings.filter(f => f.severity === 'redflag' || f.severity === 'warn').length;
 
-  const handleUnlock = async () => {
-    setUnlocking(true);
-    try {
-      await unlockReport(docId);
-      setUnlocked(true);
-    } catch (err) {
-      Alert.alert('Payment failed', 'Unable to process payment. Please try again.');
-    } finally {
-      setUnlocking(false);
-    }
+  const handleUnlock = () => {
+    Alert.alert('Coming soon', 'Paid report unlock is coming soon — full findings will be available here once payment is connected.');
   };
 
   const handleSharePdf = async () => {
@@ -1570,9 +1641,9 @@ function AuditReportScreen({ docId, back, openRequirements, fetchedAudit, onMoun
             <Text style={{ color: '#fff', fontSize: 17, fontWeight: '900', textAlign: 'center' }}>Unlock Full Red-Flag Report</Text>
             <Text style={{ color: 'rgba(255,255,255,0.7)', fontSize: 13, textAlign: 'center', lineHeight: 20 }}>See all {findings.length} findings with exact page locations, field names, and step-by-step fix instructions.</Text>
             <Pressable style={{ width: '100%', backgroundColor: '#FCD34D', borderRadius: 12, paddingVertical: 14, alignItems: 'center' }} onPress={handleUnlock}>
-              {unlocking ? <ActivityIndicator color={colors.navy900} /> : <Text style={{ color: colors.navy900, fontWeight: '900', fontSize: 16 }}>Unlock for $4.99</Text>}
+              <Text style={{ color: colors.navy900, fontWeight: '900', fontSize: 16 }}>Unlock for $4.99</Text>
             </Pressable>
-            <Text style={{ color: 'rgba(255,255,255,0.45)', fontSize: 10, textAlign: 'center' }}>One-time payment · No subscription · Secure via Stripe</Text>
+            <Text style={{ color: 'rgba(255,255,255,0.45)', fontSize: 10, textAlign: 'center' }}>Paid unlock is coming soon — payment is not yet connected.</Text>
           </LinearGradient>
         </View>
       ) : (
@@ -1746,7 +1817,7 @@ function RequirementsScreen({ back, openConsultants }: { back: () => void; openC
       {sourceUrls.length > 0 && (
         <Section title="Sources">
           {sourceUrls.map((source: any) => (
-            <Pressable key={source.id} style={styles.taskRow} onPress={() => Linking.openURL(source.url)}>
+            <Pressable key={source.id} style={styles.taskRow} onPress={() => openUrlSafely(source.url)}>
               <Ionicons name="globe-outline" size={16} color={colors.royal600} />
               <View style={styles.flex}>
                 <Text style={[styles.rowTitle, { color: colors.royal600 }]}>{source.label}</Text>
@@ -1822,11 +1893,13 @@ function ChatScreen({ message, setMessage, sessionMessages, isTyping, sendMessag
           ))}
         </View>
       )}
-      <View style={styles.escalationCard}>
-        <Text style={styles.rowTitle}>Complexity detected</Text>
-        <Text style={styles.rowMeta}>Your missing insurance and itinerary affect submission risk. Share only selected context with a consultant.</Text>
-        <Pressable style={styles.goldButton} onPress={openConsultants}><Text style={styles.primaryButtonText}>Find consultant</Text></Pressable>
-      </View>
+      {activeApp && activeApp.issuesCount > 0 && (
+        <View style={styles.escalationCard}>
+          <Text style={styles.rowTitle}>Complexity detected</Text>
+          <Text style={styles.rowMeta}>{activeApp.issuesCount} open issue{activeApp.issuesCount === 1 ? '' : 's'} on your {activeApp.destinationCountry} application may affect submission risk. Share only selected context with a consultant.</Text>
+          <Pressable style={styles.goldButton} onPress={openConsultants}><Text style={styles.primaryButtonText}>Find consultant</Text></Pressable>
+        </View>
+      )}
       {/* Non-dismissible disclaimer banner — always visible */}
       <View style={[styles.disclaimer, { flexDirection: 'row', gap: 8, alignItems: 'center' }]}>
         <Ionicons name="shield-checkmark-outline" size={14} color="#92400E" />
@@ -1842,10 +1915,14 @@ function ChatScreen({ message, setMessage, sessionMessages, isTyping, sendMessag
   );
 }
 
-function MiniChat({ openBooking }: { openBooking: () => void }) {
+function MiniChat({ openBooking, documents }: { openBooking: () => void; documents: ApiDocument[] }) {
+  const missingDocs = documents.filter((d) => d.status === 'Missing');
+  const summary = missingDocs.length > 0
+    ? `${missingDocs.map((d) => d.title).slice(0, 2).join(' and ')}${missingDocs.length > 2 ? `, and ${missingDocs.length - 2} more` : ''} ${missingDocs.length === 1 ? 'is' : 'are'} the current blocker${missingDocs.length === 1 ? '' : 's'}.`
+    : 'No documents are currently blocking this application.';
   return (
     <Section title="Application chat">
-      <Finding title="AI summary" meta="Insurance and itinerary are the two current blockers." />
+      <Finding title="AI summary" meta={summary} />
       <Pressable style={styles.goldButton} onPress={openBooking}><Text style={styles.primaryButtonText}>Escalate to consultant</Text></Pressable>
     </Section>
   );
@@ -2017,18 +2094,26 @@ function BookingScreen({ consultantId, consultantList, sessionOpts, onMount, sel
   );
 }
 
+const CONSENT_ITEMS = [
+  { label: 'Contact details', category: 'contact' },
+  { label: 'Requirements snapshot', category: 'requirements' },
+  { label: 'Audit summary', category: 'audit_findings' },
+  { label: 'Selected chat messages', category: 'ai_messages' },
+] as const;
+
 function ConsentScreen({ consultantId, optionId, back, confirm }: {
   consultantId: string;
   optionId: string;
   back: () => void;
-  confirm: (consultantId: string, optionId: string) => void;
+  confirm: (consultantId: string, optionId: string, categories: string[]) => void;
 }) {
   const [confirming, setConfirming] = useState(false);
   const [consent, setConsent] = useState([true, true, true, false]);
 
   const handleConfirm = async () => {
     setConfirming(true);
-    await confirm(consultantId, optionId);
+    const categories = CONSENT_ITEMS.filter((_, i) => consent[i]).map((c) => c.category);
+    await confirm(consultantId, optionId, categories);
     setConfirming(false);
   };
 
@@ -2037,7 +2122,7 @@ function ConsentScreen({ consultantId, optionId, back, confirm }: {
       <BackButton label="Booking" onPress={back} />
       <Text style={styles.eyebrow}>Consent-controlled sharing</Text>
       <Text style={styles.title}>Choose what to share</Text>
-      {['Contact details', 'Requirements snapshot', 'Audit summary', 'Selected chat messages'].map((item, index) => (
+      {CONSENT_ITEMS.map(({ label: item }, index) => (
         <Pressable key={item} style={styles.consentRow} onPress={() => setConsent(prev => prev.map((v, i) => i === index ? !v : v))}>
           <View style={[styles.checkbox, consent[index] && styles.checkboxOn]}>
             {consent[index] && <Ionicons name="checkmark" size={16} color="#fff" />}
@@ -2092,7 +2177,7 @@ function ConfirmationScreen({ consultantId, consultantList, booking, done, score
       </LinearGradient>
       <Section title="Next steps">
         {booking?.calendlyUrl ? (
-          <Pressable style={styles.taskRow} onPress={() => Linking.openURL(booking.calendlyUrl)}>
+          <Pressable style={styles.taskRow} onPress={() => openUrlSafely(booking.calendlyUrl)}>
             <Ionicons name="calendar" size={20} color={colors.royal600} />
             <View style={styles.flex}>
               <Text style={styles.rowTitle}>Schedule your session</Text>
@@ -2219,20 +2304,37 @@ import { BASE_URL, getToken } from './src/api';
 function useApiData<T>(path: string) {
   const [data, setData] = useState<T | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
+  const [attempt, setAttempt] = useState(0);
   useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(false);
     const token = getToken();
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (token) headers['Authorization'] = `Bearer ${token}`;
     fetch(`${BASE_URL}${path}`, { headers })
-      .then(r => r.ok ? r.json() : null)
-      .then(d => { setData(d); setLoading(false); })
-      .catch(() => setLoading(false));
-  }, [path]);
-  return { data, loading };
+      .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
+      .then(d => { if (!cancelled) { setData(d); setLoading(false); } })
+      .catch(() => { if (!cancelled) { setError(true); setLoading(false); } });
+    return () => { cancelled = true; };
+  }, [path, attempt]);
+  return { data, loading, error, retry: () => setAttempt(a => a + 1) };
+}
+
+function LoadErrorNotice({ onRetry }: { onRetry: () => void }) {
+  return (
+    <View style={{ padding: 20, alignItems: 'center', gap: 10 }}>
+      <Text style={styles.rowMeta}>Couldn't load this right now.</Text>
+      <Pressable style={[styles.primaryButton, { paddingHorizontal: 24 }]} onPress={onRetry}>
+        <Text style={styles.primaryButtonText}>Retry</Text>
+      </Pressable>
+    </View>
+  );
 }
 
 function ConsultantConsoleScreen({ back }: { back: () => void }) {
-  const { data, loading } = useApiData<any>('/consultant-console');
+  const { data, loading, error, retry } = useApiData<any>('/consultant-console');
   const crm = data?.crm ?? [];
   const queue = data?.queue ?? [];
   const conversations = data?.conversations ?? [];
@@ -2242,6 +2344,7 @@ function ConsultantConsoleScreen({ back }: { back: () => void }) {
       <Text style={styles.eyebrow}>Consultant console</Text>
       <Text style={styles.title}>Queue and CRM</Text>
       {loading && <View style={{ padding: 20, alignItems: 'center' }}><ActivityIndicator color={colors.royal600} /></View>}
+      {error && <LoadErrorNotice onRetry={retry} />}
       {crm.length > 0 && (
         <View style={styles.quickGrid}>
           {crm.slice(0, 4).map((item: any) => (
@@ -2284,7 +2387,7 @@ function ConsultantConsoleScreen({ back }: { back: () => void }) {
 }
 
 function HrPortalScreen({ back }: { back: () => void }) {
-  const { data, loading } = useApiData<any>('/hr');
+  const { data, loading, error, retry } = useApiData<any>('/hr');
   const reports = data?.reports ?? [];
   const teams = data?.teams ?? [];
   const bulkUploads = data?.bulkUploads ?? [];
@@ -2294,6 +2397,7 @@ function HrPortalScreen({ back }: { back: () => void }) {
       <Text style={styles.eyebrow}>B2B mobility</Text>
       <Text style={styles.title}>HR dashboard</Text>
       {loading && <View style={{ padding: 20, alignItems: 'center' }}><ActivityIndicator color={colors.royal600} /></View>}
+      {error && <LoadErrorNotice onRetry={retry} />}
       {reports.length > 0 && (
         <Section title="Reports">
           {reports.map((item: any) => <Finding key={item.label} title={`${item.label}: ${item.value}`} meta={item.trend} />)}
@@ -2314,7 +2418,7 @@ function HrPortalScreen({ back }: { back: () => void }) {
 }
 
 function EmployeePortalScreen({ back, authUser }: { back: () => void; authUser?: AuthUser | null }) {
-  const { data, loading } = useApiData<any>('/employee');
+  const { data, loading, error, retry } = useApiData<any>('/employee');
   const profile = data?.profile ?? {};
   const tasks = data?.tasks ?? [];
   return (
@@ -2323,6 +2427,7 @@ function EmployeePortalScreen({ back, authUser }: { back: () => void; authUser?:
       <Text style={styles.eyebrow}>Employee portal</Text>
       <Text style={styles.title}>{authUser?.name ?? profile.name ?? 'Employee'}</Text>
       {loading && <View style={{ padding: 20, alignItems: 'center' }}><ActivityIndicator color={colors.royal600} /></View>}
+      {error && <LoadErrorNotice onRetry={retry} />}
       {(profile.company || tasks.length > 0) && (
         <Section title={profile.company ?? 'Your company'}>
           {profile.homeCountry && <Finding title="Home country" meta={profile.homeCountry} />}
@@ -2334,7 +2439,7 @@ function EmployeePortalScreen({ back, authUser }: { back: () => void; authUser?:
 }
 
 function AdminOverviewScreen({ back }: { back: () => void }) {
-  const { data, loading } = useApiData<any>('/admin/overview');
+  const { data, loading, error, retry } = useApiData<any>('/admin/overview');
   const metrics = data?.metrics ?? [];
   const aiMonitoring = data?.aiMonitoring ?? [];
   const requirementsDb = data?.requirementsDb ?? [];
@@ -2344,6 +2449,7 @@ function AdminOverviewScreen({ back }: { back: () => void }) {
       <Text style={styles.eyebrow}>Platform admin</Text>
       <Text style={styles.title}>Operations overview</Text>
       {loading && <View style={{ padding: 20, alignItems: 'center' }}><ActivityIndicator color={colors.royal600} /></View>}
+      {error && <LoadErrorNotice onRetry={retry} />}
       {metrics.length > 0 && (
         <Section title="Platform metrics">
           {metrics.map((item: any) => <Finding key={item.label} title={`${item.label}: ${item.value}`} meta={item.trend} />)}
@@ -2550,6 +2656,8 @@ function SettingsScreen({ back, authUser, onSignOut, openProfileHub }: { back: (
             try {
               await disable2fa();
               setTwoFactorEnabled(false);
+            } catch (err) {
+              Alert.alert('Could not turn off 2FA', err instanceof Error ? err.message : 'Please check your connection and try again.');
             } finally {
               setTwoFactorBusy(false);
             }
@@ -2759,7 +2867,7 @@ function SettingsScreen({ back, authUser, onSignOut, openProfileHub }: { back: (
       </Section>
 
       <Section title="About">
-        <LinkRow title="Contact support" meta="support@visawithease.app" onPress={() => Linking.openURL('mailto:support@visawithease.app')} />
+        <LinkRow title="Contact support" meta="support@visawithease.app" onPress={() => openUrlSafely('mailto:support@visawithease.app')} />
         <Finding title="Terms & privacy" meta="visawithease.app/legal" />
       </Section>
 
@@ -3104,7 +3212,7 @@ function EcosystemPartnersScreen({ back, score }: { back: () => void; score?: nu
               <Text style={{ color: category.color, fontWeight: '700', fontSize: 13 }}>{partner.discount}</Text>
             </View>
             <Pressable style={{ borderRadius: 10, borderWidth: 2, borderColor: category.color, paddingVertical: 11, alignItems: 'center', flexDirection: 'row', justifyContent: 'center', gap: 8 }}
-              onPress={() => Linking.openURL(partner.url)}>
+              onPress={() => openUrlSafely(partner.url)}>
               <Ionicons name="open-outline" size={14} color={category.color} />
               <Text style={{ color: category.color, fontWeight: '700', fontSize: 13 }}>Visit {partner.name}</Text>
             </Pressable>
@@ -3121,14 +3229,25 @@ function EcosystemPartnersScreen({ back, score }: { back: () => void; score?: nu
 // ─── Calendar Picker ─────────────────────────────────────────────────────────
 const SLOTS_AM = ['9:00 AM','9:30 AM','10:00 AM','10:30 AM','11:00 AM','11:30 AM'];
 const SLOTS_PM = ['2:00 PM','2:30 PM','3:00 PM','3:30 PM','4:00 PM','4:30 PM'];
-function CalendarPickerScreen({ consultantId, back, confirm }: { consultantId: string; back: () => void; confirm: () => void }) {
-  const [selectedDay, setSelectedDay] = useState(8);
+function parseSlotTo24h(t: string): { h: number; m: number } {
+  const match = /^(\d{1,2}):(\d{2})\s*(AM|PM)$/i.exec(t.trim());
+  if (!match) return { h: 0, m: 0 };
+  let h = Number(match[1]) % 12;
+  if (/pm/i.test(match[3])) h += 12;
+  return { h, m: Number(match[2]) };
+}
+
+function CalendarPickerScreen({ consultantId, back, confirm }: { consultantId: string; back: () => void; confirm: (slotISO: string) => void }) {
+  const now = new Date();
+  const [selectedDay, setSelectedDay] = useState(now.getDate());
   const [selectedSlot, setSelectedSlot] = useState('11:00 AM');
   const [takenSlots, setTakenSlots] = useState<string[]>([]);
   const [loadingSlots, setLoadingSlots] = useState(false);
   const consultantLabel = consultantId || 'Consultant';
-  const days = Array.from({ length: 31 }, (_, i) => i + 1);
-  const today = new Date().getDate();
+  const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+  const days = Array.from({ length: daysInMonth }, (_, i) => i + 1);
+  const today = now.getDate();
+  const selectedDateLabel = new Date(now.getFullYear(), now.getMonth(), selectedDay).toLocaleString('en-US', { month: 'short', day: 'numeric' });
 
   useEffect(() => {
     if (!consultantId) return;
@@ -3198,9 +3317,13 @@ function CalendarPickerScreen({ consultantId, back, confirm }: { consultantId: s
       )}
       <View style={[styles.notice, { flexDirection: 'row', alignItems: 'center', gap: 10 }]}>
         <Ionicons name="checkmark-circle" size={16} color={colors.gold500} />
-        <Text style={[styles.noticeText, { flex: 1 }]}>Selected: Jul {selectedDay} · {selectedSlot} GST</Text>
+        <Text style={[styles.noticeText, { flex: 1 }]}>Selected: {selectedDateLabel} · {selectedSlot} GST</Text>
       </View>
-      <Pressable style={styles.primaryButton} onPress={confirm}>
+      <Pressable style={styles.primaryButton} onPress={() => {
+        const { h, m } = parseSlotTo24h(selectedSlot);
+        const slotISO = new Date(now.getFullYear(), now.getMonth(), selectedDay, h, m).toISOString();
+        confirm(slotISO);
+      }}>
         <Text style={styles.primaryButtonText}>Confirm slot → Consent</Text>
       </Pressable>
     </View>
@@ -3433,9 +3556,9 @@ function EmbassyFinderScreen({ back }: { back: () => void }) {
   const emb = EMBASSIES[EMBASSY_COUNTRIES[selected]];
   const rows: [IoniconName, string, string, (() => void) | undefined][] = [
     ['location-outline', 'Address', emb.address, undefined],
-    ['call-outline', 'Phone', emb.phone, () => Linking.openURL(`tel:${emb.phone}`)],
+    ['call-outline', 'Phone', emb.phone, () => openUrlSafely(`tel:${emb.phone}`)],
     ['time-outline', 'Consular hours', emb.hours, undefined],
-    ['globe-outline', 'Website', emb.website, () => Linking.openURL(`https://${emb.website}`)],
+    ['globe-outline', 'Website', emb.website, () => openUrlSafely(`https://${emb.website}`)],
   ];
   return (
     <View>
@@ -3501,8 +3624,8 @@ function buildTimelineStages(intendedFrom?: string) {
   });
 }
 
-function TimelineTrackerScreen({ back, openUpload }: { back: () => void; openUpload: () => void }) {
-  const stages = buildTimelineStages();
+function TimelineTrackerScreen({ back, openUpload, intendedFrom }: { back: () => void; openUpload: () => void; intendedFrom?: string }) {
+  const stages = buildTimelineStages(intendedFrom);
   const currentIdx = stages.findIndex(s => !s.done);
   return (
     <View>
@@ -3783,7 +3906,14 @@ function VerifyEmailScreen({ email, onDone }: { email: string; onDone: () => voi
           } : undefined}>
             <Text style={styles.primaryButtonText}>Verify email</Text>
           </Pressable>
-          <Pressable disabled={resendSeconds > 0} style={{ marginTop: 14 }}>
+          <Pressable
+            disabled={resendSeconds > 0}
+            style={{ marginTop: 14 }}
+            onPress={async () => {
+              setResendSeconds(60);
+              try { await sendVerificationEmail(email); } catch { /* keep the timer running either way */ }
+            }}
+          >
             <Text style={[styles.rowMeta, { textAlign: 'center', color: resendSeconds > 0 ? colors.slate300 : colors.royal600 }]}>
               {resendSeconds > 0 ? `Resend in ${resendSeconds}s` : 'Resend code'}
             </Text>
@@ -3922,22 +4052,55 @@ const AI_STAGES = [
   { label: 'Generating validated findings report',duration: '',     done: false  },
 ];
 
-function LiveAnalysisScreen({ docTitle, onDone }: { docTitle: string; onDone: () => void }) {
-  const [score, setScore] = useState(0);
+function LiveAnalysisScreen({ docTitle, documentId, applicationId, onDone }: {
+  docTitle: string;
+  documentId: string;
+  applicationId?: string;
+  onDone: (result: import('./src/api').ApiAuditResult) => void;
+}) {
+  const [score, setScore] = useState<number | null>(null);
   const [stageIdx, setStageIdx] = useState(0);
   const [done, setDone] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
+  const [result, setResult] = useState<import('./src/api').ApiAuditResult | null>(null);
 
   useEffect(() => {
-    const timer = setInterval(() => {
-      setScore(s => {
-        const next = Math.min(s + 14, 85);
-        if (next >= 85) { clearInterval(timer); setDone(true); setStageIdx(6); }
-        return next;
-      });
-      setStageIdx(i => Math.min(i + 1, 5));
-    }, 800);
-    return () => clearInterval(timer);
-  }, []);
+    if (!applicationId) {
+      setError('No active application — go back and start one first.');
+      return;
+    }
+    let cancelled = false;
+    setError(null);
+    setDone(false);
+    setStageIdx(0);
+    // Ticks through the stage list for perceived progress while the real
+    // request is in flight — capped one stage short of "done" so it never
+    // shows completion before the real result actually arrives.
+    const stageTimer = setInterval(() => {
+      setStageIdx(i => Math.min(i + 1, AI_STAGES.length - 1));
+    }, 500);
+
+    (async () => {
+      try {
+        await createUploadSlot({ applicationId, documentId });
+        const { result: auditResult } = await enqueueAudit({ applicationId, documentId });
+        if (cancelled) return;
+        clearInterval(stageTimer);
+        setStageIdx(AI_STAGES.length);
+        setScore(auditResult.score);
+        setResult(auditResult);
+        setDone(true);
+      } catch (err) {
+        if (!cancelled) {
+          clearInterval(stageTimer);
+          setError(err instanceof Error ? err.message : 'Audit failed. Please try again.');
+        }
+      }
+    })();
+
+    return () => { cancelled = true; clearInterval(stageTimer); };
+  }, [applicationId, documentId, attempt]);
 
   const stages = AI_STAGES.map((s, i) => ({
     ...s,
@@ -3978,12 +4141,14 @@ function LiveAnalysisScreen({ docTitle, onDone }: { docTitle: string; onDone: ()
               <Text style={{ color: '#fff', fontSize: 8, fontWeight: '800' }}>AI</Text>
             </View>
           </View>
-          {/* Live score */}
+          {/* Score — real result from the backend, not shown until it actually arrives */}
           <View style={{ marginTop: 24, alignItems: 'center' }}>
-            <Text style={{ color: 'rgba(255,255,255,0.5)', fontSize: 10, fontWeight: '700', letterSpacing: 2, textTransform: 'uppercase' }}>Live readiness</Text>
-            <Text style={{ color: done ? colors.green500 : colors.teal500, fontSize: 56, fontWeight: '900', fontVariant: ['tabular-nums'] }}>{score}</Text>
-            <Text style={{ color: 'rgba(255,255,255,0.4)', fontSize: 14 }}>/ 100</Text>
-            {!done && <Text style={{ color: colors.teal500, fontSize: 11, fontWeight: '700', marginTop: 4 }}>↑ updating live · est 8s left</Text>}
+            <Text style={{ color: 'rgba(255,255,255,0.5)', fontSize: 10, fontWeight: '700', letterSpacing: 2, textTransform: 'uppercase' }}>Readiness score</Text>
+            {score === null
+              ? <ActivityIndicator size="large" color={colors.teal500} style={{ marginVertical: 12 }} />
+              : <Text style={{ color: colors.green500, fontSize: 56, fontWeight: '900', fontVariant: ['tabular-nums'] }}>{score}</Text>}
+            {score !== null && <Text style={{ color: 'rgba(255,255,255,0.4)', fontSize: 14 }}>/ 100</Text>}
+            {!done && !error && <Text style={{ color: colors.teal500, fontSize: 11, fontWeight: '700', marginTop: 4 }}>Analyzing…</Text>}
           </View>
         </View>
         {/* Stage list */}
@@ -4001,14 +4166,25 @@ function LiveAnalysisScreen({ docTitle, onDone }: { docTitle: string; onDone: ()
             </View>
           ))}
         </View>
-        {done && (
+        {done && result && (
           <>
             <View style={{ marginTop: 16, padding: 14, backgroundColor: 'rgba(16,185,129,0.15)', borderRadius: 14, borderWidth: 1, borderColor: 'rgba(16,185,129,0.3)' }}>
               <Text style={{ color: colors.green500, fontWeight: '900', marginBottom: 4 }}>Analysis complete</Text>
               <Text style={{ color: 'rgba(255,255,255,0.6)', fontSize: 12, lineHeight: 18 }}>Analysis complete. AI findings are ready in your audit report. Review each item and resolve any flagged issues to improve your readiness score.</Text>
             </View>
-            <Pressable style={[styles.primaryButton, { marginTop: 14 }]} onPress={onDone}>
+            <Pressable style={[styles.primaryButton, { marginTop: 14 }]} onPress={() => onDone(result)}>
               <Text style={styles.primaryButtonText}>View full audit report</Text>
+            </Pressable>
+          </>
+        )}
+        {error && (
+          <>
+            <View style={{ marginTop: 16, padding: 14, backgroundColor: 'rgba(220,38,38,0.15)', borderRadius: 14, borderWidth: 1, borderColor: 'rgba(220,38,38,0.3)' }}>
+              <Text style={{ color: '#F87171', fontWeight: '900', marginBottom: 4 }}>Audit failed</Text>
+              <Text style={{ color: 'rgba(255,255,255,0.6)', fontSize: 12, lineHeight: 18 }}>{error}</Text>
+            </View>
+            <Pressable style={[styles.primaryButton, { marginTop: 14 }]} onPress={() => setAttempt(a => a + 1)}>
+              <Text style={styles.primaryButtonText}>Try again</Text>
             </Pressable>
           </>
         )}
@@ -4033,18 +4209,21 @@ const PROFILE_SECTIONS = [
 function ProfileHubScreen({ back, authUser }: { back: () => void; authUser: AuthUser | null }) {
   const [activeSection, setActiveSection] = useState<string | null>(null);
   const [profile, setProfile] = useState<UserProfile | null>(null);
+  const [loadFailed, setLoadFailed] = useState(false);
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
-    fetchProfile().then(r => setProfile(r.profile)).catch(() => {});
-  }, []);
+    setLoadFailed(false);
+    fetchProfile().then(r => setProfile(r.profile)).catch(() => setLoadFailed(true));
+  }, [attempt]);
 
   function isDone(id: string): boolean {
     if (!profile) return false;
     switch (id) {
       case 'personal':   return !!(profile.personal?.firstName);
       case 'passport':   return !!(profile.passport?.passportNumber);
-      case 'travel':     return !!(profile.travelHistory);
-      case 'financials': return !!(profile.financials && profile.financials.statementsCount > 0);
+      case 'travel':     return !!(profile.travelHistory && (profile.travelHistory.trips.length > 0 || profile.travelHistory.hasRejection));
+      case 'financials': return !!(profile.financials && profile.financials.statements.length > 0);
       case 'employment': return !!(profile.employment?.employer);
       case 'contacts':   return !!(profile.contacts?.emergencyName);
       default: return false;
@@ -4076,6 +4255,7 @@ function ProfileHubScreen({ back, authUser }: { back: () => void; authUser: Auth
       <BackButton label="Profile" onPress={back} />
       <Text style={styles.eyebrow}>Account completeness</Text>
       <Text style={styles.title}>Complete your profile</Text>
+      {loadFailed && <LoadErrorNotice onRetry={() => setAttempt(a => a + 1)} />}
       <LinearGradient colors={['#0B1F4B','#1547C0']} style={{ borderRadius: 20, padding: 20, marginBottom: 16, alignItems: 'center', gap: 10 }}>
         <ScoreRing value={pct} large subLabel={`${completed}/${PROFILE_SECTIONS.length} complete`} />
         <Text style={{ color: 'rgba(255,255,255,0.6)', fontSize: 12, textAlign: 'center' }}>A complete profile enables auto-fill on new applications and improves AI score accuracy.</Text>
@@ -4116,6 +4296,7 @@ function ProfilePersonalScreen({ back, profile, onSave }: { back: () => void; pr
   const [dob, setDob] = useState(p?.dateOfBirth ?? '');
   const [phone, setPhone] = useState(p?.phone ?? '');
   const [gender, setGender] = useState(p?.gender ?? '');
+  const canSave = firstName.trim().length > 0 && lastName.trim().length > 0;
   return (
     <View>
       <BackButton label="Profile hub" onPress={back} />
@@ -4129,7 +4310,8 @@ function ProfilePersonalScreen({ back, profile, onSave }: { back: () => void; pr
           </View>
         ))}
       </View>
-      <Pressable style={styles.primaryButton} onPress={() => onSave({ firstName, lastName, nationality, dateOfBirth: dob, phone, gender })}>
+      {!canSave && <Text style={[styles.rowMeta, { color: colors.gold500, marginBottom: 8 }]}>First and last name are required.</Text>}
+      <Pressable style={[styles.primaryButton, !canSave && styles.disabledButton]} onPress={canSave ? () => onSave({ firstName, lastName, nationality, dateOfBirth: dob, phone, gender }) : undefined}>
         <Text style={styles.primaryButtonText}>Save personal details</Text>
       </Pressable>
     </View>
@@ -4143,6 +4325,7 @@ function ProfilePassportScreen({ back, profile, onSave }: { back: () => void; pr
   const [issueDate,      setIssueDate]      = useState(p?.issueDate ?? '');
   const [expiryDate,     setExpiryDate]     = useState(p?.expiryDate ?? '');
   const [issuingCountry, setIssuingCountry] = useState(p?.issuingCountry ?? '');
+  const canSave = passportNumber.trim().length > 0 && expiryDate.trim().length > 0;
   return (
     <View>
       <BackButton label="Profile hub" onPress={back} />
@@ -4156,7 +4339,8 @@ function ProfilePassportScreen({ back, profile, onSave }: { back: () => void; pr
           </View>
         ))}
       </View>
-      <Pressable style={styles.primaryButton} onPress={() => onSave({ passportNumber, issueDate, expiryDate, issuingCountry })}>
+      {!canSave && <Text style={[styles.rowMeta, { color: colors.gold500, marginBottom: 8 }]}>Passport number and expiry date are required.</Text>}
+      <Pressable style={[styles.primaryButton, !canSave && styles.disabledButton]} onPress={canSave ? () => onSave({ passportNumber, issueDate, expiryDate, issuingCountry }) : undefined}>
         <Text style={styles.primaryButtonText}>Save passport details</Text>
       </Pressable>
     </View>
@@ -4166,7 +4350,7 @@ function ProfilePassportScreen({ back, profile, onSave }: { back: () => void; pr
 // ─── Profile: Travel History ──────────────────────────────────────────────────
 function ProfileTravelScreen({ back, profile, onSave }: { back: () => void; profile: UserProfile | null; onSave: (d: NonNullable<UserProfile['travelHistory']>) => void }) {
   const [hasRejection, setHasRejection] = useState(profile?.travelHistory?.hasRejection ?? false);
-  const [trips, setTrips] = useState<{ country: string; years: string; status: string }[]>([]);
+  const [trips, setTrips] = useState<{ country: string; years: string; status: string }[]>(profile?.travelHistory?.trips ?? []);
   const [addingTrip, setAddingTrip] = useState(false);
   const [newTripInput, setNewTripInput] = useState('');
 
@@ -4251,7 +4435,7 @@ function ProfileTravelScreen({ back, profile, onSave }: { back: () => void; prof
           </View>
         )}
       </Section>
-      <Pressable style={styles.primaryButton} onPress={() => onSave({ tripsCount: trips.length, hasRejection })}>
+      <Pressable style={styles.primaryButton} onPress={() => onSave({ trips, hasRejection })}>
         <Text style={styles.primaryButtonText}>Save travel history</Text>
       </Pressable>
     </View>
@@ -4260,7 +4444,7 @@ function ProfileTravelScreen({ back, profile, onSave }: { back: () => void; prof
 
 // ─── Profile: Financials ──────────────────────────────────────────────────────
 function ProfileFinancialsScreen({ back, profile, onSave }: { back: () => void; profile: UserProfile | null; onSave: (d: NonNullable<UserProfile['financials']>) => void }) {
-  const [statements, setStatements] = useState<{ label: string; score: number }[]>([]);
+  const [statements, setStatements] = useState<{ label: string; score: number }[]>(profile?.financials?.statements ?? []);
 
   const uploadStatement = async () => {
     try {
@@ -4304,13 +4488,13 @@ function ProfileFinancialsScreen({ back, profile, onSave }: { back: () => void; 
       </Section>
       <Section title="Optional: additional assets">
         {['Property ownership', 'Investment portfolio', 'Savings / FD certificate'].map(a => (
-          <Pressable key={a} style={styles.taskRow}>
+          <Pressable key={a} style={styles.taskRow} onPress={() => Alert.alert('Coming soon', `Adding "${a}" as supporting evidence is coming soon.`)}>
             <Ionicons name="add-circle-outline" size={20} color={colors.slate300} />
             <Text style={[styles.rowMeta, { marginLeft: 8 }]}>{a}</Text>
           </Pressable>
         ))}
       </Section>
-      <Pressable style={styles.primaryButton} onPress={() => onSave({ statementsCount: statements.length })}>
+      <Pressable style={styles.primaryButton} onPress={() => onSave({ statements })}>
         <Text style={styles.primaryButtonText}>Save financials</Text>
       </Pressable>
     </View>
@@ -4323,7 +4507,8 @@ function ProfileEmploymentScreen({ back, profile, onSave }: { back: () => void; 
   const [employer, setEmployer] = useState(emp?.employer ?? '');
   const [title, setTitle] = useState(emp?.jobTitle ?? '');
   const [income, setIncome] = useState(emp?.annualIncomeUsd ?? '');
-  const [resumeUploaded, setResumeUploaded] = useState(false);
+  const [resumeUploaded, setResumeUploaded] = useState(emp?.resumeUploaded ?? false);
+  const [resumeFileName, setResumeFileName] = useState(emp?.resumeFileName ?? '');
 
   return (
     <View>
@@ -4339,12 +4524,16 @@ function ProfileEmploymentScreen({ back, profile, onSave }: { back: () => void; 
         <Text style={[styles.rowMeta, { marginBottom: 6 }]}>Annual income (USD equivalent)</Text>
         <TextInput value={income} onChangeText={setIncome} style={styles.searchInput} placeholder="e.g. $50,000 – $70,000" />
       </View>
+      {(!employer.trim() || !title.trim()) && <Text style={[styles.rowMeta, { color: colors.gold500, marginBottom: 4 }]}>Employer and job title are required.</Text>}
       <Section title="Resume / CV">
         {!resumeUploaded ? (
           <Pressable style={[styles.uploadZone, { minHeight: 80 }]} onPress={async () => {
             try {
               const result = await DocumentPicker.getDocumentAsync({ type: 'application/pdf', copyToCacheDirectory: false });
-              if (!result.canceled && result.assets?.[0]) setResumeUploaded(true);
+              if (!result.canceled && result.assets?.[0]) {
+                setResumeUploaded(true);
+                setResumeFileName(result.assets[0].name);
+              }
             } catch { /* user cancelled */ }
           }}>
             <Ionicons name="document-outline" size={28} color={colors.royal600} />
@@ -4355,16 +4544,16 @@ function ProfileEmploymentScreen({ back, profile, onSave }: { back: () => void; 
           <View style={styles.taskRow}>
             <Ionicons name="document-text" size={20} color={colors.green500} />
             <View style={styles.flex}>
-              <Text style={styles.rowTitle}>resume.pdf</Text>
+              <Text style={styles.rowTitle}>{resumeFileName || 'resume.pdf'}</Text>
               <Text style={styles.rowMeta}>Uploaded · Ready for visa package</Text>
             </View>
-            <Pressable onPress={() => setResumeUploaded(false)}>
+            <Pressable onPress={() => { setResumeUploaded(false); setResumeFileName(''); }}>
               <Ionicons name="trash-outline" size={18} color={colors.slate300} />
             </Pressable>
           </View>
         )}
       </Section>
-      <Pressable style={styles.primaryButton} onPress={() => onSave({ employer, jobTitle: title, annualIncomeUsd: income })}>
+      <Pressable style={[styles.primaryButton, (!employer.trim() || !title.trim()) && styles.disabledButton]} onPress={(employer.trim() && title.trim()) ? () => onSave({ employer, jobTitle: title, annualIncomeUsd: income, resumeUploaded, resumeFileName }) : undefined}>
         <Text style={styles.primaryButtonText}>Save employment details</Text>
       </Pressable>
     </View>
@@ -4377,6 +4566,7 @@ function ProfileContactsScreen({ back, profile, onSave }: { back: () => void; pr
   const [name, setName] = useState(c?.emergencyName ?? '');
   const [phone, setPhone] = useState(c?.emergencyPhone ?? '');
   const [relation, setRelation] = useState(c?.emergencyRelation ?? '');
+  const canSave = name.trim().length > 0 && phone.trim().length > 0;
   return (
     <View>
       <BackButton label="Profile hub" onPress={back} />
@@ -4391,7 +4581,8 @@ function ProfileContactsScreen({ back, profile, onSave }: { back: () => void; pr
           </View>
         ))}
       </View>
-      <Pressable style={styles.primaryButton} onPress={() => onSave({ emergencyName: name, emergencyPhone: phone, emergencyRelation: relation })}>
+      {!canSave && <Text style={[styles.rowMeta, { color: colors.gold500, marginBottom: 8 }]}>Name and phone number are required.</Text>}
+      <Pressable style={[styles.primaryButton, !canSave && styles.disabledButton]} onPress={canSave ? () => onSave({ emergencyName: name, emergencyPhone: phone, emergencyRelation: relation }) : undefined}>
         <Text style={styles.primaryButtonText}>Save emergency contacts</Text>
       </Pressable>
     </View>
@@ -4558,7 +4749,27 @@ function VisaWaiverScreen({ back }: { back: () => void }) {
   const [destination, setDestination] = useState(0);
   const nat = NATIONALITIES[nationality];
   const dest = DESTINATIONS[destination];
-  const result = WAIVER_RULES[nat]?.[dest];
+  const [apiResult, setApiResult] = useState<{ type: 'waiver' | 'visa' | 'eta'; note: string } | null | undefined>(WAIVER_RULES[nat]?.[dest]);
+  const [checking, setChecking] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setChecking(true);
+    fetchVisaWaiver(nat, dest)
+      .then((data) => {
+        if (cancelled) return;
+        // Real curated data lives for a handful of nationalities; fall back to
+        // the broader local table for combinations the backend doesn't cover
+        // (including its own "unknown" no-match response).
+        const usable = data?.type && data.type !== 'unknown' ? { type: data.type as 'waiver' | 'visa' | 'eta', note: data.note } : null;
+        setApiResult(usable ?? WAIVER_RULES[nat]?.[dest] ?? null);
+      })
+      .catch(() => { if (!cancelled) setApiResult(WAIVER_RULES[nat]?.[dest] ?? null); })
+      .finally(() => { if (!cancelled) setChecking(false); });
+    return () => { cancelled = true; };
+  }, [nat, dest]);
+
+  const result = apiResult;
   const typeConfig = {
     waiver: { color: colors.green500, bg: colors.green100, icon: 'checkmark-circle' as IoniconName, label: 'Visa waiver' },
     eta:    { color: colors.teal500,  bg: '#E0F2FE',        icon: 'globe-outline'    as IoniconName, label: 'eTA / pre-arrival' },
@@ -4591,7 +4802,12 @@ function VisaWaiverScreen({ back }: { back: () => void }) {
           ))}
         </View>
       </Section>
-      {cfg && result && (
+      {checking && (
+        <View style={[styles.notice, { marginTop: 8 }]}>
+          <Text style={styles.noticeText}>Checking {nat} → {dest}…</Text>
+        </View>
+      )}
+      {!checking && cfg && result && (
         <View style={{ backgroundColor: cfg.bg, borderRadius: 16, padding: 18, gap: 10, marginTop: 4 }}>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
             <Ionicons name={cfg.icon} size={28} color={cfg.color} />
@@ -4603,7 +4819,7 @@ function VisaWaiverScreen({ back }: { back: () => void }) {
           <Text style={{ color: colors.slate700, lineHeight: 20 }}>{result.note}</Text>
         </View>
       )}
-      {!result && (
+      {!checking && !result && (
         <View style={[styles.notice, { marginTop: 8 }]}>
           <Text style={styles.noticeText}>Data not available for this combination. Check the official embassy website or ask our AI assistant.</Text>
         </View>
@@ -4627,14 +4843,34 @@ const REJECTION_REASONS: Record<string, { cause: string; fix: string; severity: 
 function RejectionAnalyzerScreen({ back, openChat }: { back: () => void; openChat: () => void }) {
   const [text, setText] = useState('');
   const [results, setResults] = useState<Array<{ key: string; cause: string; fix: string; severity: 'high' | 'medium' }>>([]);
+  const [aiReply, setAiReply] = useState<string | null>(null);
   const [analyzed, setAnalyzed] = useState(false);
+  const [analyzing, setAnalyzing] = useState(false);
 
-  const analyze = () => {
+  const analyzeLocally = () => {
     const found = Object.entries(REJECTION_REASONS)
       .filter(([key]) => text.toLowerCase().includes(key))
       .map(([key, val]) => ({ key, ...val }));
     setResults(found.length > 0 ? found : [{ key: 'general', cause: 'Rejection reason not identified', fix: 'Share your rejection letter with our AI assistant for a detailed analysis.', severity: 'medium' }]);
-    setAnalyzed(true);
+  };
+
+  const analyze = async () => {
+    setAnalyzing(true);
+    setAiReply(null);
+    setResults([]);
+    try {
+      const reply = await sendChatMessage(
+        `Analyze this visa rejection letter and explain the likely reasons and how to fix them for a reapplication:\n\n${text}`
+      );
+      setAiReply(reply.reply);
+    } catch {
+      // Real AI unreachable — fall back to the local keyword-based checklist
+      // rather than showing nothing.
+      analyzeLocally();
+    } finally {
+      setAnalyzing(false);
+      setAnalyzed(true);
+    }
   };
 
   return (
@@ -4652,27 +4888,33 @@ function RejectionAnalyzerScreen({ back, openChat }: { back: () => void; openCha
             multiline
             style={[styles.searchInput, { minHeight: 130, textAlignVertical: 'top', paddingTop: 12, lineHeight: 20 }]}
           />
-          <Pressable style={[styles.primaryButton, !text.trim() && styles.disabledButton]} onPress={text.trim() ? analyze : undefined}>
-            <Text style={styles.primaryButtonText}>Analyze rejection</Text>
+          <Pressable style={[styles.primaryButton, (!text.trim() || analyzing) && styles.disabledButton]} onPress={text.trim() && !analyzing ? analyze : undefined}>
+            {analyzing ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryButtonText}>Analyze rejection</Text>}
           </Pressable>
         </>
       ) : (
         <>
-          <Section title={`${results.length} issue${results.length !== 1 ? 's' : ''} identified`}>
-            {results.map(r => (
-              <View key={r.key} style={{ paddingVertical: 12, borderTopWidth: 1, borderTopColor: colors.slate100 }}>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-                  <Ionicons name={r.severity === 'high' ? 'alert-circle' : 'information-circle'} size={18} color={r.severity === 'high' ? '#DC2626' : colors.gold500} />
-                  <Text style={styles.rowTitle}>{r.cause}</Text>
+          {aiReply ? (
+            <Section title="AI analysis">
+              <Text style={[styles.rowMeta, { lineHeight: 20, color: colors.slate700 }]}>{aiReply}</Text>
+            </Section>
+          ) : (
+            <Section title={`${results.length} issue${results.length !== 1 ? 's' : ''} identified (offline checklist — AI was unreachable)`}>
+              {results.map(r => (
+                <View key={r.key} style={{ paddingVertical: 12, borderTopWidth: 1, borderTopColor: colors.slate100 }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                    <Ionicons name={r.severity === 'high' ? 'alert-circle' : 'information-circle'} size={18} color={r.severity === 'high' ? '#DC2626' : colors.gold500} />
+                    <Text style={styles.rowTitle}>{r.cause}</Text>
+                  </View>
+                  <Text style={[styles.rowMeta, { lineHeight: 18 }]}>{r.fix}</Text>
                 </View>
-                <Text style={[styles.rowMeta, { lineHeight: 18 }]}>{r.fix}</Text>
-              </View>
-            ))}
-          </Section>
+              ))}
+            </Section>
+          )}
           <Pressable style={styles.primaryButton} onPress={openChat}>
             <Text style={styles.primaryButtonText}>Ask AI for detailed guidance</Text>
           </Pressable>
-          <Pressable style={[styles.secondaryButton, { marginTop: 10 }]} onPress={() => { setText(''); setResults([]); setAnalyzed(false); }}>
+          <Pressable style={[styles.secondaryButton, { marginTop: 10 }]} onPress={() => { setText(''); setResults([]); setAiReply(null); setAnalyzed(false); }}>
             <Text style={styles.secondaryButtonText}>Analyze another letter</Text>
           </Pressable>
         </>
@@ -4811,8 +5053,6 @@ const styles = StyleSheet.create({
   checkboxOn: { backgroundColor: colors.royal600, borderColor: colors.royal600 },
   checkboxText: { color: colors.white, fontWeight: '900', fontSize: 10 },
   checkboxLabel: { flex: 1, color: colors.slate700, fontWeight: '700', lineHeight: 18 },
-  selectorCard: { backgroundColor: colors.white, borderRadius: 18, borderColor: colors.slate100, borderWidth: 1, padding: 18, marginTop: 10, marginBottom: 16 },
-  selectorValue: { color: colors.slate900, fontWeight: '900', fontSize: 22, marginBottom: 8 },
   stepCard: { backgroundColor: colors.white, borderRadius: 18, borderColor: colors.slate100, borderWidth: 1, padding: 16 },
   segmented: { flexDirection: 'row', backgroundColor: colors.slate100, borderRadius: 14, padding: 4, marginBottom: 10 },
   segment: { flex: 1, minHeight: 38, alignItems: 'center', justifyContent: 'center', borderRadius: 11 },

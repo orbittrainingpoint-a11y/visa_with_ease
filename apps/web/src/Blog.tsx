@@ -354,7 +354,7 @@ export function BlogPostPage() {
 function BlogSimpleFooter({ nav }: { nav: (p: string) => void }) {
   return (
     <footer className="footer">
-      <div className="footer-inner" style={{ gridTemplateColumns: '2fr 1fr' }}>
+      <div className="footer-inner" style={{ gridTemplateColumns: '2fr 1fr 1fr' }}>
         <div className="footer-brand">
           <div className="logo"><img src="/logo-icon.png" alt="" /><span className="logo-word"><b>Visa</b> With <b className="logo-ease">Ease</b></span></div>
           <p className="footer-tag">AI-powered visa auditing for the modern traveller.</p>
@@ -365,7 +365,15 @@ function BlogSimpleFooter({ nav }: { nav: (p: string) => void }) {
           <ul>
             <li><button className="footer-lnk" onClick={() => nav('/blog')}>Blog</button></li>
             <li><button className="footer-lnk" onClick={() => nav('/pricing')}>Pricing</button></li>
+            <li><button className="footer-lnk" onClick={() => nav('/help')}>Help Centre</button></li>
             <li><button className="footer-lnk" onClick={() => nav('/app')}>Dashboard</button></li>
+          </ul>
+        </div>
+        <div className="footer-col">
+          <h4 className="footer-head">Legal</h4>
+          <ul>
+            <li><button className="footer-lnk" onClick={() => nav('/privacy')}>Privacy Policy</button></li>
+            <li><button className="footer-lnk" onClick={() => nav('/terms')}>Terms of Service</button></li>
           </ul>
         </div>
       </div>

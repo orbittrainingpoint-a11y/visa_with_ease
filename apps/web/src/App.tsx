@@ -161,7 +161,12 @@ function ToastContainer() {
 
 export function App() {
   const location = useLocation();
-  const publicPaths = ['/', '/services', '/process', '/about', '/contact', '/faq'];
+  const publicPaths = [
+    '/', '/services', '/process', '/about', '/contact', '/faq',
+    '/privacy', '/terms', '/pricing', '/help', '/partners',
+    '/visa-calculator', '/bank-balance', '/embassy-finder',
+    '/country-comparison', '/visa-waiver', '/rejection-analyzer',
+  ];
   const [session, setSession] = useStoredSession();
   const [showNotifs, setShowNotifs] = useState(false);
   const [showSearch, setShowSearch] = useState(false);
@@ -578,9 +583,90 @@ function PublicSite() {
       <Route path="/faq" element={<LandingWrapper />} />
       <Route path="/blog" element={<BlogIndexPage />} />
       <Route path="/blog/:slug" element={<BlogPostPage />} />
-      <Route path="/privacy" element={<PrivacyPolicyPage />} />
-      <Route path="/terms" element={<LegalPlaceholderPage title="Terms of Service" />} />
+      <Route path="/privacy" element={<PublicPage><PrivacyPolicyPage /></PublicPage>} />
+      <Route path="/terms" element={<PublicPage><LegalPlaceholderPage title="Terms of Service" /></PublicPage>} />
+      <Route path="/pricing" element={<PublicPage><PricingPage /></PublicPage>} />
+      <Route path="/help" element={<PublicPage><HelpCenter /></PublicPage>} />
+      <Route path="/partners" element={<PublicPage><EcosystemPartners /></PublicPage>} />
+      <Route path="/visa-calculator" element={<PublicPage><VisaCalculator /></PublicPage>} />
+      <Route path="/bank-balance" element={<PublicPage><BankBalance /></PublicPage>} />
+      <Route path="/embassy-finder" element={<PublicPage><EmbassyFinder /></PublicPage>} />
+      <Route path="/country-comparison" element={<PublicPage><CountryComparison /></PublicPage>} />
+      <Route path="/visa-waiver" element={<PublicPage><VisaWaiverChecker /></PublicPage>} />
+      <Route path="/rejection-analyzer" element={<PublicPage><RejectionLetterAnalyzer /></PublicPage>} />
     </Routes>
+  );
+}
+
+// ── Shared chrome for public utility/legal pages (tool pages that also live
+// inside the authenticated shell reuse the same component, just without this
+// wrapper — the sidebar/topbar there already provides navigation) ───────────
+function PublicNav() {
+  const navigate = useNavigate();
+  return (
+    <nav className="top-nav nav-solid">
+      <button className="logo nav-logo" onClick={() => navigate('/')}>
+        <img src="/logo-icon.png" alt="" /><span className="logo-word"><b>Visa</b> With <b className="logo-ease">Ease</b></span>
+      </button>
+      <div className="nav-links">
+        {([['Pricing', '/pricing'], ['Blog', '/blog'], ['Help Centre', '/help'], ['Partners', '/partners']] as const).map(([label, path]) => (
+          <button key={path} className="nav-lnk" onClick={() => navigate(path)}>{label}</button>
+        ))}
+      </div>
+      <div className="nav-actions">
+        <button className="btn-ghost nav-sign" onClick={() => navigate('/app')}>Sign in</button>
+        <button className="btn-primary nav-cta" onClick={() => navigate('/app')}>Start free</button>
+      </div>
+    </nav>
+  );
+}
+
+function PublicFooter() {
+  const navigate = useNavigate();
+  const cols: [string, string, string][] = [
+    ['Explore', '/pricing', 'Pricing'],
+    ['Explore', '/blog', 'Blog'],
+    ['Explore', '/help', 'Help Centre'],
+    ['Explore', '/partners', 'Partners'],
+    ['Tools', '/visa-calculator', 'Visa Calculator'],
+    ['Tools', '/bank-balance', 'Bank Balance'],
+    ['Tools', '/embassy-finder', 'Embassy Finder'],
+    ['Tools', '/country-comparison', 'Country Compare'],
+    ['Legal', '/privacy', 'Privacy Policy'],
+    ['Legal', '/terms', 'Terms of Service'],
+  ];
+  const groups: Record<string, typeof cols> = {};
+  cols.forEach(c => { (groups[c[0]] ??= []).push(c); });
+  return (
+    <footer className="footer">
+      <div className="footer-inner">
+        <div className="footer-brand">
+          <div className="logo"><img src="/logo-icon.png" alt="" /><span className="logo-word"><b>Visa</b> With <b className="logo-ease">Ease</b></span></div>
+          <p className="footer-tag">AI-powered visa auditing for the modern traveller.</p>
+          <p className="footer-legal">© 2026 Visa With Ease Inc. · GDPR · UAE PDPL · SOC 2</p>
+        </div>
+        {Object.entries(groups).map(([cat, links]) => (
+          <div key={cat} className="footer-col">
+            <h4 className="footer-head">{cat}</h4>
+            <ul>
+              {links.map(([, path, label]) => (
+                <li key={path}><button className="footer-lnk" onClick={() => navigate(path)}>{label}</button></li>
+              ))}
+            </ul>
+          </div>
+        ))}
+      </div>
+    </footer>
+  );
+}
+
+function PublicPage({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="lp">
+      <PublicNav />
+      {children}
+      <PublicFooter />
+    </div>
   );
 }
 

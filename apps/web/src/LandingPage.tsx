@@ -525,6 +525,8 @@ function Footer({ nav }: { nav: (p: string) => void }) {
     ['Company',  '/referrals',       'Referrals'],
     ['Company',  '/help',            'Help Centre'],
     ['Company',  '/settings',        'Settings'],
+    ['Legal',    '/privacy',         'Privacy Policy'],
+    ['Legal',    '/terms',           'Terms of Service'],
   ];
   const groups: Record<string, typeof cols> = {};
   cols.forEach(c => { (groups[c[0]] ??= []).push(c); });

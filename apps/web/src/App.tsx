@@ -578,9 +578,111 @@ function PublicSite() {
       <Route path="/faq" element={<LandingWrapper />} />
       <Route path="/blog" element={<BlogIndexPage />} />
       <Route path="/blog/:slug" element={<BlogPostPage />} />
-      <Route path="/privacy" element={<LegalPlaceholderPage title="Privacy Policy" />} />
+      <Route path="/privacy" element={<PrivacyPolicyPage />} />
       <Route path="/terms" element={<LegalPlaceholderPage title="Terms of Service" />} />
     </Routes>
+  );
+}
+
+function PrivacyPolicyPage() {
+  const h2: React.CSSProperties = { fontSize: 18, fontWeight: 700, color: '#0B1F4B', margin: '28px 0 10px' };
+  const p: React.CSSProperties = { color: '#334155', lineHeight: 1.7, margin: '0 0 12px' };
+  const ul: React.CSSProperties = { color: '#334155', lineHeight: 1.7, margin: '0 0 12px', paddingLeft: 20 };
+  return (
+    <section className="page" style={{ maxWidth: 760, margin: '0 auto' }}>
+      <div className="page-title"><div><p>Legal</p><h1>Privacy Policy</h1></div></div>
+      <article className="panel" style={{ padding: '28px 32px' }}>
+        <p style={{ ...p, color: '#64748B', fontSize: 13 }}>Effective date: September 4, 2026</p>
+
+        <p style={p}>
+          Visa With Ease ("we", "us") provides an AI-assisted visa document review and application-tracking
+          service. This policy explains what information we collect, how we use it, and the choices you have.
+          If anything here is unclear, contact us at{' '}
+          <a href="mailto:support@visawithease.app" style={{ color: '#1A56DB' }}>support@visawithease.app</a>.
+        </p>
+
+        <h2 style={h2}>No payment or card data</h2>
+        <p style={p}>
+          Visa With Ease does not currently process payments. We do not collect, store, or transmit credit card
+          numbers, bank details, or any other payment information anywhere on this site or in our mobile app.
+          If paid plans are introduced in the future, payment will be handled entirely by a licensed third-party
+          payment processor (e.g. Stripe) that never shares full card numbers with us — this policy will be
+          updated first, and you will be told before any billing feature goes live.
+        </p>
+
+        <h2 style={h2}>Information we collect</h2>
+        <ul style={ul}>
+          <li><strong>Account information:</strong> name, email address, and a securely hashed password (or, if you use Google Sign-In, the profile info Google shares with your consent — name, email, profile photo).</li>
+          <li><strong>Application data:</strong> the destination country, visa type, travel dates, and checklist progress you enter to track your visa application.</li>
+          <li><strong>Documents you upload:</strong> files you submit for AI review (e.g. passport scans, bank statements, employment letters), for the sole purpose of generating your audit results.</li>
+          <li><strong>Usage data:</strong> basic device/browser information and product-usage events (e.g. pages visited, features used) so we can diagnose issues and improve the product.</li>
+          <li><strong>Cookies:</strong> a session cookie/token to keep you signed in, and no third-party advertising or tracking cookies.</li>
+        </ul>
+
+        <h2 style={h2}>How we use your information</h2>
+        <ul style={ul}>
+          <li>To create and secure your account, and authenticate you on sign-in.</li>
+          <li>To run AI-assisted analysis on the documents you choose to upload and produce your readiness score and findings.</li>
+          <li>To send you account-related email (verification codes, password resets, security alerts) — we do not send marketing email without your consent.</li>
+          <li>To operate, maintain, and improve the reliability and security of the service.</li>
+        </ul>
+
+        <h2 style={h2}>AI processing of your documents</h2>
+        <p style={p}>
+          Document text and the questions you ask our chat assistant are sent to a third-party AI provider
+          (Anthropic or Google) strictly to generate your audit results and answers. These providers process
+          the content solely to return a response to us — they are contractually restricted from using API
+          traffic to train their models, and we do not send them your name, email, or account credentials
+          alongside the document content.
+        </p>
+
+        <h2 style={h2}>Document retention</h2>
+        <p style={p}>
+          Uploaded files are used only to generate your audit results. Only the resulting score, severity
+          labels, and findings are kept in your account so you can track progress over time — we do not keep
+          a searchable copy of your raw document text. We are rolling out fully automated deletion of original
+          files within 72 hours of upload; until that is confirmed live for your account, you can request
+          immediate deletion of any file at any time by emailing{' '}
+          <a href="mailto:support@visawithease.app" style={{ color: '#1A56DB' }}>support@visawithease.app</a>.
+        </p>
+
+        <h2 style={h2}>How we protect your data</h2>
+        <ul style={ul}>
+          <li>All traffic to and from Visa With Ease is encrypted in transit via HTTPS/TLS — the padlock in your browser confirms this on every page.</li>
+          <li>Passwords are never stored in plain text; they are one-way hashed.</li>
+          <li>Access to production data is limited to the engineers who need it to operate the service.</li>
+          <li>We do not sell your personal information to anyone.</li>
+        </ul>
+
+        <h2 style={h2}>Who we share information with</h2>
+        <p style={p}>
+          We share information only with the vendors that help us run the service (our cloud database provider,
+          our AI providers for document analysis, and our email provider for account notifications), and only
+          to the extent needed to provide the feature you're using. If you choose to book a consultation, the
+          consultant you select receives the application details you explicitly authorize for that booking. We
+          do not share your data with advertisers or data brokers.
+        </p>
+
+        <h2 style={h2}>Your rights</h2>
+        <p style={p}>
+          You can access, correct, or delete your account information, and request an export or deletion of
+          your data, at any time by emailing{' '}
+          <a href="mailto:support@visawithease.app" style={{ color: '#1A56DB' }}>support@visawithease.app</a>.
+          We will respond within 30 days.
+        </p>
+
+        <h2 style={h2}>Children's privacy</h2>
+        <p style={p}>Visa With Ease is not directed at children under 16, and we do not knowingly collect information from them.</p>
+
+        <h2 style={h2}>Changes to this policy</h2>
+        <p style={p}>If we make material changes to this policy, we will update the effective date above and, where appropriate, notify you by email.</p>
+
+        <h2 style={h2}>Contact us</h2>
+        <p style={{ ...p, marginBottom: 0 }}>
+          Questions about this policy or your data: <a href="mailto:support@visawithease.app" style={{ color: '#1A56DB' }}>support@visawithease.app</a>.
+        </p>
+      </article>
+    </section>
   );
 }
 

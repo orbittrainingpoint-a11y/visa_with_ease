@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
 import {
   Bot, BarChart3, CalendarClock, Globe2, FileText, Gift,
-  Apple, PlayCircle, Play, Sparkles, User, Users, Building2, ShieldCheck,
+  PlayCircle, Play, Sparkles, User, Users, Building2, ShieldCheck, Lock, ShieldAlert, KeyRound, CreditCard,
 } from 'lucide-react';
 import { gsap } from 'gsap';
 import { ScrollTrigger } from 'gsap/ScrollTrigger';
 import { useGSAP } from '@gsap/react';
+import { POSTS } from './Blog';
 import './landing.css';
 
 gsap.registerPlugin(ScrollTrigger, useGSAP);
@@ -19,163 +20,6 @@ const SLIDES = [
   { src: '/screenshots/booking.png',        step: '05', label: 'Book Expert',  caption: 'Certified consultants matched by visa type, language, and availability.' },
   { src: '/screenshots/decision.png',       step: '06', label: 'Decision',     caption: 'Visa decision decoded. Clear next steps. No ambiguity.' },
 ];
-
-const STORY_PANELS = [
-  { screen: '/screenshots/welcome.png',      tag: '01 — Onboard', title: 'Sign up in 30 seconds.',      body: 'No paperwork upfront. Just email and destination — Visa With Ease handles everything from here.' },
-  { screen: '/screenshots/new-app.png',      tag: '02 — Upload',  title: 'Drop your document.',          body: 'Photo, PDF, or live camera. OCR extracts every field in seconds, automatically.' },
-  { screen: '/screenshots/audit-report.png', tag: '03 — AI Audit',title: 'AI checks every clause.',      body: 'Our AI cross-references your document against live, scraped embassy requirements.' },
-  { screen: '/screenshots/booking.png',      tag: '04 — Expert',  title: 'Book a certified consultant.', body: 'Real-time calendar matching. Consultants filtered by visa type, language, and time zone.' },
-  { screen: '/screenshots/decision.png',     tag: '05 — Decision',title: "Approved. What's next?",      body: 'Decision decoded with step-by-step guidance for every visa milestone that follows.' },
-];
-
-const N_SLIDES = SLIDES.length;
-const N_PANELS = STORY_PANELS.length;
-
-// ── Sticky Carousel — "The full journey" ──────────────────────────────────────
-function StickyCarousel() {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const [active, setActive] = useState(0);
-
-  useGSAP(() => {
-    ScrollTrigger.create({
-      trigger: containerRef.current,
-      start: 'top top',
-      end: 'bottom top',
-      onUpdate: (self) => {
-        setActive(Math.min(Math.floor(self.progress * (N_SLIDES + 1)), N_SLIDES - 1));
-      },
-    });
-  }, { scope: containerRef });
-
-  return (
-    <>
-      {/* Desktop: sticky split */}
-      <div ref={containerRef} className="sc-wrap" style={{ height: `calc(${(N_SLIDES + 1) * 100}vh)` }}>
-        <div className="sc-sticky">
-          <div className="sc-left">
-            <h2 className="lp-h2">
-              The full journey,<br />
-              <span className="c-gold">in one app.</span>
-            </h2>
-            <div className="sc-slide-box">
-              {SLIDES.map((s, i) => (
-                <div key={i} className={`sc-slide ${i === active ? 'is-active' : ''}`}>
-                  <p className="sc-step">{s.step} — {s.label}</p>
-                  <p className="sc-caption">{s.caption}</p>
-                </div>
-              ))}
-            </div>
-            <div className="pips">
-              {SLIDES.map((_, i) => (
-                <span key={i} className={`pip ${i === active ? 'pip-on' : i < active ? 'pip-done' : ''}`} />
-              ))}
-            </div>
-          </div>
-          <div className="sc-right">
-            <div className="phone-frame phone-xl">
-              <div className="phone-notch" />
-              {SLIDES.map((s, i) => (
-                <img key={s.src} src={s.src} alt={s.label}
-                  className={`slide-img ${i === active ? 'is-active' : ''}`} />
-              ))}
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Mobile: grid of cards */}
-      <div className="sc-mobile">
-        <h2 className="lp-h2 tc">The full journey,<br /><span className="c-gold">in one app.</span></h2>
-        <div className="sc-mobile-grid">
-          {SLIDES.map((s, i) => (
-            <div key={i} className="sc-mobile-card">
-              <div className="phone-frame phone-sm">
-                <div className="phone-notch" />
-                <img src={s.src} alt={s.label} />
-              </div>
-              <p className="sc-step">{s.step} — {s.label}</p>
-              <p className="sc-caption">{s.caption}</p>
-            </div>
-          ))}
-        </div>
-      </div>
-    </>
-  );
-}
-
-// ── Sticky Story — "Stage of your journey" ────────────────────────────────────
-function StickyStory() {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const [active, setActive] = useState(0);
-
-  useGSAP(() => {
-    ScrollTrigger.create({
-      trigger: containerRef.current,
-      start: 'top top',
-      end: 'bottom top',
-      onUpdate: (self) => {
-        setActive(Math.min(Math.floor(self.progress * (N_PANELS + 1)), N_PANELS - 1));
-      },
-    });
-  }, { scope: containerRef });
-
-  return (
-    <>
-      {/* Desktop */}
-      <div ref={containerRef} className="ss-wrap" style={{ height: `calc(${(N_PANELS + 1) * 100}vh)` }}>
-        <div className="ss-sticky">
-          <div className="ss-left">
-            <div className="phone-frame phone-xl">
-              <div className="phone-notch" />
-              {STORY_PANELS.map((p, i) => (
-                <img key={p.screen} src={p.screen} alt={p.tag}
-                  className={`slide-img ${i === active ? 'is-active' : ''}`} />
-              ))}
-            </div>
-          </div>
-          <div className="ss-right">
-            <h2 className="lp-h2">
-              Built for every<br />
-              <span className="c-gold">stage of your journey.</span>
-            </h2>
-            <div className="sc-slide-box ss-slide-box">
-              {STORY_PANELS.map((p, i) => (
-                <div key={i} className={`sc-slide ${i === active ? 'is-active' : ''}`}>
-                  <p className="sc-step">{p.tag}</p>
-                  <h3 className="ss-panel-title">{p.title}</h3>
-                  <p className="sc-caption">{p.body}</p>
-                </div>
-              ))}
-            </div>
-            <div className="pips">
-              {STORY_PANELS.map((_, i) => (
-                <span key={i} className={`pip ${i === active ? 'pip-on' : i < active ? 'pip-done' : ''}`} />
-              ))}
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Mobile */}
-      <div className="sc-mobile ss-mobile">
-        <h2 className="lp-h2 tc">Built for every<br /><span className="c-gold">stage of your journey.</span></h2>
-        <div className="sc-mobile-grid">
-          {STORY_PANELS.map((p, i) => (
-            <div key={i} className="sc-mobile-card">
-              <div className="phone-frame phone-sm">
-                <div className="phone-notch" />
-                <img src={p.screen} alt={p.tag} />
-              </div>
-              <p className="sc-step">{p.tag}</p>
-              <h3 className="ss-panel-title" style={{ fontSize: '1rem' }}>{p.title}</h3>
-              <p className="sc-caption">{p.body}</p>
-            </div>
-          ))}
-        </div>
-      </div>
-    </>
-  );
-}
 
 // ── Hero ──────────────────────────────────────────────────────────────────────
 function Hero({ onStart }: { onStart: () => void }) {
@@ -449,19 +293,27 @@ function Testimonials({ onNavigate }: { onNavigate: (p: string) => void }) {
   );
 }
 
-// ── Partner ticker ────────────────────────────────────────────────────────────
-function PartnerStrip() {
-  const chips = ['Emirates', 'Airbnb', 'AXA Insurance', 'WeWork', 'Booking.com',
-                 'Allianz', 'IHG Hotels', 'Flydubai', 'Cigna', 'Regus'];
+// ── Compliance badges (replaces a placeholder "partner" ticker that named
+// real companies with no actual partnership in place) ─────────────────────────
+function ComplianceBadges() {
+  const badges: [typeof Lock, string][] = [
+    [Lock, 'GDPR compliant'],
+    [ShieldCheck, 'UAE PDPL'],
+    [ShieldAlert, 'SOC 2 in progress'],
+    [KeyRound, 'TLS everywhere'],
+    [CreditCard, 'No card data collected'],
+  ];
   return (
-    <div className="partner-strip">
-      <p className="partner-lbl">Ecosystem partners</p>
-      <div className="ticker-wrap">
-        <div className="ticker-track">
-          {[...chips, ...chips].map((c, i) => <span key={i} className="partner-chip">{c}</span>)}
-        </div>
+    <section className="compliance-badges">
+      <div className="sec-head" style={{ marginBottom: '2rem' }}>
+        <h2 className="lp-h2 tc" style={{ fontSize: '1.4rem' }}>Built to the standard your data deserves.</h2>
       </div>
-    </div>
+      <div className="badge-row">
+        {badges.map(([Icon, label]) => (
+          <div className="badge-pill" key={label}><span className="badge-ic"><Icon size={16} /></span>{label}</div>
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -488,11 +340,8 @@ function DownloadCTA({ onStart }: { onStart: () => void }) {
       </div>
       <div className="dl-text">
         <h2 className="lp-h2 tc">Your visa journey<br /><span className="c-gold">starts in the app.</span></h2>
-        <p className="sec-sub tc">Free on iOS and Android. Pro features available inside.</p>
+        <p className="sec-sub tc">Free on web and Android. iOS is on the roadmap.</p>
         <div className="store-row">
-          <button className="store-btn" onClick={onStart}>
-            <Apple size={26} /><span><small>Download on the</small><strong>App Store</strong></span>
-          </button>
           <button className="store-btn" onClick={onStart}>
             <PlayCircle size={26} /><span><small>Get it on</small><strong>Google Play</strong></span>
           </button>
@@ -557,29 +406,277 @@ function Footer({ nav }: { nav: (p: string) => void }) {
 // ── Nav ───────────────────────────────────────────────────────────────────────
 function TopNav({ nav }: { nav: (p: string) => void }) {
   const ref = useRef<HTMLElement>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
   useEffect(() => {
     const h = () => ref.current?.classList.toggle('nav-solid', window.scrollY > 56);
     window.addEventListener('scroll', h, { passive: true });
     return () => window.removeEventListener('scroll', h);
   }, []);
 
+  const links: [string, string][] = [
+    ['Blog', '/blog'], ['Pricing', '/pricing'], ['Compliance', '/compliance-db'],
+    ['Partners', '/partners'], ['API', '/api-portal'], ['Investors', '/investor'],
+  ];
+  const go = (p: string) => { setMenuOpen(false); nav(p); };
+
   return (
-    <nav className="top-nav" ref={ref}>
-      <button className="logo nav-logo" onClick={() => nav('/app')}>
-        <img src="/logo-icon.png" alt="" /><span className="logo-word"><b>Visa</b> With <b className="logo-ease">Ease</b></span>
-      </button>
-      <div className="nav-links">
-        {[['Blog', '/blog'], ['Pricing', '/pricing'], ['Compliance', '/compliance-db'],
-          ['Partners', '/partners'], ['API', '/api-portal'], ['Investors', '/investor']
-        ].map(([l, p]) => (
-          <button key={p} className="nav-lnk" onClick={() => nav(p)}>{l}</button>
+    <>
+      <nav className="top-nav" ref={ref}>
+        <button className="logo nav-logo" onClick={() => go('/app')}>
+          <img src="/logo-icon.png" alt="" /><span className="logo-word"><b>Visa</b> With <b className="logo-ease">Ease</b></span>
+        </button>
+        <div className="nav-links">
+          {links.map(([l, p]) => (
+            <button key={p} className="nav-lnk" onClick={() => nav(p)}>{l}</button>
+          ))}
+        </div>
+        <div className="nav-actions">
+          <button className="btn-ghost nav-sign" onClick={() => go('/app')}>Sign in</button>
+          <button className="btn-primary nav-cta" onClick={() => go('/app')}>Start free</button>
+          <button
+            className={`nav-burger${menuOpen ? ' open' : ''}`}
+            aria-label="Menu" aria-expanded={menuOpen}
+            onClick={() => setMenuOpen(v => !v)}
+          ><span /></button>
+        </div>
+      </nav>
+      <div className={`mobile-nav-panel${menuOpen ? ' open' : ''}`}>
+        {links.map(([l, p]) => (
+          <button key={p} className="mnp-link" onClick={() => go(p)}>{l}</button>
+        ))}
+        <div className="mnp-actions">
+          <button className="btn-ghost" onClick={() => go('/app')}>Sign in</button>
+          <button className="btn-primary" onClick={() => go('/app')}>Start free</button>
+        </div>
+      </div>
+    </>
+  );
+}
+
+// ── How it works ─────────────────────────────────────────────────────────────
+function HowItWorks() {
+  const ref = useRef<HTMLDivElement>(null);
+  useGSAP(() => {
+    gsap.fromTo(ref.current!.querySelectorAll('.step3'),
+      { opacity: 0, y: 32 },
+      { opacity: 1, y: 0, stagger: 0.12, duration: 0.7, ease: 'power2.out',
+        scrollTrigger: { trigger: ref.current, start: 'top 80%' } });
+  }, { scope: ref });
+
+  const steps = [
+    { t: 'Upload your document', b: 'Photo, PDF, or live camera — OCR extracts every field in seconds.' },
+    { t: 'Get your AI audit & score', b: 'Every clause checked against live, scraped embassy requirements.' },
+    { t: 'Book an expert & submit', b: 'Match with a certified consultant and submit with confidence.' },
+  ];
+  return (
+    <section className="how-steps" ref={ref}>
+      <div className="sec-head"><h2 className="lp-h2 tc">From upload to approval — three steps.</h2></div>
+      <div className="steps3-row">
+        {steps.map((s, i) => (
+          <div className="step3" key={s.t}>
+            <div className="step3-n">{i + 1}</div>
+            <h3>{s.t}</h3>
+            <p>{s.b}</p>
+          </div>
         ))}
       </div>
-      <div className="nav-actions">
-        <button className="btn-ghost nav-sign" onClick={() => nav('/app')}>Sign in</button>
-        <button className="btn-primary nav-cta"  onClick={() => nav('/app')}>Start free</button>
+    </section>
+  );
+}
+
+// ── Showcase carousel — real screens, click/arrows/keyboard ────────────────────
+function ShowcaseCarousel() {
+  const [idx, setIdx] = useState(0);
+  const n = SLIDES.length;
+  const go = (i: number) => setIdx(((i % n) + n) % n);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const tag = (document.activeElement && document.activeElement.tagName) || '';
+      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+      if (e.key === 'ArrowRight') { e.preventDefault(); go(idx + 1); }
+      if (e.key === 'ArrowLeft') { e.preventDefault(); go(idx - 1); }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [idx]);
+
+  return (
+    <section className="showcase2">
+      <div className="sec-head" style={{ marginBottom: '1.25rem' }}>
+        <h2 className="lp-h2 tc">The full journey,<br /><span className="c-gold">in one app.</span></h2>
       </div>
-    </nav>
+      <div className="showcase2-body">
+        <div className="showcase2-list">
+          <p className="kbd-hint-lbl">Click a step, use the arrows, or press the arrow keys.</p>
+          <div className="kbd-hint"><span className="kbd">&larr;</span><span className="kbd">&rarr;</span> to move between screens</div>
+          {SLIDES.map((s, i) => (
+            <div key={s.src} className={`sc-cap-item${i === idx ? ' active' : ''}`} onClick={() => go(i)}>
+              <span className="sc-cap-n">{s.step}</span>
+              <div><h4>{s.label}</h4>{i === idx && <p>{s.caption}</p>}</div>
+            </div>
+          ))}
+        </div>
+        <div className="showcase2-viewport">
+          <button className="carousel-arrow prev" onClick={() => go(idx - 1)} aria-label="Previous screen">&#8249;</button>
+          <div className="phone-frame phone-xl">
+            <div className="carousel-track" style={{ transform: `translateX(-${idx * 100}%)` }}>
+              {SLIDES.map(s => (
+                <div className="carousel-slide" key={s.src}><img src={s.src} alt={s.label} /></div>
+              ))}
+            </div>
+          </div>
+          <button className="carousel-arrow next" onClick={() => go(idx + 1)} aria-label="Next screen">&#8250;</button>
+        </div>
+      </div>
+      <div className="carousel-dots">
+        {SLIDES.map((_, i) => (
+          <button key={i} className={`c-dot${i === idx ? ' on' : ''}`} onClick={() => go(i)} aria-label={`Go to screen ${i + 1}`} />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+// ── Mobile app promo ─────────────────────────────────────────────────────────
+function MobileAppPromo() {
+  return (
+    <section className="app-promo-section">
+      <div className="app-promo">
+        <div>
+          <div className="eyebrow"><span className="dot" />Mobile app</div>
+          <h2 className="lp-h2">Take your audit<br /><span className="c-gold">with you.</span></h2>
+          <p className="sec-sub" style={{ margin: '0.75rem 0 1.5rem', textAlign: 'left', maxWidth: '420px' }}>
+            Scan a document with your camera, get a push notification the moment your score updates, and check your checklist offline — the full product, in your pocket.
+          </p>
+          <div className="app-promo-list">
+            <div className="app-promo-item"><span className="app-promo-ic">📷</span><div><b>Camera OCR scan</b><span>Point, shoot, and every field is extracted automatically.</span></div></div>
+            <div className="app-promo-item"><span className="app-promo-ic">🔔</span><div><b>Push notifications</b><span>Know the moment your audit finishes or a consultant replies.</span></div></div>
+            <div className="app-promo-item"><span className="app-promo-ic">📋</span><div><b>Offline checklist</b><span>Review what's left even without a connection.</span></div></div>
+          </div>
+        </div>
+        <div className="app-promo-visual">
+          <div className="phone-frame phone-sm"><img src="/screenshots/dashboard.png" alt="Dashboard on mobile" /></div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+// ── Destinations sample ──────────────────────────────────────────────────────
+function DestinationsGrid() {
+  const dests: [string, string, string][] = [
+    ['🇫🇷', 'France', 'Schengen'], ['🇩🇪', 'Germany', 'Schengen'], ['🇦🇪', 'UAE', 'Golden Visa'],
+    ['🇬🇧', 'UK', 'Standard Visitor'], ['🇨🇦', 'Canada', 'Visitor'], ['🇺🇸', 'USA', 'B1/B2'],
+  ];
+  return (
+    <section className="dest-section">
+      <div className="sec-head">
+        <h2 className="lp-h2 tc">24+ countries, live compliance data.</h2>
+        <p className="sec-sub tc">A sample of destinations covered — full list inside the app.</p>
+      </div>
+      <div className="dest-grid">
+        {dests.map(([flag, name, type]) => (
+          <div className="dest-chip" key={name}><span className="flag">{flag}</span><div><b>{name}</b><span>{type}</span></div></div>
+        ))}
+      </div>
+      <p className="dest-more">+ 18 more destinations, updated as embassy requirements change</p>
+    </section>
+  );
+}
+
+// ── Comparison table ─────────────────────────────────────────────────────────
+function ComparisonTable() {
+  const rows: [string, string, string, string][] = [
+    ['Cost', 'Free, but risk of resubmission fees', '$150–$500+ per application', 'Free audit, from $19/mo'],
+    ['Time to first review', 'Hours of manual research', '1–3 business days', 'Under 5 minutes'],
+    ['Checked against live embassy rules', 'Manual, easy to miss updates', "Depends on agent's knowledge", 'Automatically'],
+    ['Available 24/7', 'Yes', 'Business hours only', 'Yes'],
+    ['Human consultant on request', '—', 'Yes', 'Book anytime'],
+  ];
+  return (
+    <section className="compare-section">
+      <div className="sec-head">
+        <h2 className="lp-h2 tc">Why not just use an agent?</h2>
+        <p className="sec-sub tc">Same outcome you're after — approval — compared honestly.</p>
+      </div>
+      <div className="compare-wrap">
+        <table className="compare-table">
+          <thead><tr><th /><th>Doing it yourself</th><th>Traditional agent</th><th className="col-hot">Visa With Ease</th></tr></thead>
+          <tbody>
+            {rows.map(([label, diy, agent, us]) => (
+              <tr key={label}><td>{label}</td><td>{diy}</td><td>{agent}</td><td className="col-hot">{us}</td></tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
+// ── Teams / Enterprise banner ────────────────────────────────────────────────
+function TeamsBanner({ nav }: { nav: (p: string) => void }) {
+  return (
+    <section className="teams-section">
+      <div className="teams-banner">
+        <div>
+          <h2>Relocating a team, not just yourself?</h2>
+          <p>The Business plan adds an HR portal, bulk applications for dependents, API access, and white-label reports — built for mobility teams handling 10+ moves a year.</p>
+        </div>
+        <div className="teams-actions">
+          <button className="btn-white" onClick={() => nav('/pricing')}>See Business plan</button>
+          <button className="btn-ghost-dark" onClick={() => nav('/pricing')}>Talk to sales</button>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+// ── Blog preview — real posts, not placeholders ──────────────────────────────
+function BlogPreview({ nav }: { nav: (p: string) => void }) {
+  const picks = POSTS.slice(0, 3);
+  return (
+    <section className="blog-preview">
+      <div className="sec-head">
+        <h2 className="lp-h2 tc">From the blog.</h2>
+        <p className="sec-sub tc">Real, embassy-informed guidance — written by the team building the audit engine.</p>
+      </div>
+      <div className="blog-grid3">
+        {picks.map(p => (
+          <button className="blog-card3" key={p.slug} onClick={() => nav(`/blog/${p.slug}`)}>
+            <span className="blog-tag3" style={{ background: p.color + '18', color: p.color }}>{p.category}</span>
+            <h3>{p.title}</h3>
+            <p>{p.excerpt}</p>
+            <div className="blog-meta3"><span>{p.readTime}</span></div>
+          </button>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+// ── FAQ ───────────────────────────────────────────────────────────────────────
+function FAQSection() {
+  const items = [
+    { q: 'Are my uploaded documents stored permanently?', a: "No. Original files are processed only to generate your audit results — we don't keep a searchable copy of the raw document. Only your score and findings are saved to your account." },
+    { q: 'Do you store my card or payment details?', a: "No. Visa With Ease doesn't process payments today. No card numbers are collected anywhere on the site or app." },
+    { q: 'Which countries do you support?', a: '24+ destination countries today, with embassy requirement data refreshed continuously.' },
+    { q: 'Is Visa With Ease available on mobile?', a: 'Yes — the full product is on the web and as a native Android app. iOS is on the roadmap.' },
+    { q: 'How is my data protected?', a: 'All traffic runs over HTTPS/TLS, passwords are one-way hashed, and access to production data is limited to engineers who need it to operate the service.' },
+  ];
+  return (
+    <section className="faq-section">
+      <div className="sec-head"><h2 className="lp-h2 tc">Frequently asked.</h2></div>
+      <div className="faq-list2">
+        {items.map((it, i) => (
+          <details className="faq-item2" key={it.q} open={i === 0}>
+            <summary>{it.q}</summary>
+            <p>{it.a}</p>
+          </details>
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -599,12 +696,18 @@ export default function LandingPage({ onNavigate }: { onNavigate: (path: string)
       <TopNav nav={onNavigate} />
       <Hero onStart={() => onNavigate('/app')} />
       <StatsBar />
-      <StickyCarousel />
-      <StickyStory />
       <FeatureGrid />
-      <PricingStrip nav={onNavigate} />
+      <HowItWorks />
+      <ShowcaseCarousel />
+      <MobileAppPromo />
+      <DestinationsGrid />
+      <ComparisonTable />
       <Testimonials onNavigate={onNavigate} />
-      <PartnerStrip />
+      <PricingStrip nav={onNavigate} />
+      <TeamsBanner nav={onNavigate} />
+      <ComplianceBadges />
+      <BlogPreview nav={onNavigate} />
+      <FAQSection />
       <DownloadCTA onStart={() => onNavigate('/app')} />
       <Footer nav={onNavigate} />
     </div>

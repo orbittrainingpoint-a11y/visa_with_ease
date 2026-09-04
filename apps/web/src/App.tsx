@@ -584,7 +584,7 @@ function PublicSite() {
       <Route path="/blog" element={<BlogIndexPage />} />
       <Route path="/blog/:slug" element={<BlogPostPage />} />
       <Route path="/privacy" element={<PublicPage><PrivacyPolicyPage /></PublicPage>} />
-      <Route path="/terms" element={<PublicPage><LegalPlaceholderPage title="Terms of Service" /></PublicPage>} />
+      <Route path="/terms" element={<PublicPage><TermsOfServicePage /></PublicPage>} />
       <Route path="/pricing" element={<PublicPage><PricingPage /></PublicPage>} />
       <Route path="/help" element={<PublicPage><HelpCenter /></PublicPage>} />
       <Route path="/partners" element={<PublicPage><EcosystemPartners /></PublicPage>} />
@@ -671,116 +671,360 @@ function PublicPage({ children }: { children: React.ReactNode }) {
 }
 
 function PrivacyPolicyPage() {
-  const h2: React.CSSProperties = { fontSize: 18, fontWeight: 700, color: '#0B1F4B', margin: '28px 0 10px' };
+  const h2: React.CSSProperties = { fontSize: 18, fontWeight: 700, color: '#0B1F4B', margin: '30px 0 10px' };
+  const h3: React.CSSProperties = { fontSize: 14.5, fontWeight: 700, color: '#0B1F4B', margin: '16px 0 6px' };
   const p: React.CSSProperties = { color: '#334155', lineHeight: 1.7, margin: '0 0 12px' };
   const ul: React.CSSProperties = { color: '#334155', lineHeight: 1.7, margin: '0 0 12px', paddingLeft: 20 };
+  const lnk = { color: '#1A56DB' };
+  const note: React.CSSProperties = { ...p, background: '#F8FAFC', border: '1px solid #E2E8F0', borderRadius: 10, padding: '12px 16px', fontSize: 13.5 };
   return (
-    <section className="page" style={{ maxWidth: 760, margin: '0 auto' }}>
+    <section className="page" style={{ maxWidth: 820, margin: '0 auto' }}>
       <div className="page-title"><div><p>Legal</p><h1>Privacy Policy</h1></div></div>
       <article className="panel" style={{ padding: '28px 32px' }}>
-        <p style={{ ...p, color: '#64748B', fontSize: 13 }}>Effective date: September 4, 2026</p>
+        <p style={{ ...p, color: '#64748B', fontSize: 13 }}>Effective date: September 4, 2026 · Last reviewed: September 4, 2026</p>
 
         <p style={p}>
-          Visa With Ease ("we", "us") provides an AI-assisted visa document review and application-tracking
-          service. This policy explains what information we collect, how we use it, and the choices you have.
-          If anything here is unclear, contact us at{' '}
-          <a href="mailto:support@visawithease.app" style={{ color: '#1A56DB' }}>support@visawithease.app</a>.
+          Visa With Ease ("Visa With Ease", "we", "us", "our") provides an AI-assisted visa document review,
+          readiness-scoring, and application-tracking service available on the web and on Android (the
+          "Service"). This Privacy Policy explains what personal data we collect, why, the legal grounds we
+          rely on, who we share it with, how long we keep it, and the rights available to you — including
+          rights specific to the European Economic Area ("EEA") and UK (GDPR/UK GDPR), the United Arab
+          Emirates (Federal Decree-Law No. 45 of 2021 on the Protection of Personal Data, "UAE PDPL"), and
+          US states with comprehensive privacy laws (e.g. California's CCPA/CPRA, Virginia's VCDPA, Colorado's
+          CPA). If you are in a jurisdiction not named explicitly below, the same protections in this policy
+          apply to you.
+        </p>
+        <p style={note}>
+          This policy is written to be genuinely accurate about what the product does today, not aspirational
+          marketing copy — where a feature is still rolling out (for example, automatic document deletion) we
+          say so explicitly rather than promising something not yet fully live. It is not a substitute for
+          independent legal advice about your specific situation or jurisdiction.
         </p>
 
-        <h2 style={h2}>No payment or card data</h2>
+        <h2 style={h2}>1. Who is responsible for your data</h2>
+        <p style={p}>
+          Visa With Ease is the data controller (or, under UAE PDPL, the "Controller") for the personal data
+          described in this policy. For any privacy question, request, or complaint, contact us at{' '}
+          <a href="mailto:support@visawithease.app" style={lnk}>support@visawithease.app</a>. We aim to respond
+          to every privacy request — regardless of where you live — within 30 days, and sooner where local law
+          requires a shorter window (for example, the UAE PDPL's expectation of prompt handling).
+        </p>
+
+        <h2 style={h2}>2. No payment or card data</h2>
         <p style={p}>
           Visa With Ease does not currently process payments. We do not collect, store, or transmit credit card
-          numbers, bank details, or any other payment information anywhere on this site or in our mobile app.
-          If paid plans are introduced in the future, payment will be handled entirely by a licensed third-party
-          payment processor (e.g. Stripe) that never shares full card numbers with us — this policy will be
-          updated first, and you will be told before any billing feature goes live.
+          numbers, bank account details, or any other payment instrument data anywhere on this site or in our
+          mobile app. If paid plans are introduced in the future, payment will be handled entirely by a
+          licensed, PCI-DSS-compliant third-party payment processor (e.g. Stripe) that never shares full card
+          numbers with us — this policy will be updated first, and you will be told before any billing feature
+          goes live.
         </p>
 
-        <h2 style={h2}>Information we collect</h2>
+        <h2 style={h2}>3. Information we collect</h2>
         <ul style={ul}>
-          <li><strong>Account information:</strong> name, email address, and a securely hashed password (or, if you use Google Sign-In, the profile info Google shares with your consent — name, email, profile photo).</li>
+          <li><strong>Account information:</strong> name, email address, and a securely hashed password — or, if you use Google Sign-In, the profile information Google shares with your consent (name, email, profile photo).</li>
           <li><strong>Application data:</strong> the destination country, visa type, travel dates, and checklist progress you enter to track your visa application.</li>
-          <li><strong>Documents you upload:</strong> files you submit for AI review (e.g. passport scans, bank statements, employment letters), for the sole purpose of generating your audit results.</li>
-          <li><strong>Usage data:</strong> basic device/browser information and product-usage events (e.g. pages visited, features used) so we can diagnose issues and improve the product.</li>
-          <li><strong>Cookies:</strong> a session cookie/token to keep you signed in, and no third-party advertising or tracking cookies.</li>
+          <li><strong>Documents you upload:</strong> files you submit for AI review (e.g. passport scans, bank statements, employment letters), used solely to generate your audit results.</li>
+          <li><strong>Communications:</strong> messages you send our support team or the in-app AI chat assistant, and any consultant you choose to book.</li>
+          <li><strong>Usage and device data:</strong> browser/device type, IP address (used transiently for security and abuse prevention, not stored against your profile long-term), and product-usage events (pages visited, features used) so we can diagnose issues and improve the product.</li>
+          <li><strong>Cookies and similar technologies:</strong> see Section 8 below.</li>
         </ul>
+        <p style={p}>We do not knowingly collect sensitive/special-category data (e.g. health, biometric, or genetic data) beyond what appears incidentally in a document you voluntarily upload for audit — such content is processed only for the audit purpose described in Section 5 and is not used for any other purpose.</p>
 
-        <h2 style={h2}>How we use your information</h2>
+        <h2 style={h2}>4. How we use your information</h2>
         <ul style={ul}>
-          <li>To create and secure your account, and authenticate you on sign-in.</li>
-          <li>To run AI-assisted analysis on the documents you choose to upload and produce your readiness score and findings.</li>
-          <li>To send you account-related email (verification codes, password resets, security alerts) — we do not send marketing email without your consent.</li>
-          <li>To operate, maintain, and improve the reliability and security of the service.</li>
+          <li>To create, secure, and authenticate your account.</li>
+          <li>To run AI-assisted analysis on documents you choose to upload and produce your readiness score and findings.</li>
+          <li>To send account-related email (verification codes, password resets, security alerts) — we do not send marketing email without your opt-in consent, and every marketing email includes an unsubscribe link.</li>
+          <li>To operate, secure, debug, and improve the reliability of the Service.</li>
+          <li>To comply with legal obligations (e.g. responding to a lawful request from a regulator or court).</li>
         </ul>
 
-        <h2 style={h2}>AI processing of your documents</h2>
+        <h2 style={h2}>5. Legal bases for processing (GDPR / UK GDPR)</h2>
+        <p style={p}>If you are in the EEA or UK, we rely on the following legal bases under Article 6 GDPR:</p>
+        <ul style={ul}>
+          <li><strong>Contract</strong> — processing your account and application data is necessary to provide the Service you signed up for.</li>
+          <li><strong>Consent</strong> — for optional features such as marketing email or, where applicable, non-essential cookies; you may withdraw consent at any time without affecting past processing.</li>
+          <li><strong>Legitimate interests</strong> — for fraud prevention, service security, and product analytics, balanced against your rights; you can object to this processing (Section 11).</li>
+          <li><strong>Legal obligation</strong> — where we must retain or disclose data to comply with applicable law.</li>
+        </ul>
+
+        <h2 style={h2}>6. AI processing and automated decision-making</h2>
         <p style={p}>
           Document text and the questions you ask our chat assistant are sent to a third-party AI provider
-          (Anthropic or Google) strictly to generate your audit results and answers. These providers process
-          the content solely to return a response to us — they are contractually restricted from using API
-          traffic to train their models, and we do not send them your name, email, or account credentials
+          (Anthropic or Google Gemini) strictly to generate your audit results and answers. These providers
+          process the content solely to return a response to us — they are contractually restricted from using
+          API traffic to train their models, and we do not send them your name, email, or account credentials
           alongside the document content.
         </p>
+        <p style={p}>
+          Your visa readiness score is generated by an automated process. It is provided as guidance only —
+          it is not a legal, immigration, or embassy decision, does not determine any application outcome, and
+          you are never denied a service solely on the basis of an automated score with no ability to seek
+          human input: you can always contact <a href="mailto:support@visawithease.app" style={lnk}>support@visawithease.app</a> or
+          book a human consultant to review a finding you believe is wrong.
+        </p>
 
-        <h2 style={h2}>Document retention</h2>
+        <h2 style={h2}>7. Document retention</h2>
         <p style={p}>
           Uploaded files are used only to generate your audit results. Only the resulting score, severity
-          labels, and findings are kept in your account so you can track progress over time — we do not keep
-          a searchable copy of your raw document text. We are rolling out fully automated deletion of original
+          labels, and findings are kept in your account so you can track progress over time — we do not keep a
+          searchable copy of your raw document text. We are rolling out fully automated deletion of original
           files within 72 hours of upload; until that is confirmed live for your account, you can request
           immediate deletion of any file at any time by emailing{' '}
-          <a href="mailto:support@visawithease.app" style={{ color: '#1A56DB' }}>support@visawithease.app</a>.
+          <a href="mailto:support@visawithease.app" style={lnk}>support@visawithease.app</a>. Account records
+          are kept for as long as your account is active, plus a limited period afterward to satisfy legal,
+          accounting, or security requirements, after which they are deleted or anonymized.
         </p>
 
-        <h2 style={h2}>How we protect your data</h2>
+        <h2 style={h2}>8. Cookies and similar technologies</h2>
+        <p style={p}>
+          We use only what is strictly necessary to run the Service: a session cookie/token that keeps you
+          signed in, and a local flag recording whether you've dismissed the cookie notice. We do not use
+          third-party advertising or cross-site tracking cookies. If that changes, we will update this section
+          and, where legally required (including under the EU's ePrivacy rules), ask for your consent first
+          through a cookie banner with a genuine "reject" option.
+        </p>
+
+        <h2 style={h2}>9. How we protect your data</h2>
         <ul style={ul}>
-          <li>All traffic to and from Visa With Ease is encrypted in transit via HTTPS/TLS — the padlock in your browser confirms this on every page.</li>
+          <li>All traffic to and from Visa With Ease is encrypted in transit via HTTPS/TLS.</li>
           <li>Passwords are never stored in plain text; they are one-way hashed.</li>
           <li>Access to production data is limited to the engineers who need it to operate the service.</li>
-          <li>We do not sell your personal information to anyone.</li>
+          <li>We do not sell your personal information to anyone (see Section 12).</li>
+        </ul>
+        <p style={p}>
+          No system is perfectly secure. If we become aware of a data breach affecting your personal data, we
+          will notify affected users and the relevant regulator without undue delay, and in any case within the
+          timeframe required by applicable law (for example, 72 hours under GDPR Article 33 where feasible).
+        </p>
+
+        <h2 style={h2}>10. Who we share information with</h2>
+        <p style={p}>We share personal data only with the following categories of recipients, and only to the extent needed to provide the feature you're using:</p>
+        <ul style={ul}>
+          <li><strong>Cloud infrastructure and database:</strong> Google Cloud / Firebase, which hosts our application database.</li>
+          <li><strong>AI processing:</strong> Anthropic and Google (Gemini API), for document audits and the chat assistant, as described in Section 6.</li>
+          <li><strong>Authentication:</strong> Google, if you choose Google Sign-In — see Section 13 for our Google API Services User Data Policy disclosure.</li>
+          <li><strong>Email delivery:</strong> our transactional email provider, to send verification codes, password resets, and security alerts.</li>
+          <li><strong>Consultants:</strong> if you choose to book a consultation, the independent consultant you select receives only the application details you explicitly authorize for that booking.</li>
+          <li><strong>Legal and safety:</strong> law enforcement or regulators, only where required by a valid legal process, or to protect the rights, property, or safety of Visa With Ease, our users, or the public.</li>
+        </ul>
+        <p style={p}>We do not share your data with advertisers or data brokers, and we do not sell your personal data.</p>
+
+        <h2 style={h2}>11. International data transfers</h2>
+        <p style={p}>
+          Our infrastructure and processors may store or process data outside your home country, including in
+          the United States. Where we transfer personal data out of the EEA, UK, or Switzerland, we rely on
+          recognized safeguards such as the European Commission's Standard Contractual Clauses (or the UK's
+          International Data Transfer Addendum) with our processors. Where we transfer data out of the UAE, we
+          rely on the derogations and safeguards permitted under the UAE PDPL, including contractual
+          protections with recipients.
+        </p>
+
+        <h2 style={h2}>12. Your privacy rights</h2>
+
+        <h3 style={h3}>If you are in the EEA, UK, or Switzerland (GDPR / UK GDPR)</h3>
+        <ul style={ul}>
+          <li>Right of access to the personal data we hold about you.</li>
+          <li>Right to rectification of inaccurate or incomplete data.</li>
+          <li>Right to erasure ("right to be forgotten"), subject to legal retention obligations.</li>
+          <li>Right to restrict or object to processing, including processing based on legitimate interests.</li>
+          <li>Right to data portability, in a structured, commonly used, machine-readable format.</li>
+          <li>Right to withdraw consent at any time, where processing is based on consent.</li>
+          <li>Right to lodge a complaint with your local supervisory authority (a full list is available via the European Data Protection Board, edpb.europa.eu, or the UK's Information Commissioner's Office, ico.org.uk).</li>
         </ul>
 
-        <h2 style={h2}>Who we share information with</h2>
+        <h3 style={h3}>If you are in the UAE (PDPL)</h3>
+        <ul style={ul}>
+          <li>Right to be informed of how your personal data is processed (this policy).</li>
+          <li>Right to access, correct, and request erasure of your personal data.</li>
+          <li>Right to restrict or object to processing, and to withdraw previously given consent.</li>
+          <li>Right to data portability and to request we stop direct-marketing processing.</li>
+          <li>Right to file a complaint with the UAE Data Office (u.ae) if you believe your rights have been violated.</li>
+        </ul>
+
+        <h3 style={h3}>If you are a US resident (CCPA/CPRA and similar state laws)</h3>
+        <ul style={ul}>
+          <li><strong>Right to know</strong> the categories and specific pieces of personal information we've collected about you, and the purposes for collecting and sharing it.</li>
+          <li><strong>Right to delete</strong> personal information we've collected from you, subject to certain exceptions.</li>
+          <li><strong>Right to correct</strong> inaccurate personal information.</li>
+          <li><strong>Right to opt out of "sale" or "sharing"</strong> of personal information — we do not sell or share your personal information for cross-context behavioral advertising, so there is nothing to opt out of today, but this right remains available should that ever change.</li>
+          <li><strong>Right to non-discrimination</strong> for exercising any of these rights.</li>
+        </ul>
+        <p style={p}>We honor the Global Privacy Control (GPC) signal as a valid opt-out request where legally required.</p>
+
+        <h3 style={h3}>Everywhere else</h3>
+        <p style={p}>Regardless of where you live, you can email <a href="mailto:support@visawithease.app" style={lnk}>support@visawithease.app</a> to access, correct, export, or delete your personal data, or to ask any question about how it's used. We apply the same standard of response to every request, everywhere.</p>
+
+        <h2 style={h2}>13. Google API Services User Data Policy</h2>
         <p style={p}>
-          We share information only with the vendors that help us run the service (our cloud database provider,
-          our AI providers for document analysis, and our email provider for account notifications), and only
-          to the extent needed to provide the feature you're using. If you choose to book a consultation, the
-          consultant you select receives the application details you explicitly authorize for that booking. We
-          do not share your data with advertisers or data brokers.
+          Visa With Ease's use and transfer of information received from Google APIs adheres to the{' '}
+          <a href="https://developers.google.com/terms/api-services-user-data-policy" target="_blank" rel="noreferrer" style={lnk}>Google API Services User Data Policy</a>,
+          including the Limited Use requirements. We only use Google Sign-In to authenticate you and read the
+          basic profile fields (name, email, profile photo) you consent to share — we do not request or access
+          your Gmail, Google Drive, or any other Google Workspace data, and Google account information is
+          never used to train AI/ML models or for advertising.
         </p>
 
-        <h2 style={h2}>Your rights</h2>
+        <h2 style={h2}>14. Children's privacy</h2>
         <p style={p}>
-          You can access, correct, or delete your account information, and request an export or deletion of
-          your data, at any time by emailing{' '}
-          <a href="mailto:support@visawithease.app" style={{ color: '#1A56DB' }}>support@visawithease.app</a>.
-          We will respond within 30 days.
+          Visa With Ease is not directed at children and is not intended for use by anyone under 16 (or the
+          minimum age of digital consent in your country, if higher — for example, 13 under the US Children's
+          Online Privacy Protection Act for services directed at children, which this is not). We do not
+          knowingly collect personal data from children. If we learn we have collected data from a child in
+          violation of this policy, we will delete it promptly — contact us if you believe this has happened.
         </p>
 
-        <h2 style={h2}>Children's privacy</h2>
-        <p style={p}>Visa With Ease is not directed at children under 16, and we do not knowingly collect information from them.</p>
+        <h2 style={h2}>15. Changes to this policy</h2>
+        <p style={p}>
+          If we make material changes to this policy, we will update the effective date above and, where the
+          change is significant, notify you by email or an in-app notice before it takes effect.
+        </p>
 
-        <h2 style={h2}>Changes to this policy</h2>
-        <p style={p}>If we make material changes to this policy, we will update the effective date above and, where appropriate, notify you by email.</p>
-
-        <h2 style={h2}>Contact us</h2>
+        <h2 style={h2}>16. Contact us</h2>
         <p style={{ ...p, marginBottom: 0 }}>
-          Questions about this policy or your data: <a href="mailto:support@visawithease.app" style={{ color: '#1A56DB' }}>support@visawithease.app</a>.
+          Questions, requests, or complaints about this policy or your data:{' '}
+          <a href="mailto:support@visawithease.app" style={lnk}>support@visawithease.app</a>. If you are in the
+          EEA/UK and remain unsatisfied with our response, you have the right to lodge a complaint with your
+          local data protection authority. If you are in the UAE, you may contact the UAE Data Office.
         </p>
       </article>
     </section>
   );
 }
 
-function LegalPlaceholderPage({ title }: { title: string }) {
+function TermsOfServicePage() {
+  const h2: React.CSSProperties = { fontSize: 18, fontWeight: 700, color: '#0B1F4B', margin: '30px 0 10px' };
+  const p: React.CSSProperties = { color: '#334155', lineHeight: 1.7, margin: '0 0 12px' };
+  const ul: React.CSSProperties = { color: '#334155', lineHeight: 1.7, margin: '0 0 12px', paddingLeft: 20 };
+  const lnk = { color: '#1A56DB' };
+  const note: React.CSSProperties = { ...p, background: '#FFFBEB', border: '1px solid #FDE68A', borderRadius: 10, padding: '12px 16px', fontSize: 13.5 };
   return (
-    <section className="page" style={{ maxWidth: 640, margin: '0 auto' }}>
-      <div className="page-title"><div><p>Legal</p><h1>{title}</h1></div></div>
-      <article className="panel">
-        <p style={{ color: '#334155', lineHeight: 1.7 }}>
-          Our {title} is being finalized and will be published here before launch. In the meantime,
-          if you have any questions about how your data is collected, stored, or used, please contact
-          us at <a href="mailto:support@visawithease.app" style={{ color: '#1A56DB' }}>support@visawithease.app</a>.
+    <section className="page" style={{ maxWidth: 820, margin: '0 auto' }}>
+      <div className="page-title"><div><p>Legal</p><h1>Terms of Service</h1></div></div>
+      <article className="panel" style={{ padding: '28px 32px' }}>
+        <p style={{ ...p, color: '#64748B', fontSize: 13 }}>Effective date: September 4, 2026</p>
+
+        <p style={p}>
+          These Terms of Service ("Terms") govern your use of Visa With Ease's website and mobile application
+          (the "Service"), operated by Visa With Ease ("we", "us", "our"). By creating an account or using the
+          Service, you agree to these Terms. If you don't agree, please don't use the Service.
+        </p>
+
+        <h2 style={h2}>1. Not legal or immigration advice</h2>
+        <p style={note}>
+          <strong>Visa With Ease is a document-audit and readiness-scoring tool — it is not a law firm,
+          immigration consultancy, or government authority, and nothing in the Service constitutes legal or
+          immigration advice.</strong> Your readiness score and AI findings are guidance to help you prepare a
+          stronger application; they do not guarantee approval, are not a substitute for advice from a licensed
+          immigration attorney or authorized consultant, and embassy/consulate decisions are made solely by the
+          relevant government authority, entirely outside our control.
+        </p>
+
+        <h2 style={h2}>2. Eligibility and accounts</h2>
+        <ul style={ul}>
+          <li>You must be at least 16 years old (or the age of digital consent in your country, if higher) to create an account.</li>
+          <li>You're responsible for the accuracy of the information you provide and for keeping your login credentials confidential.</li>
+          <li>You're responsible for all activity that occurs under your account. Tell us immediately at <a href="mailto:support@visawithease.app" style={lnk}>support@visawithease.app</a> if you suspect unauthorized access.</li>
+        </ul>
+
+        <h2 style={h2}>3. Acceptable use</h2>
+        <p style={p}>You agree not to:</p>
+        <ul style={ul}>
+          <li>Upload documents that are forged, stolen, or that you don't have the right to submit.</li>
+          <li>Use the Service to misrepresent your identity or another person's identity to a government authority.</li>
+          <li>Attempt to reverse-engineer, scrape, or interfere with the Service or its AI systems.</li>
+          <li>Use the Service for any unlawful purpose or in violation of any applicable immigration, export-control, or sanctions law.</li>
+        </ul>
+        <p style={p}>We may suspend or terminate accounts that violate this section.</p>
+
+        <h2 style={h2}>4. Your content and documents</h2>
+        <p style={p}>
+          You retain ownership of the documents and information you upload ("Your Content"). You grant us a
+          limited license to process Your Content solely to provide the Service to you (generating audit
+          results, scores, and — if you request it — sharing relevant details with a consultant you book). We
+          do not use Your Content to train AI models, and our handling of it is described in the{' '}
+          <Link to="/privacy" style={lnk}>Privacy Policy</Link>.
+        </p>
+
+        <h2 style={h2}>5. Consultants and third-party bookings</h2>
+        <p style={p}>
+          Consultants available for booking through Visa With Ease are independent professionals, not our
+          employees or agents. We facilitate the introduction and scheduling; we do not supervise, guarantee,
+          or take responsibility for the advice a consultant gives, and any engagement with a consultant is a
+          separate arrangement between you and them.
+        </p>
+
+        <h2 style={h2}>6. Fees</h2>
+        <p style={p}>
+          The Service is currently free to use, including AI document audits at the free tier described on our{' '}
+          <Link to="/pricing" style={lnk}>Pricing</Link> page. We do not collect payment or card information
+          today. If we introduce paid plans, pricing, billing terms, and payment handling (via a licensed
+          third-party processor) will be clearly disclosed before you're charged anything, and these Terms will
+          be updated accordingly.
+        </p>
+
+        <h2 style={h2}>7. Intellectual property</h2>
+        <p style={p}>
+          The Service, including its software, design, text, and branding (excluding Your Content), is owned by
+          Visa With Ease and protected by intellectual property laws. You may not copy, modify, or distribute
+          any part of the Service without our written permission.
+        </p>
+
+        <h2 style={h2}>8. Disclaimers</h2>
+        <p style={p}>
+          The Service is provided "as is" and "as available," without warranties of any kind, express or
+          implied, including merchantability, fitness for a particular purpose, and non-infringement. We do not
+          warrant that the Service will be uninterrupted, error-free, or that AI-generated findings will be
+          complete or accurate in every case — always verify critical requirements against the official
+          embassy/consulate source before submitting an application.
+        </p>
+
+        <h2 style={h2}>9. Limitation of liability</h2>
+        <p style={p}>
+          To the maximum extent permitted by applicable law, Visa With Ease will not be liable for any indirect,
+          incidental, special, consequential, or punitive damages, or any loss of profits, data, or goodwill,
+          arising from your use of the Service — including a visa refusal, delay, or any decision made by an
+          embassy, consulate, or government authority. Nothing in these Terms limits liability that cannot be
+          limited under applicable law (for example, liability for gross negligence, fraud, or death or personal
+          injury caused by negligence, where applicable).
+        </p>
+
+        <h2 style={h2}>10. Indemnification</h2>
+        <p style={p}>
+          You agree to indemnify and hold Visa With Ease harmless from claims, damages, or expenses arising from
+          your violation of these Terms, misuse of the Service, or infringement of any third party's rights
+          through content you submit.
+        </p>
+
+        <h2 style={h2}>11. Termination</h2>
+        <p style={p}>
+          You may stop using the Service and delete your account at any time from Settings, or by emailing{' '}
+          <a href="mailto:support@visawithease.app" style={lnk}>support@visawithease.app</a>. We may suspend or
+          terminate your access if you materially breach these Terms. Sections that by their nature should
+          survive termination (e.g. intellectual property, disclaimers, limitation of liability) will survive.
+        </p>
+
+        <h2 style={h2}>12. Changes to these Terms</h2>
+        <p style={p}>
+          We may update these Terms from time to time. If a change is material, we will notify you by email or
+          an in-app notice before it takes effect. Continued use of the Service after a change takes effect
+          constitutes acceptance of the updated Terms.
+        </p>
+
+        <h2 style={h2}>13. Governing law and disputes</h2>
+        <p style={p}>
+          These Terms are governed by the laws of the United Arab Emirates, without regard to conflict-of-law
+          principles, without prejudice to any mandatory consumer-protection rights you have under the law of
+          your own country of residence (including, where applicable, the EEA, UK, or a US state) that cannot be
+          waived by agreement. We encourage resolving disputes informally first — contact us at{' '}
+          <a href="mailto:support@visawithease.app" style={lnk}>support@visawithease.app</a> before pursuing
+          formal proceedings.
+        </p>
+
+        <h2 style={h2}>14. Contact us</h2>
+        <p style={{ ...p, marginBottom: 0 }}>
+          Questions about these Terms: <a href="mailto:support@visawithease.app" style={lnk}>support@visawithease.app</a>.
         </p>
       </article>
     </section>

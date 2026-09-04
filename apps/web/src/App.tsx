@@ -42,7 +42,7 @@ import {
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, NavLink, Navigate, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import LandingPage from './LandingPage';
-import { BlogIndexPage, BlogPostPage } from './Blog';
+import { BlogIndexPage, BlogPostPage, POSTS } from './Blog';
 import type { AuditResult, AuthSessionResponse, ChatResponse, RequirementsResponse, VisaApplication } from '@visaiq/contracts';
 import { applications as fallbackApplications, auditResult as fallbackAuditResult, requirements as fallbackRequirements } from '@visaiq/mock-data';
 import { scoreColor } from '@visaiq/design-system';
@@ -2796,6 +2796,75 @@ function SearchModal({ query, setQuery, onClose }: { query: string; setQuery: (q
   );
 }
 
+// ─── Shared "deep content" sections for the free public tool pages ───────────
+// Every tool below is a real, working calculator/lookup — this adds the
+// explanatory depth (how it works, FAQ, related tools) that a first-time
+// visitor or search engine needs, without touching the tool's own logic.
+function ToolInfoSections({ intro, tips, steps, faqs, related }: {
+  intro: string;
+  tips: string[];
+  steps: { t: string; b: string }[];
+  faqs: { q: string; a: string }[];
+  related: { label: string; path: string }[];
+}) {
+  const navigate = useNavigate();
+  return (
+    <>
+      <article className="panel" style={{ marginTop: 24 }}>
+        <p style={{ color: '#334155', lineHeight: 1.75, fontSize: 14, margin: 0 }}>{intro}</p>
+      </article>
+
+      <div className="page-title" style={{ marginTop: 36, marginBottom: 16 }}>
+        <div><p>Before you rely on this number</p><h1 style={{ fontSize: 22 }}>What experienced applicants know</h1></div>
+      </div>
+      <article className="panel" style={{ marginBottom: 8 }}>
+        <ul style={{ margin: 0, paddingLeft: 20, display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {tips.map(t => (
+            <li key={t} style={{ fontSize: 13.5, color: '#334155', lineHeight: 1.65 }}>{t}</li>
+          ))}
+        </ul>
+      </article>
+
+      <div className="page-title" style={{ marginTop: 36, marginBottom: 16 }}>
+        <div><p>How it works</p><h1 style={{ fontSize: 22 }}>{steps.length} steps</h1></div>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 16, marginBottom: 8 }}>
+        {steps.map((s, i) => (
+          <article className="panel" key={s.t}>
+            <div style={{ width: 30, height: 30, borderRadius: 15, background: '#0B1F4B', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 800, fontSize: 13, marginBottom: 12 }}>{i + 1}</div>
+            <h3 style={{ fontSize: 14, fontWeight: 700, margin: '0 0 6px', color: '#0F172A' }}>{s.t}</h3>
+            <p style={{ fontSize: 13, color: '#64748B', lineHeight: 1.6, margin: 0 }}>{s.b}</p>
+          </article>
+        ))}
+      </div>
+
+      <div className="page-title" style={{ marginTop: 36, marginBottom: 16 }}>
+        <div><p>Frequently asked</p><h1 style={{ fontSize: 22 }}>Questions about this tool</h1></div>
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 8 }}>
+        {faqs.map(f => (
+          <details key={f.q} className="panel" style={{ padding: '16px 22px', cursor: 'pointer' }}>
+            <summary style={{ fontWeight: 700, fontSize: 14, color: '#0F172A' }}>{f.q}</summary>
+            <p style={{ marginTop: 10, marginBottom: 0, fontSize: 13, color: '#64748B', lineHeight: 1.65 }}>{f.a}</p>
+          </details>
+        ))}
+      </div>
+
+      <div className="page-title" style={{ marginTop: 36, marginBottom: 16 }}>
+        <div><p>Explore more</p><h1 style={{ fontSize: 22 }}>Related tools</h1></div>
+      </div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
+        {related.map(r => (
+          <button key={r.path} onClick={() => navigate(r.path)}
+            style={{ padding: '11px 20px', borderRadius: 10, border: '1px solid #E2E8F0', background: '#fff', color: '#1A56DB', fontWeight: 700, fontSize: 13, cursor: 'pointer' }}>
+            {r.label} →
+          </button>
+        ))}
+      </div>
+    </>
+  );
+}
+
 // ─── Visa Calculator ──────────────────────────────────────────────────────────
 const CALC_DESTS = ['France (Schengen)', 'United Kingdom', 'United States', 'Canada', 'Australia', 'Germany'];
 const CALC_TYPES = ['Tourist', 'Business', 'Student', 'Work', 'Family'];
@@ -2878,6 +2947,32 @@ function VisaCalculator() {
           </article>
         </div>
       </div>
+      <ToolInfoSections
+        tips={[
+          'A "strong" self-rating only helps if it matches your documents — an inflated rating here won\'t change what an officer actually sees in your file.',
+          'Financial evidence and travel history carry the most weight in this model because they\'re the two reasons cited most often in real refusal letters.',
+          'If you\'ve been refused before, that history affects your real-world odds even when every other factor looks strong — disclose it and address it head-on rather than hoping it goes unnoticed.',
+          'Run the calculator again after each document you gather — watching the score move tells you which fix actually mattered, not just which felt important.',
+        ]}
+        intro="The visa score calculator estimates your approval readiness before you upload a single document. It weighs the same four factors an AI audit checks in depth — financial evidence, travel history, employment stability, and ties to your home country — so you know where you stand and what to fix before you start gathering paperwork."
+        steps={[
+          { t: 'Pick destination and visa type', b: 'Requirements and typical scrutiny vary a lot by country and category — a UK visitor visa and a US work visa are judged on different things.' },
+          { t: 'Rate your profile honestly', b: 'The sliders map to what an officer actually looks for: consistent income, prior travel, stable employment, and reasons to return home.' },
+          { t: 'Read your recommendation', b: 'The tool highlights your single weakest factor first — fixing that usually moves your score more than polishing an already-strong area.' },
+        ]}
+        faqs={[
+          { q: 'Is this the same score as the AI document audit?', a: 'No — this calculator is a quick self-assessment based on how you rate yourself. The full AI audit inside the app reads your actual uploaded documents and produces a more precise 0–100 score with specific findings.' },
+          { q: 'Why did my score change so much from one slider?', a: 'Financial evidence and travel history are weighted highest (30% and 25%) because they are the two factors embassies cite most often in refusals — small changes there move the total more than employment or ties.' },
+          { q: 'Does a high score guarantee approval?', a: "No tool can guarantee a visa outcome — the decision belongs entirely to the embassy or consulate. This score reflects application strength, not a prediction of the officer's decision." },
+          { q: 'Which countries does the calculator cover?', a: 'The quick calculator covers 6 common destinations for a fast estimate; the full app supports 24+ countries with live, embassy-specific requirement checks.' },
+        ]}
+        related={[
+          { label: 'Bank Balance Estimator', path: '/bank-balance' },
+          { label: 'Embassy Finder', path: '/embassy-finder' },
+          { label: 'Country Comparison', path: '/country-comparison' },
+          { label: 'Start a real AI audit', path: '/app' },
+        ]}
+      />
     </section>
   );
 }
@@ -2963,6 +3058,43 @@ function BankBalance() {
           </article>
         </div>
       </div>
+      <article className="panel" style={{ marginTop: 24 }}>
+        <h2>Published daily minimums, at a glance</h2>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 10, marginTop: 12 }}>
+          {countries.map(c => (
+            <div key={c} style={{ padding: '12px 14px', borderRadius: 10, background: '#F8FAFC', border: '1px solid #F1F5F9' }}>
+              <div style={{ fontSize: 12, color: '#64748B', fontWeight: 600 }}>{c}</div>
+              <div style={{ fontSize: 16, fontWeight: 800, color: '#0F172A', marginTop: 4 }}>{BB_DATA[c].symbol}{BB_DATA[c].daily}<span style={{ fontSize: 11, fontWeight: 600, color: '#94A3B8' }}> /day/person</span></div>
+            </div>
+          ))}
+        </div>
+      </article>
+      <ToolInfoSections
+        tips={[
+          'A balance that only clears the minimum on the day of application, with no deposit history, reads very differently to an officer than the same balance built up steadily over three months.',
+          "Sudden large deposits shortly before applying are one of the most commonly flagged patterns — if a gift or loan is funding your trip, a signed letter explaining the source matters as much as the balance itself.",
+          'If multiple people are travelling together, most consulates expect the account to cover every traveler for every day — not just the primary applicant.',
+          'Currency swings between now and your appointment date can matter — re-check the estimate close to when you actually print your bank statement.',
+        ]}
+        intro="Most visa refusals citing 'insufficient funds' don't happen because the applicant is poor — they happen because nobody checked the destination's actual published daily minimum before the bank statement was printed. This estimator converts a simple trip length and traveler count into the balance an officer will expect to see, in both USD and the local currency."
+        steps={[
+          { t: 'Choose your destination', b: 'Daily minimums are set by each country, not by us — a Schengen trip and a US trip have very different published thresholds.' },
+          { t: 'Enter trip length and travelers', b: 'Most consulates expect the balance to cover every traveler on the itinerary for every day of the stay, not just the applicant.' },
+          { t: 'Check the converted total', b: 'The estimate uses live exchange rates where available, so the local-currency figure matches what your bank statement should show.' },
+        ]}
+        faqs={[
+          { q: 'Does the bank balance have to be exactly this amount?', a: "Treat this as a floor, not a target — a balance right at the minimum with no history looks weaker than a somewhat lower balance with 3 months of stable, consistent deposits." },
+          { q: 'Whose bank statement counts — mine, or a sponsor\'s?', a: "Most consulates accept a sponsor's statement plus a signed sponsorship/affidavit letter, but requirements differ by country — check the specific embassy page or ask in the AI chat inside the app." },
+          { q: 'Why did the total change without me changing anything?', a: 'The converted local-currency figure updates with live exchange rates, so it can shift slightly between visits even if your trip details stay the same.' },
+          { q: 'Does a bigger balance always help?', a: "Beyond the published minimum, consistency and traceability of the funds matter more than the raw number — a sudden large deposit right before applying is a common red flag officers are trained to notice." },
+        ]}
+        related={[
+          { label: 'Visa Score Calculator', path: '/visa-calculator' },
+          { label: 'Country Comparison', path: '/country-comparison' },
+          { label: 'Embassy Finder', path: '/embassy-finder' },
+          { label: 'Start a real AI audit', path: '/app' },
+        ]}
+      />
     </section>
   );
 }
@@ -3023,6 +3155,32 @@ function EmbassyFinder() {
           </article>
         </div>
       </div>
+      <ToolInfoSections
+        tips={[
+          'Arrive with printed copies of every document even if you submitted digitally — many consular staff still request a physical set at the counter.',
+          'Consular hours are almost always shorter than general embassy operating hours — check the specific visa-section hours, not just "the embassy is open."',
+          'A visa center (like VFS Global) handling your appointment is usually a separate company from the embassy itself — refund and rescheduling policies differ from the embassy\'s own rules.',
+          'Save the booking confirmation email the moment you get it — some visa centers don\'t resend it on request.',
+        ]}
+        intro="Embassy contact details, consular hours, and appointment booking pages change more often than most applicants expect — a phone number or booking portal that worked six months ago can quietly go stale. This directory keeps the essentials in one place so you don't have to hunt across a dozen tabs before your appointment."
+        steps={[
+          { t: 'Select your destination country', b: 'Pick the country you plan to apply to from the list on the left.' },
+          { t: 'Review contact and hours', b: 'Address, phone, consular hours, and the official website are shown together so you can cross-check before travelling there in person.' },
+          { t: 'Confirm the appointment route', b: 'Most consulates now route appointments through a third-party visa center (like VFS Global) rather than the embassy directly — the appointment note tells you which applies.' },
+        ]}
+        faqs={[
+          { q: 'Can I just walk into the embassy without an appointment?', a: 'Almost never for a visa application — nearly every country listed here requires a pre-booked appointment, usually through an authorized visa application center, not the embassy building itself.' },
+          { q: 'What if the phone number doesn\'t connect?', a: 'Consular phone lines change and are often reserved for emergencies rather than visa queries — the official website listed is usually the more reliable source for current contact routes.' },
+          { q: 'Does Visa With Ease book the appointment for me?', a: 'Not directly — we point you to the correct official booking channel. If you want hands-on help, you can book a certified consultant inside the app who can guide the process end to end.' },
+          { q: 'Why is my country\'s embassy not listed here?', a: 'This directory shows a starter set of commonly-requested destinations — the in-app compliance database covers the full 24+ country list with live-refreshed details.' },
+        ]}
+        related={[
+          { label: 'Country Comparison', path: '/country-comparison' },
+          { label: 'Visa Waiver Checker', path: '/visa-waiver' },
+          { label: 'Bank Balance Estimator', path: '/bank-balance' },
+          { label: 'Book a consultant', path: '/app' },
+        ]}
+      />
     </section>
   );
 }
@@ -3087,6 +3245,32 @@ function CountryComparison() {
       <article className="panel" style={{ background: '#FEF2F2', border: '1px solid #FECACA', marginTop: 0 }}>
         <p style={{ fontSize: 11, color: '#991B1B' }}>Requirements, fees and processing times change. Always verify with official embassy sources before applying.</p>
       </article>
+      <ToolInfoSections
+        tips={[
+          'Processing time listed is the typical published window, not a guarantee — peak travel seasons (summer, major holidays) routinely push actual times longer.',
+          'A lower document count doesn\'t always mean an easier process — some low-document destinations compensate with stricter scrutiny of the few documents they do require.',
+          'Fees are usually non-refundable even on refusal — factor the true cost of a weak application (fee plus lost time) into your decision on which destination to prioritize first.',
+          'If you\'re eligible for more than one visa category for the same country (e.g. tourist vs. business), the category itself can change your effective refusal odds.',
+        ]}
+        intro="No two destinations judge an application the same way. A country with a low visa fee and fast processing can still have a tough refusal rate if it scrutinizes financial evidence heavily, while a slower, pricier destination might be more predictable once your documents are in order. This side-by-side view puts the numbers that actually shape your odds — and your budget — next to each other."
+        steps={[
+          { t: 'Pick two destinations', b: 'Compare any two countries from the list to see fee, processing time, document count, difficulty, and refusal rate together.' },
+          { t: 'Read difficulty, not just fee', b: 'A cheaper visa isn\'t necessarily easier — difficulty reflects document scrutiny and typical refusal patterns, not price.' },
+          { t: 'Cross-check with the embassy', b: 'Use this as a planning starting point, then confirm exact current figures on the destination\'s official embassy or consulate page.' },
+        ]}
+        faqs={[
+          { q: 'Where do these figures come from?', a: 'They reflect typical, publicly reported fees, processing windows, and document counts for each destination — treat them as planning estimates, not guaranteed figures, since consulates update pricing and timelines periodically.' },
+          { q: 'Why does document count differ so much between countries?', a: 'Countries with higher refusal rates or stricter financial-evidence rules (like the US or UK) typically require more supporting documents to establish ties, funds, and travel purpose than lower-scrutiny destinations.' },
+          { q: 'Does a higher refusal rate mean I should avoid a country?', a: 'Not necessarily — refusal rate reflects the average applicant pool, not your specific profile. A well-prepared, fully-documented application meaningfully changes your individual odds regardless of the country average.' },
+          { q: 'Can I compare more than two countries at once?', a: 'This quick tool compares two at a time for readability — the in-app compliance database lets you browse full requirement details for all 24+ supported destinations individually.' },
+        ]}
+        related={[
+          { label: 'Visa Waiver Checker', path: '/visa-waiver' },
+          { label: 'Embassy Finder', path: '/embassy-finder' },
+          { label: 'Visa Score Calculator', path: '/visa-calculator' },
+          { label: 'Start a real AI audit', path: '/app' },
+        ]}
+      />
     </section>
   );
 }
@@ -3170,6 +3354,32 @@ function VisaWaiverChecker() {
       <article className="panel" style={{ background: '#FEF2F2', border: '1px solid #FECACA', marginTop: 0 }}>
         <p style={{ fontSize: 11, color: '#991B1B' }}>Visa requirements change frequently. Always verify with the official embassy or consulate before booking travel.</p>
       </article>
+      <ToolInfoSections
+        tips={[
+          'A waiver or eTA doesn\'t guarantee entry — border officers still have discretion to deny entry on arrival, so carry the same supporting documents you would for a full visa.',
+          'Some eTAs must be applied for days before departure, not at the airport — leaving it until check-in can mean missing your flight.',
+          'Dual nationals should check eligibility under both passports — waiver access can differ significantly between them for the same destination.',
+          'A waiver for tourism doesn\'t automatically extend to business or study purposes — the permitted activity matters as much as the country pair.',
+        ]}
+        intro="Visa waiver eligibility depends entirely on your passport's nationality, not where you currently live or hold residency — a common source of confusion for expats booking a trip from a country other than the one on their passport. This checker looks up the actual relationship between your nationality and a destination, so you know upfront whether you need a full application, a lighter eTA, or nothing at all."
+        steps={[
+          { t: 'Select your passport nationality', b: 'Eligibility is tied to the passport you hold, not your country of residence — an expat living abroad still travels on their home nationality\'s rules.' },
+          { t: 'Pick your destination', b: 'The same nationality can be waiver-free for one country and require a full visa for a neighboring one.' },
+          { t: 'Read the exact requirement', b: 'Results distinguish between a full visa, a lighter eTA/eVisa-on-arrival, and a genuine waiver requiring no application at all.' },
+        ]}
+        faqs={[
+          { q: 'I have residency in a visa-waiver country — does that help?', a: 'Usually not for this lookup — waiver eligibility is almost always determined by your passport\'s nationality, not by a residence permit you hold elsewhere. Some destinations do grant exceptions for long-term residents of specific countries; check the destination\'s official rules for that specific case.' },
+          { q: 'What\'s the difference between a waiver and an eTA?', a: 'A true visa waiver needs no application at all — you simply arrive. An eTA (electronic travel authorization) or visa-on-arrival is a lighter, faster process than a full visa application but still requires you to register or pay a fee before or on arrival.' },
+          { q: 'My nationality isn\'t in the list — what should I do?', a: 'This quick checker covers a starter set of nationalities and destinations; for anything outside that list, check the destination\'s official immigration website or ask our AI chat assistant inside the app.' },
+          { q: 'Can waiver rules change without notice?', a: 'Yes — waiver agreements are bilateral government arrangements and can be suspended or amended with limited notice, which is why we recommend confirming close to your travel date, not months in advance.' },
+        ]}
+        related={[
+          { label: 'Country Comparison', path: '/country-comparison' },
+          { label: 'Embassy Finder', path: '/embassy-finder' },
+          { label: 'Bank Balance Estimator', path: '/bank-balance' },
+          { label: 'Start a real AI audit', path: '/app' },
+        ]}
+      />
     </section>
   );
 }
@@ -3244,41 +3454,96 @@ function RejectionLetterAnalyzer() {
           </article>
         </div>
       </div>
+      <ToolInfoSections
+        tips={[
+          'Read the letter for a regulation or paragraph number, not just the prose — it often narrows down the exact category of refusal faster than the wording around it.',
+          'If more than one reason is cited, fix the most serious one first (financial evidence or misrepresentation) — a strong response to a minor issue won\'t offset an unaddressed major one.',
+          'Keep the original refusal letter — some reapplication forms require you to reference or attach it.',
+          'A near-identical reapplication with no new evidence is the fastest route to a second refusal — every resubmission should visibly address what changed.',
+        ]}
+        intro="Refusal letters are written to satisfy a legal requirement to give a reason, not to help you understand what to do next — most cite a regulation number and a generic phrase rather than the specific document that fell short. This analyzer scans your actual letter text for the patterns behind the most common refusal reasons and turns the vague legal language into a concrete next step."
+        steps={[
+          { t: 'Paste the key paragraph', b: 'Copy the sentence or paragraph from your letter that states the refusal reason — usually near the top or bottom of the letter.' },
+          { t: 'Get the reason decoded', b: 'The tool matches known refusal-reason patterns and explains what the consulate is actually pointing at in plain language.' },
+          { t: 'Follow the specific fix', b: 'Each identified reason comes with a concrete action — which document to add, strengthen, or clarify before you reapply.' },
+        ]}
+        faqs={[
+          { q: 'Can I reapply immediately after a refusal?', a: 'Most countries allow reapplication immediately, but reapplying with the same unfixed weaknesses is the single most common cause of a second refusal — address the specific reason cited before resubmitting.' },
+          { q: 'Do I have to disclose a previous refusal?', a: 'Yes, on nearly every application form that asks — omitting a prior refusal is treated far more seriously by consulates than the original refusal itself, and can lead to a longer-term ban.' },
+          { q: 'What if my exact wording isn\'t recognized?', a: 'The analyzer matches common refusal-reason phrasing — if your letter uses unusual wording or cites multiple reasons, use the "Ask AI for guidance" option to get a full read of the entire letter.' },
+          { q: 'Is this the same as legal advice from an immigration lawyer?', a: 'No — this is AI-assisted guidance to help you understand and prepare, not legal advice. For a serious or repeated refusal, we recommend booking a verified consultant before reapplying.' },
+        ]}
+        related={[
+          { label: 'Visa Score Calculator', path: '/visa-calculator' },
+          { label: 'Bank Balance Estimator', path: '/bank-balance' },
+          { label: 'Help Centre', path: '/help' },
+          { label: 'Book a consultant', path: '/app' },
+        ]}
+      />
     </section>
   );
 }
 
 // ─── Help / FAQ Center ────────────────────────────────────────────────────────
-const FAQ_ITEMS = [
-  { q: 'How is my readiness score calculated?', a: 'Your score (0–100) is based on document completeness, audit findings, requirements match and submission timing. Each factor is weighted: documents (35%), requirements (30%), quality (20%), timing (15%).' },
-  { q: 'Are my uploaded documents stored permanently?', a: 'No. All original files auto-delete within 72 hours of upload. Only validated AI findings (scores, severity labels) are retained. Raw OCR text is never stored or exposed in the UI.' },
-  { q: 'Who sees my visa documents?', a: 'Only you — unless you explicitly share via the consent screen before booking a consultant. Even then, only the specific categories you approve are shared, and access expires after 7 days.' },
-  { q: 'How accurate is the AI requirements guidance?', a: 'Requirements are sourced directly from official embassy and consulate websites and cached for up to 24 hours. A staleness banner appears when data is over 18 hours old. Always verify with the official source before applying.' },
-  { q: 'Can I use Visa With Ease for multiple countries at once?', a: 'Yes — create a separate application per destination. Each has its own checklist, requirements and readiness score. The dashboard shows all active applications.' },
-  { q: 'What is the AI disclaimer?', a: 'Visa With Ease provides AI-powered guidance to help you prepare — not legal advice. A consulate decision depends on many factors beyond document quality. We recommend verified consultant review for complex cases or prior refusals.' },
-  { q: 'How does consultant data sharing work?', a: 'Before any consultant can access your information, you go through a consent screen where you choose exactly what to share (requirements, audit findings, chat messages, contact details). Nothing is shared automatically.' },
-  { q: 'How do I delete my account and data?', a: 'Go to Settings → Privacy & Data → Delete my data. Type DELETE to confirm. A deletion request is created and processed within 30 days per GDPR / UAE PDPL requirements.' },
+const FAQ_CATEGORIES = ['All', 'Getting started', 'Security & privacy', 'Pricing & billing', 'Mobile app', 'Consultants & experts', 'Countries & requirements'] as const;
+const FAQ_ITEMS: { q: string; a: string; category: (typeof FAQ_CATEGORIES)[number] }[] = [
+  { category: 'Getting started', q: 'How is my readiness score calculated?', a: 'Your score (0–100) is based on document completeness, audit findings, requirements match and submission timing. Each factor is weighted: documents (35%), requirements (30%), quality (20%), timing (15%).' },
+  { category: 'Getting started', q: 'Do I need an account to see my score?', a: 'Yes — an account keeps your applications, documents, and score history in one place across sessions and devices. Creating one takes under a minute and is free.' },
+  { category: 'Getting started', q: 'Can I use Visa With Ease for multiple countries at once?', a: 'Yes — create a separate application per destination. Each has its own checklist, requirements and readiness score. The dashboard shows all active applications.' },
+  { category: 'Getting started', q: 'What is the AI disclaimer?', a: 'Visa With Ease provides AI-powered guidance to help you prepare — not legal advice. A consulate decision depends on many factors beyond document quality. We recommend verified consultant review for complex cases or prior refusals.' },
+  { category: 'Security & privacy', q: 'Are my uploaded documents stored permanently?', a: 'No. Original files are used only to generate your audit results — we do not keep a searchable copy of the raw document. Only your score and findings are saved to your account. See our Privacy Policy for full detail.' },
+  { category: 'Security & privacy', q: 'Who sees my visa documents?', a: 'Only you — unless you explicitly share via the consent screen before booking a consultant. Even then, only the specific categories you approve are shared, and access expires after 7 days.' },
+  { category: 'Security & privacy', q: 'How do I delete my account and data?', a: 'Go to Settings → Privacy & Data → Delete my data. Type DELETE to confirm. A deletion request is created and processed within 30 days per GDPR / UAE PDPL requirements.' },
+  { category: 'Security & privacy', q: 'Do you store my card or payment details?', a: "No. Visa With Ease doesn't process payments today. No card numbers are collected anywhere on the site or app — this will be stated clearly here before that ever changes." },
+  { category: 'Pricing & billing', q: 'Is Visa With Ease free?', a: 'The Free plan includes 3 audits a month at no cost, with no card required. Pro and Business plans add unlimited audits, PDF reports, and team features — see the Pricing page for the full breakdown.' },
+  { category: 'Pricing & billing', q: "What's included in the Pro plan?", a: 'Unlimited AI audits, downloadable PDF reports, consultant booking, and priority support. Business adds team seats, an HR portal, API access, and white-label reports.' },
+  { category: 'Mobile app', q: 'Is there a mobile app?', a: 'Yes — Visa With Ease is available on the web and as a native Android app today. iOS is on the roadmap.' },
+  { category: 'Mobile app', q: 'Does the mobile app work offline?', a: 'You can review your checklist and previously loaded results without a connection; uploading a new document or running a fresh AI audit requires an internet connection.' },
+  { category: 'Consultants & experts', q: 'How do I book a consultant?', a: 'From your dashboard, choose "Book expert," filter by visa type and language, and pick an available time slot. You control exactly what application data the consultant can see before the booking is confirmed.' },
+  { category: 'Consultants & experts', q: 'Are consultants employees of Visa With Ease?', a: 'No — consultants are independent, verified professionals. We handle the introduction and scheduling; the advice and any separate engagement is between you and the consultant.' },
+  { category: 'Consultants & experts', q: 'How does consultant data sharing work?', a: 'Before any consultant can access your information, you go through a consent screen where you choose exactly what to share (requirements, audit findings, chat messages, contact details). Nothing is shared automatically.' },
+  { category: 'Countries & requirements', q: 'How many countries do you support?', a: '24+ destination countries today, with more added regularly as we expand our embassy compliance database.' },
+  { category: 'Countries & requirements', q: 'How accurate is the AI requirements guidance?', a: 'Requirements are sourced directly from official embassy and consulate websites and cached for up to 24 hours. A staleness banner appears when data is over 18 hours old. Always verify with the official source before applying.' },
 ];
 
 function HelpCenter() {
   const [open, setOpen] = useState<number | null>(null);
   const [query, setQuery] = useState('');
-  const filtered = FAQ_ITEMS.filter(f => !query || f.q.toLowerCase().includes(query.toLowerCase()) || f.a.toLowerCase().includes(query.toLowerCase()));
+  const [category, setCategory] = useState<(typeof FAQ_CATEGORIES)[number]>('All');
+  const navigate = useNavigate();
+  const filtered = FAQ_ITEMS
+    .filter(f => category === 'All' || f.category === category)
+    .filter(f => !query || f.q.toLowerCase().includes(query.toLowerCase()) || f.a.toLowerCase().includes(query.toLowerCase()));
+  const guides = POSTS.slice(0, 3);
 
   return (
     <section className="page">
       <div className="page-title"><div><p>Support</p><h1>Help & FAQ Center</h1></div></div>
-      <div className="filter-bar" style={{ marginBottom: 20 }}>
+      <p style={{ color: '#64748B', fontSize: 14, lineHeight: 1.7, maxWidth: 640, marginTop: -8, marginBottom: 20 }}>
+        Answers to the questions we hear most, organized by topic. Can't find what you need? The AI assistant and
+        our human consultants are both one click away below.
+      </p>
+      <div className="filter-bar" style={{ marginBottom: 14 }}>
         <Search size={16} color="#94A3B8" />
         <input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search FAQ…" style={{ border: 'none', outline: 'none', flex: 1, fontSize: 14, background: 'transparent' }} />
+      </div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 20 }}>
+        {FAQ_CATEGORIES.map(c => (
+          <button key={c} onClick={() => setCategory(c)}
+            style={{ padding: '7px 14px', borderRadius: 20, border: 'none', cursor: 'pointer', fontWeight: 700, fontSize: 12.5,
+              background: category === c ? '#0B1F4B' : '#F1F5F9', color: category === c ? '#fff' : '#334155' }}>{c}</button>
+        ))}
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 300px', gap: 20, alignItems: 'start' }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           {filtered.map((item, i) => (
-            <article key={i} className="panel" style={{ padding: 0, overflow: 'hidden' }}>
+            <article key={item.q} className="panel" style={{ padding: 0, overflow: 'hidden' }}>
               <button onClick={() => setOpen(open === i ? null : i)}
                 style={{ width: '100%', display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px 20px', background: 'none', border: 'none', cursor: 'pointer', textAlign: 'left', gap: 12 }}>
-                <strong style={{ fontSize: 14, color: '#0F172A' }}>{item.q}</strong>
+                <span>
+                  <span style={{ display: 'block', fontSize: 10.5, fontWeight: 700, color: '#94A3B8', textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 3 }}>{item.category}</span>
+                  <strong style={{ fontSize: 14, color: '#0F172A' }}>{item.q}</strong>
+                </span>
                 <ChevronRight size={18} color="#94A3B8" style={{ transform: open === i ? 'rotate(90deg)' : 'none', transition: 'transform 0.2s', flexShrink: 0 }} />
               </button>
               {open === i && (
@@ -3287,6 +3552,20 @@ function HelpCenter() {
             </article>
           ))}
           {filtered.length === 0 && <p style={{ color: '#94A3B8', textAlign: 'center', padding: 32 }}>No results for "{query}"</p>}
+
+          <div className="page-title" style={{ marginTop: 28, marginBottom: 12 }}>
+            <div><p>Read more</p><h1 style={{ fontSize: 20 }}>Popular guides</h1></div>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 14 }}>
+            {guides.map(g => (
+              <button key={g.slug} onClick={() => navigate(`/blog/${g.slug}`)}
+                style={{ textAlign: 'left', padding: 18, borderRadius: 14, border: '1px solid #E2E8F0', background: '#fff', cursor: 'pointer' }}>
+                <span style={{ display: 'inline-block', fontSize: 10.5, fontWeight: 700, padding: '3px 9px', borderRadius: 20, background: g.color + '18', color: g.color, marginBottom: 8 }}>{g.category}</span>
+                <div style={{ fontSize: 13.5, fontWeight: 700, color: '#0F172A', lineHeight: 1.4 }}>{g.title}</div>
+                <div style={{ fontSize: 11.5, color: '#94A3B8', marginTop: 8 }}>{g.readTime}</div>
+              </button>
+            ))}
+          </div>
         </div>
         <div style={{ position: 'sticky', top: 16, display: 'flex', flexDirection: 'column', gap: 14 }}>
           <article className="panel" style={{ textAlign: 'center', padding: 24 }}>
@@ -3300,6 +3579,11 @@ function HelpCenter() {
             <h3 style={{ margin: '0 0 8px' }}>Need a human expert?</h3>
             <p style={{ fontSize: 13, color: '#64748B', marginBottom: 14 }}>Browse verified consultants pre-filtered for your visa type and destination.</p>
             <Link className="primary-button" to="/consultants">Find a consultant</Link>
+          </article>
+          <article className="panel" style={{ padding: 24 }}>
+            <h3 style={{ margin: '0 0 8px', fontSize: 14 }}>Email support</h3>
+            <p style={{ fontSize: 13, color: '#64748B', marginBottom: 10, lineHeight: 1.6 }}>For account, billing, or privacy questions, we reply within one business day.</p>
+            <a href="mailto:support@visawithease.app" style={{ fontSize: 13, fontWeight: 700, color: '#1A56DB' }}>support@visawithease.app</a>
           </article>
         </div>
       </div>
@@ -3608,12 +3892,69 @@ function PricingPage() {
           );
         })}
       </div>
+
+      <div className="page-title" style={{ marginTop: 40, marginBottom: 16 }}>
+        <div><p>Compare</p><h1 style={{ fontSize: 22 }}>Every feature, side by side</h1></div>
+      </div>
+      <article className="panel" style={{ overflowX: 'auto' }}>
+        <table style={{ width: '100%', minWidth: 640, borderCollapse: 'collapse' }}>
+          <thead>
+            <tr>
+              <th style={{ textAlign: 'left', padding: '10px 12px', fontSize: 12, color: '#94A3B8', fontWeight: 700 }}> </th>
+              {PRICING_TIERS.map(t => (
+                <th key={t.id} style={{ textAlign: 'center', padding: '10px 12px', fontSize: 13, fontWeight: 900, color: t.color, borderBottom: `2px solid ${t.color}` }}>{t.label}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {[
+              ['AI audits per month',        '3',        'Unlimited', 'Unlimited', 'Unlimited', 'Unlimited'],
+              ['Active applications',        '1',        '5',         'Unlimited', 'Unlimited', 'Unlimited'],
+              ['Requirements database',      'Basic',    'Full',      'Full',      'Full + custom', 'Full + custom'],
+              ['PDF report export',          '—',        '✓',         '✓',         '✓',         '✓'],
+              ['Consultant marketplace',     '—',        '✓',         '✓',         '✓',         '✓'],
+              ['Team seats & HR portal',     '—',        '—',         '✓',         '✓',         '✓'],
+              ['API access',                 '—',        '—',         '500 calls/mo', 'Unlimited', 'Unlimited'],
+              ['White-label reports',        '—',        '—',         '—',         '✓',         '✓'],
+              ['Uptime SLA',                 '—',        '—',         '—',         '99.9%',     'Custom'],
+              ['Support',                    'Community','Priority',  'Dedicated CSM', '24/7 SLA', 'On-site'],
+            ].map(([label, ...vals]) => (
+              <tr key={label} style={{ borderBottom: '1px solid #F1F5F9' }}>
+                <td style={{ padding: '11px 12px', fontSize: 13, color: '#334155', fontWeight: 600 }}>{label}</td>
+                {vals.map((v, i) => (
+                  <td key={i} style={{ padding: '11px 12px', textAlign: 'center', fontSize: 13, color: v === '—' ? '#CBD5E1' : '#0F172A', fontWeight: v === '—' ? 400 : 600 }}>{v}</td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </article>
+
       <div style={{ marginTop: 32, background: '#F8FAFC', borderRadius: 16, padding: 24, display: 'flex', gap: 24, alignItems: 'center', flexWrap: 'wrap' }}>
         <div style={{ flex: 1, minWidth: 200 }}>
           <h3 style={{ margin: '0 0 6px', color: '#0F172A' }}>Need help choosing?</h3>
           <p style={{ margin: 0, color: '#64748B', fontSize: 13, lineHeight: 1.6 }}>Our team can walk you through the right plan for your use case — HR mobility, consultant agency, or government integration.</p>
         </div>
         <button onClick={() => showToast('Sales contact form is coming soon.', 'info')} style={{ padding: '12px 24px', borderRadius: 12, border: 'none', background: '#0B1F4B', color: '#fff', fontWeight: 700, fontSize: 14, cursor: 'pointer', whiteSpace: 'nowrap' }}>Talk to sales</button>
+      </div>
+
+      <div className="page-title" style={{ marginTop: 40, marginBottom: 16 }}>
+        <div><p>Billing</p><h1 style={{ fontSize: 22 }}>Pricing FAQ</h1></div>
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        {[
+          { q: 'Do you charge my card today?', a: "No — Visa With Ease doesn't process payments yet. No card details are collected anywhere on the site or app. Plan buttons here are a preview of what's coming; you'll be told clearly before any billing feature goes live." },
+          { q: 'What happens after my 3 free audits each month?', a: 'You can keep using every other free-tier feature — the checklist, requirements lookup, and free calculator tools all stay available. Additional AI audits in the same month require a Pro plan once billing is enabled.' },
+          { q: 'Can I switch plans later?', a: "Yes — plans are designed to scale with you, from a single traveller on Free up to Enterprise for government or large agency integrations. You'll be able to upgrade or downgrade at any time once billing is live." },
+          { q: "What's the difference between Business and Enterprise?", a: 'Business is built for a single organization managing team relocations (HR portal, bulk uploads, limited API). Enterprise adds unlimited API access, a custom compliance database, white-label reporting, and an SLA — suited to platforms embedding Visa With Ease into their own product.' },
+          { q: 'Is there a discount for annual billing?', a: 'Yes — toggling to Annual above applies a 20% discount across every paid tier compared to paying monthly.' },
+          { q: 'I run a consultancy — is there a plan for that?', a: 'The Business and Enterprise tiers are built for exactly this: managing multiple client applications, team seats, and (on Enterprise) white-labeled reports you can hand to your own clients.' },
+        ].map(f => (
+          <details key={f.q} className="panel" style={{ padding: '16px 22px', cursor: 'pointer' }}>
+            <summary style={{ fontWeight: 700, fontSize: 14, color: '#0F172A' }}>{f.q}</summary>
+            <p style={{ marginTop: 10, marginBottom: 0, fontSize: 13, color: '#64748B', lineHeight: 1.65 }}>{f.a}</p>
+          </details>
+        ))}
       </div>
     </section>
   );
@@ -3785,51 +4126,34 @@ function ApiPortal() {
 const PARTNER_CATEGORIES = [
   {
     id: 'flights', label: 'Flights', icon: Plane, color: '#1A56DB',
-    partners: [
-      { name: 'Emirates', tagline: 'World-class connectivity from Dubai', discount: '8% off bookings', logo: '✈' },
-      { name: 'Air India', tagline: 'Direct routes India ↔ Schengen', discount: '5% off + priority check-in', logo: '✈' },
-      { name: 'flydubai', tagline: 'Budget-friendly regional routes', discount: 'AED 50 off first booking', logo: '✈' },
-    ],
+    description: 'Airlines and travel agents who understand visa timelines — flexible-date fares and rebooking support when an embassy appointment shifts.',
+    benefits: ['Flexible-date fare search built around your appointment window', 'Priority rebooking support if travel dates change', 'Booking confirmations formatted for embassy submission'],
   },
   {
     id: 'housing', label: 'Housing', icon: Building2, color: '#7C3AED',
-    partners: [
-      { name: 'Airbnb', tagline: 'Verified stays with host ratings', discount: '10% off first stay', logo: '🏠' },
-      { name: 'Booking.com', tagline: 'Cancellation-friendly hotel bookings', discount: 'Genius Level 2 unlocked', logo: '🏨' },
-      { name: 'NomadHomes', tagline: 'Furnished apartments for visa applicants', discount: '15% off monthly stays', logo: '🏡' },
-    ],
+    description: 'Short and medium-stay housing providers who can issue the kind of accommodation proof embassies actually accept.',
+    benefits: ['Cancellation-friendly bookings for uncertain travel dates', 'Confirmation letters formatted to embassy requirements', 'Furnished, monthly-stay options for longer visa categories'],
   },
   {
-    id: 'corporate', label: 'Corporate', icon: Building2, color: '#059669',
-    partners: [
-      { name: 'Globalization Partners', tagline: 'EOR & global workforce compliance', discount: 'Free consultation', logo: '🌐' },
-      { name: 'Deel', tagline: 'International payroll and HR', discount: '1 month free on annual plan', logo: '💼' },
-      { name: 'Remote.com', tagline: 'Employer of record worldwide', discount: 'Waived onboarding fee', logo: '🖥' },
-    ],
+    id: 'corporate', label: 'Corporate mobility', icon: Building2, color: '#059669',
+    description: 'Employer-of-record and global payroll platforms that HR teams already use alongside Visa With Ease for team relocations.',
+    benefits: ['Coordinated sponsorship and employment-letter documentation', 'Shared visibility into a team\'s relocation timeline', 'Streamlined handoff between HR platform and visa checklist'],
   },
   {
-    id: 'insurance', label: 'Insurance', icon: ShieldCheck, color: '#DC2626',
-    partners: [
-      { name: 'AXA Travel', tagline: 'Schengen-compliant medical coverage', discount: 'AED 80 single-trip policy', logo: '🛡' },
-      { name: 'RSA Insurance', tagline: 'UAE-issued travel insurance certificates', discount: '12% off annual plan', logo: '🛡' },
-      { name: 'Oman Insurance', tagline: 'Instant certificate for embassy submission', discount: 'Same-day issuance', logo: '🛡' },
-    ],
+    id: 'insurance', label: 'Travel insurance', icon: ShieldCheck, color: '#DC2626',
+    description: 'Insurers who can issue Schengen-compliant medical coverage certificates fast enough to matter for a visa deadline.',
+    benefits: ['Same-day certificate issuance for embassy submission', 'Coverage that meets the minimum required by your destination', 'Digital certificates that upload directly into your checklist'],
   },
 ];
 
 function EcosystemPartners() {
-  const { data } = useApi<{ categories: typeof PARTNER_CATEGORIES }>('/partners', { categories: PARTNER_CATEGORIES });
-  // Guard: API may return string[] or a flat shape — only use it if it's the right object shape
-  const categories = (data.categories.length > 0 && typeof (data.categories[0] as unknown as { id?: string }).id === 'string')
-    ? data.categories
-    : PARTNER_CATEGORIES;
   const [activeCategory, setActiveCategory] = useState('flights');
-  const category = categories.find(c => c.id === activeCategory) ?? categories[0];
+  const category = PARTNER_CATEGORIES.find(c => c.id === activeCategory) ?? PARTNER_CATEGORIES[0];
   return (
     <section className="page">
-      <div className="page-title"><div><p>Marketplace</p><h1>Ecosystem Partners</h1><p style={{ color: '#64748B', margin: '4px 0 0', fontSize: 14 }}>Trusted partners integrated into your visa journey — exclusive discounts for Visa With Ease members.</p></div></div>
+      <div className="page-title"><div><p>Partner program</p><h1>Ecosystem Partners</h1><p style={{ color: '#64748B', margin: '4px 0 0', fontSize: 14, maxWidth: 620 }}>We're building integrations with providers across the categories below. This page describes what we look for and what a traveller gets once a category goes live — not existing endorsements by any specific company.</p></div></div>
       <div style={{ display: 'flex', gap: 10, marginBottom: 20, flexWrap: 'wrap' }}>
-        {categories.map(cat => {
+        {PARTNER_CATEGORIES.map(cat => {
           const CatIcon = cat.icon;
           const active = cat.id === activeCategory;
           return (
@@ -3839,28 +4163,72 @@ function EcosystemPartners() {
           );
         })}
       </div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 16 }}>
-        {category.partners.map(partner => (
-          <article key={partner.name} style={{ borderRadius: 16, border: '1.5px solid #E2E8F0', padding: 22, display: 'flex', flexDirection: 'column', gap: 14, background: '#fff' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-              <div style={{ width: 52, height: 52, borderRadius: 14, background: `${category.color}10`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 26 }}>{partner.logo}</div>
-              <div>
-                <p style={{ margin: 0, fontWeight: 900, fontSize: 16, color: '#0F172A' }}>{partner.name}</p>
-                <p style={{ margin: '2px 0 0', fontSize: 12, color: '#64748B' }}>{partner.tagline}</p>
-              </div>
-            </div>
-            <div style={{ background: `${category.color}10`, borderRadius: 10, padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 8 }}>
-              <Star size={14} color={category.color} />
-              <span style={{ color: category.color, fontWeight: 700, fontSize: 13 }}>{partner.discount}</span>
-            </div>
-            <button onClick={() => showToast(`${partner.name} partner links are coming soon.`, 'info')} style={{ padding: '11px 0', borderRadius: 10, border: `2px solid ${category.color}`, background: 'transparent', color: category.color, fontWeight: 700, fontSize: 13, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
-              <ExternalLink size={14} /> Claim offer
-            </button>
+      <article className="panel" style={{ marginBottom: 16 }}>
+        <h2 style={{ margin: '0 0 8px' }}>{category.label}</h2>
+        <p style={{ margin: 0, fontSize: 14, color: '#334155', lineHeight: 1.7 }}>{category.description}</p>
+      </article>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 16 }}>
+        {category.benefits.map(b => (
+          <article key={b} style={{ borderRadius: 16, border: '1.5px solid #E2E8F0', padding: 20, display: 'flex', gap: 12, alignItems: 'flex-start', background: '#fff' }}>
+            <Star size={18} color={category.color} style={{ flexShrink: 0, marginTop: 2 }} />
+            <p style={{ margin: 0, fontSize: 13.5, color: '#334155', lineHeight: 1.6 }}>{b}</p>
           </article>
         ))}
       </div>
-      <div style={{ marginTop: 24, padding: 18, background: '#F8FAFC', borderRadius: 14, border: '1px solid #E2E8F0' }}>
-        <p style={{ margin: 0, fontSize: 13, color: '#64748B' }}><strong style={{ color: '#0F172A' }}>Partnership programme:</strong> Visa With Ease earns a referral commission (3–8%) when you use partner links. This funds our free tier and keeps the platform ad-free. Partner offers may change — check the partner's site for current terms.</p>
+
+      <div className="page-title" style={{ marginTop: 36, marginBottom: 16 }}>
+        <div><p>Full picture</p><h1 style={{ fontSize: 22 }}>All categories at a glance</h1></div>
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+        {PARTNER_CATEGORIES.map(cat => {
+          const CatIcon = cat.icon;
+          return (
+            <article key={cat.id} className="panel" style={{ display: 'flex', gap: 18, flexWrap: 'wrap' }}>
+              <div style={{ width: 44, height: 44, borderRadius: 12, background: `${cat.color}12`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                <CatIcon size={20} color={cat.color} />
+              </div>
+              <div style={{ flex: 1, minWidth: 220 }}>
+                <h3 style={{ margin: '0 0 6px', fontSize: 15, color: '#0F172A' }}>{cat.label}</h3>
+                <p style={{ margin: '0 0 10px', fontSize: 13, color: '#64748B', lineHeight: 1.6 }}>{cat.description}</p>
+                <ul style={{ margin: 0, paddingLeft: 18, display: 'flex', flexDirection: 'column', gap: 5 }}>
+                  {cat.benefits.map(b => (
+                    <li key={b} style={{ fontSize: 12.5, color: '#334155', lineHeight: 1.55 }}>{b}</li>
+                  ))}
+                </ul>
+              </div>
+            </article>
+          );
+        })}
+      </div>
+
+      <div className="page-title" style={{ marginTop: 36, marginBottom: 16 }}>
+        <div><p>Get involved</p><h1 style={{ fontSize: 22 }}>Are you a provider in one of these categories?</h1></div>
+      </div>
+      <article className="panel" style={{ display: 'flex', gap: 20, alignItems: 'center', flexWrap: 'wrap' }}>
+        <div style={{ flex: 1, minWidth: 240 }}>
+          <p style={{ margin: 0, fontSize: 14, color: '#334155', lineHeight: 1.7 }}>
+            If you offer flights, housing, corporate mobility, or travel insurance and want to be considered as an
+            integration partner, we'd like to hear from you. Tell us about your product and the countries you cover.
+          </p>
+        </div>
+        <a href="mailto:support@visawithease.app?subject=Partnership%20inquiry" style={{ padding: '12px 24px', borderRadius: 12, background: '#0B1F4B', color: '#fff', fontWeight: 700, fontSize: 14, textDecoration: 'none', whiteSpace: 'nowrap' }}>Contact us →</a>
+      </article>
+
+      <div className="page-title" style={{ marginTop: 36, marginBottom: 16 }}>
+        <div><p>Frequently asked</p><h1 style={{ fontSize: 22 }}>About the partner program</h1></div>
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        {[
+          { q: 'Are these live discounts I can use today?', a: "Not yet — this page describes the categories we're building integrations in and what a traveller will get once each goes live. We'll announce it clearly on this page and by email when a real partner offer launches." },
+          { q: 'Does Visa With Ease take a commission from partners?', a: 'When paid partnerships launch, any referral arrangement will be disclosed here — we will not hide a commission relationship from users.' },
+          { q: 'How do I apply to become a partner?', a: 'Email us at support@visawithease.app with a short description of your product, the countries or visa types you serve, and how you would want to integrate with the visa checklist.' },
+          { q: 'Why build a partner program at all?', a: "The visa process doesn't end with an audit score — travellers still need flights, somewhere to stay, insurance that meets the destination's minimum, and sometimes corporate relocation support. Integrating with the right providers means fewer tabs and less duplicate paperwork for you." },
+        ].map(f => (
+          <details key={f.q} className="panel" style={{ padding: '16px 22px', cursor: 'pointer' }}>
+            <summary style={{ fontWeight: 700, fontSize: 14, color: '#0F172A' }}>{f.q}</summary>
+            <p style={{ marginTop: 10, marginBottom: 0, fontSize: 13, color: '#64748B', lineHeight: 1.65 }}>{f.a}</p>
+          </details>
+        ))}
       </div>
     </section>
   );

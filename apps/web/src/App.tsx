@@ -664,7 +664,11 @@ function PublicPage({ children }: { children: React.ReactNode }) {
   return (
     <div className="lp">
       <PublicNav />
-      {children}
+      {/* .top-nav is position:fixed and doesn't reserve layout space —
+          without this, page titles render underneath the nav bar. */}
+      <div style={{ paddingTop: 'calc(80px + env(safe-area-inset-top))' }}>
+        {children}
+      </div>
       <PublicFooter />
     </div>
   );

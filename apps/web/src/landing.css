@@ -34,7 +34,7 @@
 
 /* ── Reset ────────────────────────────────────────────────────────── */
 .lp *, .lp *::before, .lp *::after { box-sizing: border-box; }
-.lp { background: var(--bg0); color: var(--t1); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; -webkit-font-smoothing: antialiased; }
+.lp { background: var(--bg0); color: var(--t1); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; -webkit-font-smoothing: antialiased; overflow-x: hidden; max-width: 100vw; }
 .lp button { cursor: pointer; font-family: inherit; border: none; background: none; }
 .lp ul { list-style: none; margin: 0; padding: 0; }
 .lp img { display: block; width: 100%; height: 100%; object-fit: cover; }
@@ -717,10 +717,13 @@
 
   /* Nav */
   .nav-links { display: none; }
-  .top-nav { padding: calc(0.8rem + env(safe-area-inset-top)) 1.25rem 0.8rem; }
-  .logo img { height: 36px; }
+  .top-nav { padding: calc(0.8rem + env(safe-area-inset-top)) 1rem 0.8rem; gap: 0.5rem; }
+  .logo img { height: 30px; }
+  .logo-word { font-size: 1rem; }
+  .nav-actions { gap: 0.5rem; }
   .nav-sign { display: none; }
-  .nav-burger { display: flex; }
+  .nav-cta { padding: 0.5rem 0.9rem !important; font-size: 0.8rem !important; }
+  .nav-burger { display: flex; flex-shrink: 0; }
 
   /* Hero — bigger, more prominent phone mockup on mobile too */
   .hero-body { flex-direction: column; text-align: center; padding: 2rem 1.25rem 4rem; }
@@ -749,7 +752,7 @@
 }
 
 @media (max-width: 480px) {
-  .hero-title { font-size: 2.5rem; }
+  .hero-title { font-size: clamp(1.9rem, 9vw, 2.3rem); }
   .hero-phones { height: 420px; }
   .phone-cluster { width: 290px; }
   .phone-back  { width: 190px !important; height: 388px !important; }
@@ -782,16 +785,19 @@
 /* Showcase carousel */
 .showcase2 { padding: 6rem 2rem; background: var(--bg1); }
 .showcase2-body { max-width: 1080px; margin: 0 auto; display: grid; grid-template-columns: 0.85fr 1.15fr; gap: 3rem; align-items: center; }
+.showcase2-textcol { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .showcase2-list { display: flex; flex-direction: column; gap: 2px; }
 .kbd-hint-lbl { color: var(--t3); font-size: 0.85rem; margin: 0 0 0.5rem; }
 .kbd-hint { display: inline-flex; align-items: center; gap: 6px; font-size: 0.78rem; color: var(--t3); margin-bottom: 1.1rem; }
 .kbd { display: inline-flex; align-items: center; justify-content: center; min-width: 22px; height: 22px; padding: 0 5px; border-radius: 6px; border: 1px solid var(--border-hi); background: #fff; font-size: 11px; font-weight: 700; color: var(--t2); }
+.mobile-only { display: none; }
 .sc-cap-item { display: flex; gap: 14px; padding: 14px; border-radius: 14px; cursor: pointer; border: 1px solid transparent; }
 .sc-cap-item.active { background: #fff; border-color: var(--border); }
 .sc-cap-n { font-weight: 800; font-size: 12.5px; color: var(--t3); flex-shrink: 0; width: 24px; padding-top: 2px; }
 .sc-cap-item.active .sc-cap-n { color: var(--blue); }
 .sc-cap-item h4 { font-size: 14.5px; font-weight: 700; margin: 0 0 3px; color: var(--t1); }
 .sc-cap-item p { font-size: 12.5px; color: var(--t3); line-height: 1.5; margin: 0; }
+.sc-active-caption { font-size: 13px; color: var(--t3); line-height: 1.55; margin: 0.75rem auto 0; max-width: 380px; }
 .showcase2-viewport { position: relative; display: flex; align-items: center; justify-content: center; }
 .showcase2-viewport .phone-frame { width: 250px; height: 512px; }
 .carousel-track { display: flex; width: 100%; height: 100%; transition: transform 0.45s cubic-bezier(0.65,0,0.35,1); }
@@ -872,11 +878,43 @@
 
 /* ── Mobile: center everything, one column, evenly spaced ──────────────────── */
 @media (max-width: 900px) {
+  .desktop-only { display: none; }
+  .mobile-only { display: block; }
   .steps3-row { grid-template-columns: 1fr; max-width: 420px; }
   .showcase2-body { grid-template-columns: 1fr; text-align: center; }
-  .showcase2-list { align-items: center; }
-  .sc-cap-item { text-align: left; width: 100%; max-width: 380px; }
-  .kbd-hint-lbl, .kbd-hint { text-align: center; }
+  .showcase2-viewport { order: 1; }
+  .showcase2-textcol { order: 2; margin-top: 1.5rem; align-items: center; }
+  .kbd-hint-lbl, .kbd-hint.mobile-only { text-align: center; justify-content: center; width: 100%; }
+  /* Numbered steps become a horizontal scroll strip — fits any screen
+     width and every step stays reachable by scroll or tap, instead of
+     a tall vertical stack that pushed the phone far down the page. */
+  .showcase2-list {
+    flex-direction: row;
+    align-items: stretch;
+    overflow-x: auto;
+    gap: 8px;
+    padding: 4px 4px 10px;
+    margin: 0 auto;
+    max-width: 100%;
+    justify-content: flex-start;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+  .showcase2-list::-webkit-scrollbar { display: none; }
+  .sc-cap-item {
+    flex: 0 0 auto;
+    width: auto;
+    max-width: none;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    text-align: center;
+    padding: 10px 16px;
+    min-width: 62px;
+  }
+  .sc-cap-item p { display: none; }
+  .sc-cap-item h4 { font-size: 11.5px; white-space: nowrap; margin: 0; }
+  .sc-cap-n { width: auto; padding-top: 0; font-size: 15px; }
   .app-promo { grid-template-columns: 1fr; text-align: center; }
   .app-promo-list { align-items: flex-start; max-width: 380px; margin-left: auto; margin-right: auto; }
   .app-promo-item { text-align: left; }

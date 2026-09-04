@@ -508,15 +508,19 @@ function ShowcaseCarousel() {
         <h2 className="lp-h2 tc">The full journey,<br /><span className="c-gold">in one app.</span></h2>
       </div>
       <div className="showcase2-body">
-        <div className="showcase2-list">
+        <div className="showcase2-textcol">
           <p className="kbd-hint-lbl">Click a step, use the arrows, or press the arrow keys.</p>
-          <div className="kbd-hint"><span className="kbd">&larr;</span><span className="kbd">&rarr;</span> to move between screens</div>
-          {SLIDES.map((s, i) => (
-            <div key={s.src} className={`sc-cap-item${i === idx ? ' active' : ''}`} onClick={() => go(i)}>
-              <span className="sc-cap-n">{s.step}</span>
-              <div><h4>{s.label}</h4>{i === idx && <p>{s.caption}</p>}</div>
-            </div>
-          ))}
+          <div className="kbd-hint desktop-only"><span className="kbd">&larr;</span><span className="kbd">&rarr;</span> to move between screens</div>
+          <div className="kbd-hint mobile-only"><span>&#8592;</span> scroll or tap a number below <span>&#8594;</span></div>
+          <div className="showcase2-list">
+            {SLIDES.map((s, i) => (
+              <div key={s.src} className={`sc-cap-item${i === idx ? ' active' : ''}`} onClick={() => go(i)}>
+                <span className="sc-cap-n">{s.step}</span>
+                <div><h4>{s.label}</h4>{i === idx && <p>{s.caption}</p>}</div>
+              </div>
+            ))}
+          </div>
+          <p className="sc-active-caption mobile-only">{SLIDES[idx].caption}</p>
         </div>
         <div className="showcase2-viewport">
           <button className="carousel-arrow prev" onClick={() => go(idx - 1)} aria-label="Previous screen">&#8249;</button>

@@ -1,32 +1,50 @@
 import { useEffect, useRef, useState } from 'react';
 import {
-  login as apiLogin, register as apiRegister, googleLogin as apiGoogleLogin, demoLogin as apiDemoLogin,
+  login as apiLogin, register as apiRegister, googleLogin as apiGoogleLogin,
   sendChatMessage, setToken,
   fetchApplications, createApplication as apiCreateApplication,
   fetchConsultants as apiFetchConsultants,
   fetchSessionOptions as apiFetchSessionOptions,
   createBooking as apiCreateBooking,
-  createAccessGrant as apiCreateAccessGrant,
+  createAccessGrant as apiCreateAccessGrant, fetchMyAccessGrants, revokeAccessGrant,
   fetchNotifications, markNotificationRead, fetchDocuments, fetchAuditResult, fetchExchangeRates,
-  createUploadSlot, enqueueAudit,
+  createUploadSlot, enqueueAudit, fetchRequirements, fetchPartners,
   fetchProfile, updateProfile,
   forgotPassword, verifyEmailOtp, sendVerificationEmail, fetchBookingSlots, fetchVisaWaiver,
   fetch2faStatus, send2faCode, verify2faCode, disable2fa, deleteAccount,
+  registerDeviceToken,
+  sendMessage as apiSendMessage, fetchMessages, fetchMyConversations,
   type AuthUser, type AuthSession, type UserProfile,
   type ApiApplication, type ApiConsultant, type ApiSessionOption, type ApiBooking,
-  type ApiNotification, type ApiDocument,
+  type ApiNotification, type ApiDocument, type ApiRequirement, type ApiMessage, type ApiConversationThread, type ApiAccessGrant,
 } from './src/api';
 import { GoogleSignin, statusCodes } from '@react-native-google-signin/google-signin';
-import { ActivityIndicator, Alert, Animated, Dimensions, Image, Linking, Platform, Pressable, SafeAreaView, ScrollView, StatusBar, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Alert, Animated, Dimensions, Image, Linking, Platform, Pressable, ScrollView, StatusBar, StyleSheet, Text, TextInput, View } from 'react-native';
+import { SafeAreaProvider, SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import Svg, { Circle, Text as SvgText } from 'react-native-svg';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
+import * as FileSystem from 'expo-file-system/legacy';
 import * as LocalAuthentication from 'expo-local-authentication';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
+import * as Notifications from 'expo-notifications';
+
+// Controls how a push is presented while the app is in the foreground — set
+// once at module load, not per-screen. Without this, Android shows nothing
+// for a foreground push at all (the OS assumes the app will handle it itself).
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowAlert: true,
+    shouldPlaySound: false,
+    shouldSetBadge: false,
+    shouldShowBanner: true,
+    shouldShowList: true,
+  }),
+});
 
 type IoniconName = React.ComponentProps<typeof Ionicons>['name'];
 import { CHAT_KB } from './src/data';
@@ -37,12 +55,12 @@ import { colors, scoreColor } from './src/theme';
 // ─── Device metrics — dynamic safe area support ───────────────────────────────
 // StatusBar.currentHeight is reliable on Android; 0 on iOS (SafeAreaView handles it)
 const STATUSBAR_H = Platform.OS === 'android' ? (StatusBar.currentHeight ?? 24) : 0;
-// Nav bar height = screen minus window (the OS nav strip at the very bottom)
-const { height: _SH, width: SCREEN_W } = Dimensions.get('screen');
-const { height: _WH } = Dimensions.get('window');
-const NAV_BAR_H = Platform.OS === 'android' ? Math.max(0, _SH - _WH) : 34;
-// Total bottom nav height including OS navigation bar
-const BOTTOM_NAV_H = 58 + NAV_BAR_H;
+const { width: SCREEN_W } = Dimensions.get('screen');
+// Height of the pinned-action bar a screen can request via setStickyFooter —
+// BottomNav renders position:absolute (floats above document flow), so the
+// footer must too, and scrollable content needs this much extra bottom
+// padding to avoid the last row ending up hidden underneath it.
+const STICKY_FOOTER_H = 84;
 
 // ─── Safe external-link opener ────────────────────────────────────────────────
 // Linking.openURL rejects if no app can handle the URL (no dialer, no email
@@ -87,11 +105,11 @@ type Route =
   | { name: 'visaWaiver' }
   | { name: 'rejectionAnalyzer' }
   | { name: 'proTier' }
-  | { name: 'pricing' }
   | { name: 'ecosystemPartners'; score: number }
   | { name: 'visaCalculator' }
   | { name: 'bankBalance' }
   | { name: 'embassyFinder' }
+  | { name: 'faceVerification' }
   | { name: 'timelineTracker' }
   | { name: 'countryComparison' }
   | { name: 'onboarding'; step: number }
@@ -114,7 +132,9 @@ type Route =
   | { name: 'consultantConsole' }
   | { name: 'hrPortal' }
   | { name: 'employeePortal' }
-  | { name: 'adminOverview' };
+  | { name: 'adminOverview' }
+  | { name: 'myMessages' }
+  | { name: 'accessGrants' };
 
 // ── Data normalizers (API → mobile display format) ────────────────────────────
 const STATUS_LABEL: Record<string, string> = {
@@ -128,6 +148,7 @@ const STATUS_COLOR: Record<string, string> = {
 function normalizeApp(a: ApiApplication) {
   return {
     ...a,
+    statusRaw: a.status,
     status: STATUS_LABEL[a.status] ?? a.status,
     statusColor: STATUS_COLOR[a.status] ?? '#64748B',
     intendedTo: a.intendedFrom,
@@ -146,10 +167,8 @@ function normalizeConsultant(c: ApiConsultant, idx = 0) {
     ...c,
     initials,
     avatarColor: AVATAR_COLORS[idx % AVATAR_COLORS.length],
-    verified: true,
     price: `$${c.rate}`,
     nextSlot: c.availableToday ? 'Available today' : c.responseTime,
-    successRate: c.rating >= 4.9 ? '97%' : c.rating >= 4.8 ? '94%' : '91%',
     jurisdictions: c.specialty,
     languages: Array.isArray(c.languages) ? c.languages.join(', ') : c.languages,
     bio: c.bio ?? `${c.specialty} specialist with ${c.reviews} reviews.`,
@@ -171,12 +190,40 @@ GoogleSignin.configure({
   offlineAccess: true,
 });
 
-export default function App() {
+function AppInner() {
+  const insets = useSafeAreaInsets();
+  // Real device-reported inset for the OS nav bar/gesture pill — replaces the
+  // old Dimensions(screen)-Dimensions(window) heuristic, which read as ~0 on
+  // some real devices (Samsung edge-to-edge/gesture nav) even though the OS
+  // bar was still there, causing the sticky footer and BottomNav to render
+  // underneath it instead of above it.
+  const bottomNavH = 58 + insets.bottom;
   const [route, setRoute] = useState<Route>({ name: 'splash' });
   const [acceptedTerms, setAcceptedTerms] = useState(false);
   const [authEmail, setAuthEmail] = useState('');
   const [authPassword, setAuthPassword] = useState('');
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
+  // Route-level guard matching the backend's own requireRole gates exactly
+  // (app.ts: /consultant-console, /hr, /admin/overview) — the web app
+  // already redirects at the route level as defense-in-depth on top of the
+  // real backend 403; mobile only hid the button that navigates here, with
+  // nothing stopping the screen itself from rendering (and failing to load
+  // its data) if `route` were ever set some other way. Not currently
+  // reachable any other way in this app (no deep-link route for these
+  // screens), but this closes the gap properly rather than relying on a
+  // single point of failure.
+  useEffect(() => {
+    const roles = authUser?.roles ?? [];
+    const requiresOneOf: Partial<Record<Route['name'], string[]>> = {
+      consultantConsole: ['consultant', 'platform_admin'],
+      hrPortal: ['hr_admin', 'platform_admin'],
+      adminOverview: ['platform_admin'],
+    };
+    const required = requiresOneOf[route.name];
+    if (required && !required.some((r) => roles.includes(r))) {
+      setRoute({ name: 'tabs', tab: 'profile' });
+    }
+  }, [route.name, authUser]);
   const [loginError, setLoginError] = useState('');
   const [loginLoading, setLoginLoading] = useState(false);
   const [message, setMessage] = useState('');
@@ -190,19 +237,33 @@ export default function App() {
   const [consultantList, setConsultantList] = useState<ReturnType<typeof normalizeConsultant>[]>([]);
   const [loadConsultantsError, setLoadConsultantsError] = useState('');
   const [sessionOpts, setSessionOpts] = useState<ReturnType<typeof normalizeSessionOption>[]>([]);
+  const [loadSessionOptsError, setLoadSessionOptsError] = useState('');
   const [lastBooking, setLastBooking] = useState<ApiBooking | null>(null);
   const [createAppError, setCreateAppError] = useState('');
+  // Lets a long scrollable screen (e.g. a step wizard with a tall list above
+  // its primary action) pin that action to the bottom of the viewport
+  // instead of it scrolling away with the content — set by the active
+  // screen via a useEffect, cleared automatically on unmount/navigation.
+  const [stickyFooter, setStickyFooter] = useState<React.ReactNode>(null);
   const [notificationList, setNotificationList] = useState<ApiNotification[]>([]);
+  const [loadNotificationsError, setLoadNotificationsError] = useState('');
   const [documentList, setDocumentList] = useState<ApiDocument[]>([]);
+  const [loadDocumentsError, setLoadDocumentsError] = useState('');
   const [auditData, setAuditData] = useState<Record<string, any>>({});
+  const [auditErrors, setAuditErrors] = useState<Record<string, string>>({});
   // Carries which document is being uploaded from the picker step through to
   // the final API call — set when the user picks a file, read when the audit
   // actually gets enqueued a couple of screens later.
   const [pendingDocumentId, setPendingDocumentId] = useState('doc-passport');
-  const [exchangeRates, setExchangeRates] = useState<Record<string, number>>({
-    USD: 1, EUR: 0.924, GBP: 0.793, AED: 3.673, CAD: 1.364, AUD: 1.529, JPY: 157.2,
-    SGD: 1.342, INR: 83.5, SAR: 3.751, QAR: 3.640, CHF: 0.899, NZD: 1.634,
-  });
+  // Real on-device OCR text (Google ML Kit) for whatever was just captured
+  // or picked, carried the same way through to the audit call — undefined
+  // when the source has no OCR available (e.g. a picked PDF).
+  const [pendingDocType, setPendingDocType] = useState('Document');
+  const [pendingExtractedText, setPendingExtractedText] = useState<string | undefined>(undefined);
+  // The actual file bytes, so the backend can run real Gemini vision
+  // analysis instead of only the on-device OCR text above.
+  const [pendingImageBase64, setPendingImageBase64] = useState<string | undefined>(undefined);
+  const [pendingMimeType, setPendingMimeType] = useState<string | undefined>(undefined);
 
   // New application form
   const [newAppVisaType, setNewAppVisaType] = useState('schengen-tourist');
@@ -212,7 +273,17 @@ export default function App() {
   const [newAppTravelFrom, setNewAppTravelFrom] = useState('');
   const [newAppCreating, setNewAppCreating] = useState(false);
 
+  // Nationality and residence rarely change between applications — carry
+  // forward whatever was entered last time instead of asking again.
+  useEffect(() => {
+    loadPreferences().then(p => {
+      if (p.nationality) setNewAppNationality(prev => prev || p.nationality);
+      if (p.residenceCountry) setNewAppResidence(prev => prev || p.residenceCountry);
+    });
+  }, []);
+
   const activeTab = route.name === 'tabs' ? route.tab : route.name === 'application' ? 'apps' : route.name === 'newApp' ? 'apps' : route.name === 'upload' ? 'docs' : 'home';
+  const bottomNavVisible = !['camera','liveAnalysis','welcome','splash','register','verify','forgotPassword'].includes(route.name) && route.name !== 'onboarding';
 
   const goHome = () => setRoute({ name: 'tabs', tab: 'home' });
   const goChat = () => setRoute({ name: 'tabs', tab: 'chat' });
@@ -239,8 +310,10 @@ export default function App() {
   const routeAfterAuth = async () => {
     setLoadingApps(true);
     setLoadAppsError('');
+    let firstAppId: string | undefined;
     try {
       const { applications } = await fetchApplications();
+      firstAppId = applications[0]?.id;
       setAppList(applications.map(normalizeApp));
       setRoute(applications.length === 0 ? { name: 'onboarding', step: 0 } : { name: 'tabs', tab: 'home' });
     } catch (e: any) {
@@ -249,8 +322,25 @@ export default function App() {
     } finally {
       setLoadingApps(false);
     }
-    void Promise.all([loadConsultants(), loadSessionOpts(), loadNotifications(), loadExchangeRates()]);
+    void Promise.all([loadConsultants(), loadSessionOpts(), loadNotifications(), loadDocuments(firstAppId)]);
   };
+
+  // Registers this device for real push notifications once signed in.
+  // Best-effort and silent on failure — a user who denies the permission (or
+  // is on an emulator with no Google Play Services) should see no difference
+  // in the rest of the app, just no push notifications.
+  useEffect(() => {
+    if (!authUser) return;
+    (async () => {
+      try {
+        const existing = await Notifications.getPermissionsAsync();
+        const granted = existing.granted || (await Notifications.requestPermissionsAsync()).granted;
+        if (!granted) return;
+        const token = await Notifications.getDevicePushTokenAsync();
+        await registerDeviceToken(token.data, Platform.OS);
+      } catch { /* no Play Services, permission denied, or offline — silently skip */ }
+    })();
+  }, [authUser?.uid]);
 
   const loadConsultants = async () => {
     setLoadConsultantsError('');
@@ -263,38 +353,43 @@ export default function App() {
   };
 
   const loadSessionOpts = async () => {
+    setLoadSessionOptsError('');
     try {
       const { options } = await apiFetchSessionOptions();
       setSessionOpts(options.map(normalizeSessionOption));
-    } catch { /* stay with empty list */ }
+    } catch (e: any) {
+      setLoadSessionOptsError(e?.message ?? 'Failed to load session options.');
+    }
   };
 
   const loadNotifications = async () => {
+    setLoadNotificationsError('');
     try {
       const { notifications } = await fetchNotifications();
       setNotificationList(notifications);
-    } catch { /* keep empty */ }
+    } catch (e: any) {
+      setLoadNotificationsError(e?.message ?? 'Failed to load notifications.');
+    }
   };
 
   const loadDocuments = async (applicationId?: string) => {
+    setLoadDocumentsError('');
     try {
       const { documents } = await fetchDocuments(applicationId);
       setDocumentList(documents);
-    } catch { /* keep empty */ }
-  };
-
-  const loadExchangeRates = async () => {
-    try {
-      const { rates } = await fetchExchangeRates();
-      setExchangeRates(rates);
-    } catch { /* use defaults */ }
+    } catch (e: any) {
+      setLoadDocumentsError(e?.message ?? 'Failed to load documents.');
+    }
   };
 
   const loadAuditResult = async (docId: string) => {
+    setAuditErrors(prev => { const next = { ...prev }; delete next[docId]; return next; });
     try {
       const data = await fetchAuditResult(docId);
       setAuditData(prev => ({ ...prev, [docId]: data }));
-    } catch { /* use empty */ }
+    } catch {
+      setAuditErrors(prev => ({ ...prev, [docId]: "Couldn't load this audit report. Check your connection and try again." }));
+    }
   };
 
   const handleCreateApplication = async () => {
@@ -316,9 +411,10 @@ export default function App() {
       });
       const normalized = normalizeApp(application);
       setAppList(prev => [normalized, ...prev]);
-      // Reset form fields for next application
-      setNewAppNationality('');
-      setNewAppResidence('');
+      // Nationality and residence are carried forward for the next
+      // application instead of being cleared — only destination and travel
+      // date are actually specific to a single application.
+      savePreferences({ nationality: newAppNationality.trim(), residenceCountry: newAppResidence.trim() });
       setNewAppDestination('');
       setNewAppTravelFrom('');
       openApplication(normalized.id);
@@ -357,22 +453,6 @@ export default function App() {
       await routeAfterAuth();
     } catch (e: any) {
       setLoginError(e?.message ?? 'Login failed. Check your connection.');
-    } finally {
-      setLoginLoading(false);
-    }
-  };
-
-  const handleDemoLogin = async (persona: 'consumer' | 'consultant' | 'hr_admin' | 'platform_admin' = 'consumer') => {
-    if (loginLoading) return;
-    setLoginError('');
-    setLoginLoading(true);
-    try {
-      const session = await apiDemoLogin(persona);
-      setToken(session.token);
-      setAuthUser(session.user);
-      await routeAfterAuth();
-    } catch (e: any) {
-      setLoginError(e?.message ?? 'Demo login failed. Is the backend running?');
     } finally {
       setLoginLoading(false);
     }
@@ -424,20 +504,31 @@ export default function App() {
   };
 
   return (
-    <SafeAreaView style={styles.shell}>
+    <SafeAreaView style={styles.shell} edges={['top']}>
       <StatusBar barStyle="dark-content" />
   {/* Camera screen renders fullscreen outside ScrollView */}
       {route.name === 'camera' && (
         <CameraScreen
           docType={route.docType}
           back={() => setRoute({ name: 'upload', state: 'select' })}
-          onCapture={() => { setPendingDocumentId(`doc-passport-${Date.now()}`); setRoute({ name: 'liveAnalysis', docTitle: route.docType }); }}
+          onCapture={(extractedText, imageBase64, mimeType) => {
+            setPendingDocumentId(`doc-passport-${Date.now()}`);
+            setPendingDocType(route.docType);
+            setPendingExtractedText(extractedText);
+            setPendingImageBase64(imageBase64);
+            setPendingMimeType(mimeType);
+            setRoute({ name: 'liveAnalysis', docTitle: route.docType });
+          }}
         />
       )}
       {route.name === 'liveAnalysis' && (
         <LiveAnalysisScreen
           docTitle={route.docTitle}
           documentId={pendingDocumentId}
+          documentType={pendingDocType}
+          extractedText={pendingExtractedText}
+          imageBase64={pendingImageBase64}
+          mimeType={pendingMimeType}
           applicationId={appList[0]?.id}
           onDone={(result) => {
             setAuditData(prev => ({ ...prev, [pendingDocumentId]: result }));
@@ -454,7 +545,11 @@ export default function App() {
         />
       )}
       {!['camera','liveAnalysis'].includes(route.name) && (
-      <ScrollView contentContainerStyle={[styles.content, !['welcome','onboarding','splash','register','verify','forgotPassword'].includes(route.name) && styles.withNav]}>
+      /* keyboardShouldPersistTaps="handled": without it, ScrollView's default
+         ('never') swallows the FIRST tap on anything below an open keyboard
+         just to dismiss it — so tapping an autocomplete suggestion row (which
+         isn't itself a text input) never reached that row's onPress at all. */
+      <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={[styles.content, !['welcome','onboarding','splash','register','verify','forgotPassword'].includes(route.name) && { paddingBottom: bottomNavH + 20 }, !!stickyFooter && { paddingBottom: (bottomNavVisible ? bottomNavH + 20 : 28) + STICKY_FOOTER_H }]}>
         {route.name === 'splash' && (
           <SplashScreen onDone={() => setRoute({ name: 'welcome' })} />
         )}
@@ -468,11 +563,11 @@ export default function App() {
             toggleAccepted={() => setAcceptedTerms((value) => !value)}
             start={handleLogin}
             onGoogleLogin={handleGoogleLogin}
-            onDemoLogin={handleDemoLogin}
             onForgot={() => setRoute({ name: 'forgotPassword' })}
             onRegister={() => setRoute({ name: 'register' })}
             loginError={loginError}
             loginLoading={loginLoading}
+            setStickyFooter={setStickyFooter}
           />
         )}
         {route.name === 'forgotPassword' && (
@@ -493,6 +588,7 @@ export default function App() {
             setTravelFrom={setNewAppTravelFrom}
             creating={newAppCreating}
             createError={createAppError}
+            setStickyFooter={setStickyFooter}
             backLabel={route.step === 0 ? 'Skip for now' : 'Back'}
             back={() => { setCreateAppError(''); route.step === 0 ? goHome() : setRoute({ name: 'onboarding', step: route.step - 1 }); }}
             next={() => {
@@ -518,6 +614,7 @@ export default function App() {
             openChat={goChat}
             openConsultants={() => setRoute({ name: 'consultants' })}
             openCalculator={() => setRoute({ name: 'visaCalculator' })}
+            openFaceVerification={() => setRoute({ name: 'faceVerification' })}
             newApplication={() => setRoute({ name: 'newApp', step: 0 })}
             retryLoad={loadApplications}
           />
@@ -535,6 +632,8 @@ export default function App() {
             openUpload={() => setRoute({ name: 'upload', state: 'select' })}
             openAudit={(docId) => setRoute({ name: 'auditReport', docId })}
             documents={documentList}
+            loadError={loadDocumentsError}
+            retryLoad={() => loadDocuments(appList[0]?.id)}
             onMount={() => loadDocuments(appList[0]?.id)}
           />
         )}
@@ -561,6 +660,7 @@ export default function App() {
             openCalculator={() => setRoute({ name: 'visaCalculator' })}
             openBankBalance={() => setRoute({ name: 'bankBalance' })}
             openEmbassy={() => setRoute({ name: 'embassyFinder' })}
+            openFaceVerification={() => setRoute({ name: 'faceVerification' })}
             openTimeline={() => setRoute({ name: 'timelineTracker' })}
             openComparison={() => setRoute({ name: 'countryComparison' })}
             openVisaWaiver={() => setRoute({ name: 'visaWaiver' })}
@@ -568,6 +668,13 @@ export default function App() {
             openProfileHub={() => setRoute({ name: 'profileHub' })}
             openProTier={() => setRoute({ name: 'proTier' })}
             openPartners={() => setRoute({ name: 'ecosystemPartners', score: appList[0]?.readinessScore ?? 0 })}
+            openMyMessages={() => setRoute({ name: 'myMessages' })}
+            openAccessGrants={() => setRoute({ name: 'accessGrants' })}
+            onSignOut={() => {
+              setToken(null);
+              setAuthUser(null);
+              setRoute({ name: 'welcome' });
+            }}
           />
         )}
         {route.name === 'application' && (
@@ -599,6 +706,7 @@ export default function App() {
             setTravelFrom={setNewAppTravelFrom}
             creating={newAppCreating}
             createError={createAppError}
+            setStickyFooter={setStickyFooter}
             back={() => { setCreateAppError(''); route.step === 0 ? setRoute({ name: 'tabs', tab: 'apps' }) : setRoute({ name: 'newApp', step: route.step - 1 }); }}
             next={() => {
               if (route.step < 3) {
@@ -616,7 +724,8 @@ export default function App() {
             activeApplicationId={appList[0]?.id}
             openNewApplication={() => setRoute({ name: 'newApp', step: 0 })}
             back={() => setRoute({ name: 'tabs', tab: 'docs' })}
-            onCamera={() => setRoute({ name: 'camera', docType: 'Document' })}
+            onCamera={(docType) => setRoute({ name: 'camera', docType })}
+            onPicked={(documentType, extractedText, imageBase64, mimeType) => { setPendingDocType(documentType); setPendingExtractedText(extractedText); setPendingImageBase64(imageBase64); setPendingMimeType(mimeType); }}
             next={(documentId) => {
               if (documentId) setPendingDocumentId(documentId);
               const nextState = route.state === 'select' ? 'uploading' : route.state === 'uploading' ? 'auditing' : 'done';
@@ -630,7 +739,9 @@ export default function App() {
             back={() => setRoute({ name: 'tabs', tab: 'docs' })}
             openRequirements={() => setRoute({ name: 'requirements' })}
             fetchedAudit={auditData[route.docId]}
+            auditError={auditErrors[route.docId]}
             onMount={() => loadAuditResult(route.docId)}
+            onRetry={() => loadAuditResult(route.docId)}
           />
         )}
         {route.name === 'analysis' && (
@@ -641,7 +752,7 @@ export default function App() {
             app={appList[0] ?? null}
           />
         )}
-        {route.name === 'requirements' && <RequirementsScreen back={goHome} openConsultants={() => setRoute({ name: 'consultants' })} />}
+        {route.name === 'requirements' && <RequirementsScreen back={goHome} openConsultants={() => setRoute({ name: 'consultants' })} destinationCountry={appList[0]?.destinationCountry} />}
         {route.name === 'consultants' && (
           <ConsultantsScreen
             consultantList={consultantList}
@@ -664,6 +775,8 @@ export default function App() {
             consultantId={route.consultantId}
             consultantList={consultantList}
             sessionOpts={sessionOpts}
+            loadError={loadSessionOptsError}
+            retryLoad={loadSessionOpts}
             onMount={loadSessionOpts}
             selected={route.optionId}
             back={() => setRoute({ name: 'consultant', id: route.consultantId })}
@@ -702,6 +815,8 @@ export default function App() {
           <NotificationsScreen
             back={goHome}
             notifications={notificationList}
+            loadError={loadNotificationsError}
+            retryLoad={loadNotifications}
             onMarkRead={(id) => {
               setNotificationList(prev => prev.map(n => n.id === id ? { ...n, read: true } : n));
               markNotificationRead(id).catch(() => { /* best-effort */ });
@@ -725,12 +840,24 @@ export default function App() {
         {route.name === 'hrPortal' && <HrPortalScreen back={() => setRoute({ name: 'tabs', tab: 'profile' })} />}
         {route.name === 'employeePortal' && <EmployeePortalScreen back={() => setRoute({ name: 'tabs', tab: 'profile' })} authUser={authUser} />}
         {route.name === 'adminOverview' && <AdminOverviewScreen back={() => setRoute({ name: 'tabs', tab: 'profile' })} />}
+        {route.name === 'myMessages' && <MyConversationsScreen back={() => setRoute({ name: 'tabs', tab: 'profile' })} />}
+        {route.name === 'accessGrants' && <AccessGrantsScreen back={() => setRoute({ name: 'tabs', tab: 'profile' })} />}
         {route.name === 'visaCalculator' && <VisaCalculatorScreen back={goHome} />}
         {route.name === 'bankBalance' && <BankBalanceScreen back={goHome} />}
-        {route.name === 'embassyFinder' && <EmbassyFinderScreen back={goHome} />}
-        {route.name === 'timelineTracker' && <TimelineTrackerScreen back={goHome} openUpload={() => setRoute({ name: 'upload', state: 'select' })} intendedFrom={appList[0]?.intendedFrom} />}
+        {route.name === 'embassyFinder' && <EmbassyFinderScreen back={goHome} residenceCountry={newAppResidence} />}
+        {route.name === 'faceVerification' && <FaceVerificationScreen back={goHome} />}
+        {route.name === 'timelineTracker' && (
+          <TimelineTrackerScreen
+            back={goHome}
+            openUpload={() => setRoute({ name: 'upload', state: 'select' })}
+            app={appList[0] ?? null}
+            documents={documentList}
+            hasAuditResult={Object.keys(auditData).length > 0}
+            hasBooking={!!lastBooking}
+          />
+        )}
         {route.name === 'countryComparison' && <CountryComparisonScreen back={goHome} />}
-        {route.name === 'profileHub' && <ProfileHubScreen back={() => setRoute({ name: 'tabs', tab: 'profile' })} authUser={authUser} />}
+        {route.name === 'profileHub' && <ProfileHubScreen back={() => setRoute({ name: 'tabs', tab: 'profile' })} authUser={authUser} applicationId={appList[0]?.id} />}
         {route.name === 'visaWaiver' && <VisaWaiverScreen back={goHome} />}
         {route.name === 'rejectionAnalyzer' && <RejectionAnalyzerScreen back={goHome} openChat={goChat} />}
         {route.name === 'proTier' && <ProTierScreen back={goHome} appList={appList} />}
@@ -740,19 +867,43 @@ export default function App() {
             onSuccess={(session) => {
               setToken(session.token);
               setAuthUser(session.user);
-              void Promise.all([loadApplications(), loadConsultants(), loadSessionOpts(), loadNotifications(), loadExchangeRates()]);
+              void Promise.all([loadApplications(), loadConsultants(), loadSessionOpts(), loadNotifications()]);
               void sendVerificationEmail(session.user.email);
               setRoute({ name: 'verify', email: session.user.email });
             }}
+            setStickyFooter={setStickyFooter}
           />
         )}
         {route.name === 'verify' && <VerifyEmailScreen email={route.email} onDone={() => setRoute({ name: 'onboarding', step: 0 })} />}
       </ScrollView>
       )}
-      {!['camera','liveAnalysis','welcome','splash','register','verify','forgotPassword'].includes(route.name) && route.name !== 'onboarding' && (
-        <BottomNav activeTab={activeTab} setTab={(tab) => setRoute({ name: 'tabs', tab })} unreadCount={notificationList.filter(n => !n.read && n.type === 'booking').length} />
+      {(stickyFooter || bottomNavVisible) && (
+        // Stacked in normal flow inside one bottom-anchored container instead
+        // of two independently absolute-positioned bars — plain stacking
+        // can't drift out of sync. BottomNav pads its own bottom edge by the
+        // real safe-area inset (not a Dimensions(screen)-Dimensions(window)
+        // guess), so it clears the OS nav bar/gesture pill on every device.
+        <View style={{ position: 'absolute', left: 0, right: 0, bottom: 0 }}>
+          {stickyFooter && <View style={styles.stickyFooterBar}>{stickyFooter}</View>}
+          {bottomNavVisible && (
+            <BottomNav
+              activeTab={activeTab}
+              setTab={(tab) => setRoute({ name: 'tabs', tab })}
+              unreadCount={notificationList.filter(n => !n.read && n.type === 'booking').length}
+              style={{ position: 'relative' }}
+            />
+          )}
+        </View>
       )}
     </SafeAreaView>
+  );
+}
+
+export default function App() {
+  return (
+    <SafeAreaProvider>
+      <AppInner />
+    </SafeAreaProvider>
   );
 }
 
@@ -796,17 +947,35 @@ function tripCountdown(dateISO: string) {
 }
 
 function WelcomeScreen({
-  accepted, email, password, setEmail, setPassword, toggleAccepted, start, onForgot, onRegister, onGoogleLogin, onDemoLogin, loginError, loginLoading,
+  accepted, email, password, setEmail, setPassword, toggleAccepted, start, onForgot, onRegister, onGoogleLogin, loginError, loginLoading, setStickyFooter,
 }: {
   accepted: boolean; email: string; password: string;
   setEmail: (v: string) => void; setPassword: (v: string) => void;
   toggleAccepted: () => void; start: () => void; onForgot: () => void; onRegister: () => void;
   onGoogleLogin: () => void;
-  onDemoLogin: (persona: 'consumer' | 'consultant' | 'hr_admin' | 'platform_admin') => void;
   loginError?: string; loginLoading?: boolean;
+  setStickyFooter: (node: React.ReactNode) => void;
 }) {
   const [showForm, setShowForm] = useState(false);
   const canStart = accepted && email.includes('@') && password.length >= 6;
+
+  // Pinned to the bottom of the screen instead of scrolling away below the
+  // form — this is exactly the button a keyboard-covering-it bug was found
+  // and fixed on earlier; pinning it here means it's always visible/reachable
+  // even without opening the keyboard at all, not just reachable via the
+  // keyboard's "Done" key.
+  useEffect(() => {
+    if (!showForm) {
+      setStickyFooter(null);
+      return;
+    }
+    setStickyFooter(
+      <Pressable testID="signin-submit-button" style={[styles.primaryButton, { marginTop: 0 }, (!canStart || loginLoading) && styles.disabledButton]} onPress={canStart && !loginLoading ? start : undefined}>
+        {loginLoading ? <ActivityIndicator color="#fff" /> : <Text style={[styles.primaryButtonText, !canStart && styles.disabledButtonText]}>Sign in</Text>}
+      </Pressable>
+    );
+    return () => setStickyFooter(null);
+  }, [showForm, canStart, loginLoading, start]);
 
   if (!showForm) {
     // ── Marketing / landing view ────────────────────────────────────────
@@ -837,7 +1006,7 @@ function WelcomeScreen({
         <View style={{ backgroundColor: '#fff', borderTopLeftRadius: 24, borderTopRightRadius: 24, marginTop: -24, padding: 24, flex: 1 }}>
           {/* Trust strip */}
           <View style={{ flexDirection: 'row', justifyContent: 'space-around', marginBottom: 22, paddingHorizontal: 8 }}>
-            {[['shield-checkmark-outline','GDPR'],['sparkles','94% accuracy'],['headset-outline','Expert support']].map(([icon, label]) => (
+            {[['shield-checkmark-outline','GDPR'],['sparkles','AI-powered'],['headset-outline','Expert support']].map(([icon, label]) => (
               <View key={label} style={{ alignItems: 'center', gap: 6 }}>
                 <Ionicons name={icon as IoniconName} size={22} color={colors.teal500} />
                 <Text style={{ fontSize: 10, fontWeight: '600', color: colors.slate500 }}>{label}</Text>
@@ -857,24 +1026,11 @@ function WelcomeScreen({
           <Pressable style={{ alignItems: 'center', marginTop: 18 }} onPress={() => setShowForm(true)}>
             <Text style={{ color: colors.royal600, fontWeight: '700', fontSize: 13 }}>I already have an account</Text>
           </Pressable>
-          {/* Demo mode strip */}
-          <View style={{ marginTop: 22, paddingTop: 18, borderTopWidth: 1, borderTopColor: colors.slate100 }}>
-            <Text style={{ color: colors.slate500, fontSize: 10, fontWeight: '700', textAlign: 'center', letterSpacing: 1, textTransform: 'uppercase', marginBottom: 10 }}>Try a demo account</Text>
-            <View style={{ flexDirection: 'row', gap: 8 }}>
-              {([['consumer','Consumer','person-outline'],['consultant','Consultant','people-outline'],['hr_admin','HR Admin','briefcase-outline'],['platform_admin','Admin','shield-outline']] as const).map(([persona, label, icon]) => (
-                <Pressable key={persona} onPress={() => onDemoLogin(persona)} disabled={loginLoading}
-                  style={{ flex: 1, paddingVertical: 10, borderRadius: 10, borderWidth: 1, borderColor: colors.slate200, alignItems: 'center', gap: 4, opacity: loginLoading ? 0.5 : 1 }}>
-                  <Ionicons name={icon as IoniconName} size={16} color={colors.slate600} />
-                  <Text style={{ color: colors.slate600, fontSize: 9, fontWeight: '700' }}>{label}</Text>
-                </Pressable>
-              ))}
-            </View>
-          </View>
-          <Text style={{ color: colors.slate300, fontSize: 10, textAlign: 'center', marginTop: 14, lineHeight: 16 }}>
+          <Text style={{ color: colors.slate600, fontSize: 11, textAlign: 'center', marginTop: 20, lineHeight: 17 }}>
             By continuing you agree to our{' '}
-            <Text style={{ color: colors.royal600 }} onPress={() => Alert.alert('Terms of Service', 'Our Terms of Service are being finalized and will be published before launch. Contact support@visawithease.app with any questions.')}>Terms</Text>
+            <Text style={{ color: colors.royal600, fontWeight: '700' }} onPress={() => Linking.openURL('https://www.visawithease.com/terms')}>Terms</Text>
             {' & '}
-            <Text style={{ color: colors.royal600 }} onPress={() => Alert.alert('Privacy Policy', 'Our Privacy Policy is being finalized and will be published before launch. Contact support@visawithease.app with any questions about your data.')}>Privacy Policy</Text>
+            <Text style={{ color: colors.royal600, fontWeight: '700' }} onPress={() => Linking.openURL('https://www.visawithease.com/privacy')}>Privacy Policy</Text>
           </Text>
         </View>
       </View>
@@ -893,7 +1049,24 @@ function WelcomeScreen({
         <Text style={[styles.rowMeta, { marginBottom: 6 }]}>Email address</Text>
         <TextInput value={email} onChangeText={setEmail} autoCapitalize="none" keyboardType="email-address" placeholder="you@example.com" style={styles.searchInput} />
         <Text style={[styles.rowMeta, { marginBottom: 6 }]}>Password</Text>
-        <TextInput value={password} onChangeText={setPassword} secureTextEntry placeholder="Password" style={styles.searchInput} />
+        <TextInput
+          value={password}
+          onChangeText={setPassword}
+          secureTextEntry
+          placeholder="Password"
+          style={styles.searchInput}
+          returnKeyType="done"
+          // Real bug this fixes: the "Sign in" button sits below the
+          // checkbox, low enough on this form that once the keyboard opens
+          // for the password field, the button ends up rendered behind the
+          // keyboard with no way to reach it except manually dismissing the
+          // keyboard first — the OS keyboard draws on top of everything, so
+          // no in-app z-index/scroll fix helps once a tap can't reach it.
+          // Submitting from the keyboard's own "Done" key sidesteps that
+          // entirely, and still respects the same accepted-terms/validation
+          // gate the button itself uses.
+          onSubmitEditing={() => { if (canStart && !loginLoading) start(); }}
+        />
         <Pressable onPress={onForgot} style={{ alignSelf: 'flex-end', marginTop: 4 }}>
           <Text style={{ color: colors.royal600, fontWeight: '700', fontSize: 13 }}>Forgot password?</Text>
         </Pressable>
@@ -909,9 +1082,6 @@ function WelcomeScreen({
           <Text style={{ color: '#DC2626', fontSize: 13 }}>{loginError}</Text>
         </View>
       ) : null}
-      <Pressable style={[styles.primaryButton, (!canStart || loginLoading) && styles.disabledButton]} onPress={canStart && !loginLoading ? start : undefined}>
-        {loginLoading ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryButtonText}>Sign in</Text>}
-      </Pressable>
       <Pressable style={[styles.secondaryButton, { marginTop: 10 }]} onPress={onRegister}>
         <Text style={styles.secondaryButtonText}>Create a new account</Text>
       </Pressable>
@@ -960,7 +1130,7 @@ function ForgotPasswordScreen({ back }: { back: () => void }) {
 }
 
 
-function DashboardScreen({ appList, loadingApps, loadAppsError, userName, openApplication, openUpload, openAnalysis, openRequirements, openChat, openConsultants, openCalculator, newApplication, retryLoad }: {
+function DashboardScreen({ appList, loadingApps, loadAppsError, userName, openApplication, openUpload, openAnalysis, openRequirements, openChat, openConsultants, openCalculator, openFaceVerification, newApplication, retryLoad }: {
   appList: ReturnType<typeof normalizeApp>[];
   loadingApps: boolean;
   loadAppsError?: string;
@@ -972,6 +1142,7 @@ function DashboardScreen({ appList, loadingApps, loadAppsError, userName, openAp
   openChat: () => void;
   openConsultants: () => void;
   openCalculator: () => void;
+  openFaceVerification: () => void;
   newApplication: () => void;
   retryLoad: () => void;
 }) {
@@ -1041,6 +1212,7 @@ function DashboardScreen({ appList, loadingApps, loadAppsError, userName, openAp
         <QuickAction icon="ribbon-outline"              label="Book expert" bg="#FEF3C7" iconColor={colors.gold500}   onPress={openConsultants} />
         <QuickAction icon="calculator-outline"          label="Calc score"  bg="#EDE9FE" iconColor={colors.purple600} onPress={openCalculator} />
         <QuickAction icon="add-circle-outline"          label="New app"     bg="#D1FAE5" iconColor={colors.green500}  onPress={newApplication} />
+        <QuickAction icon="scan-outline"                label="Face verify" bg="#CCFBF1" iconColor={colors.teal500}   onPress={openFaceVerification} />
       </View>
 
       {!loadingApps && appList.length > 1 && (
@@ -1170,7 +1342,7 @@ function ApplicationDetailScreen({ id, appList, tab, setTab, back, upload, openA
         );
       })()}
       {tab === 'documents' && <DocumentList upload={upload} openAudit={openAudit} grid documents={documents} />}
-      {tab === 'requirements' && <RequirementList documents={documents} />}
+      {tab === 'requirements' && <RequirementList documents={documents} destinationCountry={app.destinationCountry} />}
       {tab === 'chat' && <MiniChat openBooking={openBooking} documents={documents} />}
     </View>
   );
@@ -1211,7 +1383,7 @@ const VISA_TYPES = [
 
 function NewApplicationScreen({
   step, visaTypeId, setVisaTypeId, nationality, setNationality, residence, setResidence,
-  destination, setDestination, travelFrom, setTravelFrom, creating, createError, back, next, backLabel,
+  destination, setDestination, travelFrom, setTravelFrom, creating, createError, back, next, backLabel, setStickyFooter,
 }: {
   step: number;
   visaTypeId: string; setVisaTypeId: (v: string) => void;
@@ -1224,10 +1396,49 @@ function NewApplicationScreen({
   back: () => void;
   next: () => void;
   backLabel?: string;
+  setStickyFooter: (node: React.ReactNode) => void;
 }) {
   const ISO_DATE_RE = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
   const travelFromValid = !travelFrom.trim() || ISO_DATE_RE.test(travelFrom.trim());
   const selectedVt = VISA_TYPES.find(v => v.id === visaTypeId) ?? VISA_TYPES[0];
+
+  // `next` is a fresh inline function from the parent on every render — put
+  // it behind a ref so the footer effect below doesn't retrigger every time
+  // that reference changes (that caused an infinite update loop).
+  const nextRef = useRef(next);
+  nextRef.current = next;
+  const callNext = useRef(() => nextRef.current()).current;
+
+  // The primary action is pinned to the bottom of the screen instead of
+  // scrolling away below a long option list (visa types, country lists,
+  // etc.) — this is the same footer slot every step below feeds into.
+  useEffect(() => {
+    if (step === 1) {
+      const disabled = !nationality.trim() || !residence.trim();
+      setStickyFooter(
+        <Pressable style={[styles.primaryButton, { marginTop: 0 }, disabled && styles.disabledButton]} onPress={disabled ? undefined : callNext}>
+          <Text style={[styles.primaryButtonText, disabled && styles.disabledButtonText]}>Continue →</Text>
+        </Pressable>
+      );
+    } else if (step === 3) {
+      const disabled = creating || !travelFromValid;
+      setStickyFooter(
+        <Pressable style={[styles.primaryButton, { marginTop: 0 }, disabled && styles.disabledButton]} onPress={disabled ? undefined : callNext}>
+          {creating
+            ? <ActivityIndicator color="#fff" />
+            : <Text style={[styles.primaryButtonText, !travelFromValid && styles.disabledButtonText]}>Create application</Text>
+          }
+        </Pressable>
+      );
+    } else {
+      setStickyFooter(
+        <Pressable style={[styles.primaryButton, { marginTop: 0 }]} onPress={callNext}>
+          <Text style={styles.primaryButtonText}>Continue →</Text>
+        </Pressable>
+      );
+    }
+    return () => setStickyFooter(null);
+  }, [step, nationality, residence, creating, travelFromValid, callNext]);
 
   if (step === 0) {
     return (
@@ -1252,9 +1463,6 @@ function NewApplicationScreen({
           </Pressable>
         ))}
         <ProgressDots count={4} active={step} />
-        <Pressable style={styles.primaryButton} onPress={next}>
-          <Text style={styles.primaryButtonText}>Continue →</Text>
-        </Pressable>
       </View>
     );
   }
@@ -1268,27 +1476,19 @@ function NewApplicationScreen({
         <Text style={styles.bodyText}>Enter the country that issued your primary passport.</Text>
         <View style={styles.stepCard}>
           <Text style={[styles.rowMeta, { marginBottom: 6 }]}>Passport country</Text>
-          <TextInput
+          <CountryAutocompleteInput
             value={nationality}
             onChangeText={setNationality}
             placeholder="e.g. India, Philippines, Pakistan"
-            style={styles.searchInput}
-            autoCapitalize="words"
           />
           <Text style={[styles.rowMeta, { marginBottom: 6, marginTop: 12 }]}>Country of residence</Text>
-          <TextInput
+          <CountryAutocompleteInput
             value={residence}
             onChangeText={setResidence}
             placeholder="e.g. United Arab Emirates, UK"
-            style={styles.searchInput}
-            autoCapitalize="words"
           />
         </View>
         <ProgressDots count={4} active={step} />
-        <Pressable style={[styles.primaryButton, (!nationality.trim() || !residence.trim()) && styles.disabledButton]}
-          onPress={nationality.trim() && residence.trim() ? next : undefined}>
-          <Text style={styles.primaryButtonText}>Continue →</Text>
-        </Pressable>
       </View>
     );
   }
@@ -1303,18 +1503,13 @@ function NewApplicationScreen({
         <Text style={styles.bodyText}>Confirm the destination country for your {selectedVt.label} visa.</Text>
         <View style={styles.stepCard}>
           <Text style={[styles.rowMeta, { marginBottom: 6 }]}>Destination country</Text>
-          <TextInput
+          <CountryAutocompleteInput
             value={destination}
             onChangeText={setDestination}
             placeholder={defaultDest}
-            style={styles.searchInput}
-            autoCapitalize="words"
           />
         </View>
         <ProgressDots count={4} active={step} />
-        <Pressable style={styles.primaryButton} onPress={next}>
-          <Text style={styles.primaryButtonText}>Continue →</Text>
-        </Pressable>
       </View>
     );
   }
@@ -1352,22 +1547,27 @@ function NewApplicationScreen({
           <Text style={{ color: '#DC2626', fontSize: 13 }}>{createError}</Text>
         </View>
       ) : null}
-      <Pressable style={[styles.primaryButton, (creating || !travelFromValid) && styles.disabledButton]} onPress={(creating || !travelFromValid) ? undefined : next}>
-        {creating
-          ? <ActivityIndicator color="#fff" />
-          : <Text style={styles.primaryButtonText}>Create application</Text>
-        }
-      </Pressable>
     </View>
   );
 }
 
-function DocumentsScreen({ openUpload, openAudit, documents, onMount }: { openUpload: () => void; openAudit: (docId: string) => void; documents: ApiDocument[]; onMount?: () => void }) {
+function DocumentsScreen({ openUpload, openAudit, documents, loadError, retryLoad, onMount }: { openUpload: () => void; openAudit: (docId: string) => void; documents: ApiDocument[]; loadError?: string; retryLoad?: () => void; onMount?: () => void }) {
   useEffect(() => { onMount?.(); }, []);
   return (
     <View>
       <Text style={styles.eyebrow}>Documents</Text>
       <Text style={styles.title}>Audit-ready vault</Text>
+      {loadError && documents.length === 0 && (
+        <View style={{ backgroundColor: '#FEF2F2', borderRadius: 12, borderWidth: 1, borderColor: '#FECACA', padding: 16, marginBottom: 12, alignItems: 'center', gap: 10 }}>
+          <Ionicons name="alert-circle-outline" size={24} color="#DC2626" />
+          <Text style={{ color: '#991B1B', textAlign: 'center' }}>{loadError}</Text>
+          {retryLoad && (
+            <Pressable style={[styles.smallButton, { backgroundColor: '#DC2626' }]} onPress={retryLoad}>
+              <Text style={[styles.smallButtonText, { color: '#fff' }]}>Retry</Text>
+            </Pressable>
+          )}
+        </View>
+      )}
       <Pressable style={styles.uploadZone} onPress={openUpload}>
         <Ionicons name="cloud-upload-outline" size={36} color={colors.royal600} />
         <Text style={styles.rowTitle}>Upload document</Text>
@@ -1439,6 +1639,11 @@ function DocumentList({ upload, openAudit, grid, documents }: { upload: () => vo
               <Text style={{ fontSize: 10, color: colors.slate300, marginTop: 2 }}>{doc.retention}</Text>
             )}
           </View>
+          {!!doc.fileUrl && (
+            <Pressable onPress={() => openUrlSafely(doc.fileUrl!)} hitSlop={8} style={{ padding: 4, marginRight: 4 }}>
+              <Ionicons name="eye-outline" size={18} color={colors.slate500} />
+            </Pressable>
+          )}
           {doc.score > 0
             ? <ScoreRing value={doc.score} />
             : <View style={[styles.statusPill, { backgroundColor: `${doc.statusColor}18` }]}>
@@ -1457,14 +1662,30 @@ function slugifyDocumentId(name: string | null | undefined): string {
   return slug ? `doc-${slug}` : `doc-upload-${Date.now()}`;
 }
 
-function UploadScreen({ state, activeApplicationId, openNewApplication, back, next, onCamera }: {
+// Real per-document type — sent to the backend so the AI audit knows what
+// it's checking, and so the Documents list can show a real per-type record
+// instead of a generic, unidentifiable "Document" upload. Ids match the
+// backend's DOCUMENT_TEMPLATES exactly (see apps/backend/src/app.ts).
+const DOCUMENT_TYPE_OPTIONS: { id: string; label: string; icon: IoniconName }[] = [
+  { id: 'passport',   label: 'Passport bio page',          icon: 'id-card-outline' },
+  { id: 'bank',       label: 'Bank statement',              icon: 'cash-outline' },
+  { id: 'employment', label: 'Employment / student letter', icon: 'briefcase-outline' },
+  { id: 'insurance',  label: 'Travel medical insurance',    icon: 'shield-checkmark-outline' },
+  { id: 'itinerary',  label: 'Flight & hotel reservation',  icon: 'airplane-outline' },
+  { id: 'photo',      label: 'Biometric photo',             icon: 'camera-outline' },
+  { id: 'other',      label: 'Other supporting document',   icon: 'document-outline' },
+];
+
+function UploadScreen({ state, activeApplicationId, openNewApplication, back, next, onCamera, onPicked }: {
   state: 'select' | 'uploading' | 'auditing' | 'done';
   activeApplicationId?: string;
   openNewApplication: () => void;
   back: () => void;
   next: (documentId?: string) => void;
-  onCamera?: () => void;
+  onCamera?: (docType: string) => void;
+  onPicked: (documentType: string, extractedText?: string, imageBase64?: string, mimeType?: string) => void;
 }) {
+  const [docType, setDocType] = useState<string | null>(null);
   const copy: Record<typeof state, [string, string]> = {
     select:    ['Select document',    'Choose how to add your document below.'],
     uploading: ['Uploading securely', 'Encrypting file and preparing OCR. Retention timer starts now.'],
@@ -1489,28 +1710,79 @@ function UploadScreen({ state, activeApplicationId, openNewApplication, back, ne
   const pickFromGallery = async () => {
     try {
       const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ImagePicker.MediaTypeOptions.Images, quality: 0.9 });
-      if (!result.canceled && result.assets?.[0]) next(slugifyDocumentId(result.assets[0].fileName));
+      if (result.canceled || !result.assets?.[0]) return;
+      const asset = result.assets[0];
+      const mimeType = asset.mimeType || 'image/jpeg';
+      // Real on-device OCR (Google ML Kit) on the picked image — not simulated.
+      // A failure here is a legitimate "couldn't read this" signal, not hidden.
+      let extractedText: string | undefined;
+      try {
+        const { default: TextRecognition } = await import('@react-native-ml-kit/text-recognition');
+        const ocr = await TextRecognition.recognize(asset.uri);
+        extractedText = ocr?.text?.trim() || undefined;
+      } catch { /* extractedText stays undefined — backend treats this honestly */ }
+      // The real file bytes — lets the backend run actual AI vision on it.
+      let imageBase64: string | undefined;
+      try {
+        imageBase64 = await FileSystem.readAsStringAsync(asset.uri, { encoding: FileSystem.EncodingType.Base64 });
+      } catch { /* imageBase64 stays undefined — falls back to OCR-text analysis */ }
+      onPicked(docType ?? 'other', extractedText, imageBase64, mimeType);
+      next(slugifyDocumentId(asset.fileName));
     } catch { next(); }
   };
   const pickDocument = async () => {
     try {
-      const result = await DocumentPicker.getDocumentAsync({ type: ['application/pdf', 'image/jpeg', 'image/png'], copyToCacheDirectory: false });
-      if (!result.canceled && result.assets?.[0]) next(slugifyDocumentId(result.assets[0].name));
+      const result = await DocumentPicker.getDocumentAsync({ type: ['application/pdf', 'image/jpeg', 'image/png'], copyToCacheDirectory: true });
+      if (result.canceled || !result.assets?.[0]) return;
+      const asset = result.assets[0];
+      const isImage = /\.(jpe?g|png|heic)$/i.test(asset.name ?? '') || (asset.mimeType?.startsWith('image/') ?? false);
+      const mimeType = asset.mimeType || (isImage ? 'image/jpeg' : 'application/pdf');
+      // On-device OCR only runs on images — PDFs skip straight to the real
+      // file bytes below, which Gemini can read directly (including PDFs).
+      let extractedText: string | undefined;
+      if (isImage) {
+        try {
+          const { default: TextRecognition } = await import('@react-native-ml-kit/text-recognition');
+          const ocr = await TextRecognition.recognize(asset.uri);
+          extractedText = ocr?.text?.trim() || undefined;
+        } catch { /* extractedText stays undefined */ }
+      }
+      let imageBase64: string | undefined;
+      try {
+        imageBase64 = await FileSystem.readAsStringAsync(asset.uri, { encoding: FileSystem.EncodingType.Base64 });
+      } catch { /* imageBase64 stays undefined — honest "couldn't verify" fallback applies */ }
+      onPicked(docType ?? 'other', extractedText, imageBase64, mimeType);
+      next(slugifyDocumentId(asset.name));
     } catch { next(); }
   };
   const sources: [IoniconName, string, string, (() => void) | undefined][] = [
-    ['camera-outline',   'Take photo',         'Capture with your camera',       onCamera],
+    ['camera-outline',   'Take photo',         'Capture with your camera',       onCamera ? () => onCamera(docType ?? 'other') : undefined],
     ['images-outline',   'Choose from gallery', 'Pick an existing image',         pickFromGallery],
     ['document-outline', 'Browse files',        'PDF, JPG, PNG, HEIC',            pickDocument],
     ['logo-google',      'Import from Drive',   'Select from Google Drive',       pickDocument],
   ];
   return (
     <View>
-      <BackButton label="Documents" onPress={back} />
+      <BackButton label="Documents" onPress={docType ? () => setDocType(null) : back} />
       <Text style={styles.eyebrow}>Document flow</Text>
-      <Text style={styles.title}>{copy[state][0]}</Text>
-      <Text style={styles.bodyText}>{copy[state][1]}</Text>
-      {state === 'select' && (
+      <Text style={styles.title}>{state === 'select' && !docType ? 'What are you uploading?' : copy[state][0]}</Text>
+      <Text style={styles.bodyText}>{state === 'select' && !docType ? 'Pick the document type so the AI audit checks the right things.' : copy[state][1]}</Text>
+      {state === 'select' && !docType && (
+        <Section title="Document type">
+          {DOCUMENT_TYPE_OPTIONS.map((opt) => (
+            <Pressable key={opt.id} style={styles.taskRow} onPress={() => setDocType(opt.id)}>
+              <View style={[styles.quickIconBox, { backgroundColor: colors.royal50, width: 40, height: 40 }]}>
+                <Ionicons name={opt.icon} size={20} color={colors.royal600} />
+              </View>
+              <View style={styles.flex}>
+                <Text style={styles.rowTitle}>{opt.label}</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color={colors.slate300} />
+            </Pressable>
+          ))}
+        </Section>
+      )}
+      {state === 'select' && !!docType && (
         <Section title="Add from">
           {sources.map(([icon, label, sub, onPress]) => (
             <Pressable key={label} style={styles.taskRow} onPress={onPress ?? (() => next())}>
@@ -1545,9 +1817,7 @@ function UploadScreen({ state, activeApplicationId, openNewApplication, back, ne
 
 const AUDIT_TIMELINE = ['File received and encrypted', 'OCR text extracted', 'Identity fields compared', 'Visa rules checked', 'Validated findings published'];
 
-function AuditReportScreen({ docId, back, openRequirements, fetchedAudit, onMount }: { docId: string; back: () => void; openRequirements: () => void; fetchedAudit?: any; onMount?: () => void }) {
-  const [unlocked] = useState(false);
-
+function AuditReportScreen({ docId, back, openRequirements, fetchedAudit, auditError, onMount, onRetry }: { docId: string; back: () => void; openRequirements: () => void; fetchedAudit?: any; auditError?: string; onMount?: () => void; onRetry?: () => void }) {
   useEffect(() => { onMount?.(); }, []);
 
   const audit = fetchedAudit ?? {};
@@ -1557,11 +1827,6 @@ function AuditReportScreen({ docId, back, openRequirements, fetchedAudit, onMoun
   const generatedAt: string = audit.generatedAt ? new Date(audit.generatedAt).toLocaleString() : 'Pending';
   const findings: any[] = audit.findings ?? [];
   const severityColor = { pass: colors.green500, info: colors.royal600, warn: colors.gold500, redflag: '#DC2626' } as Record<string, string>;
-  const criticalCount = findings.filter(f => f.severity === 'redflag' || f.severity === 'warn').length;
-
-  const handleUnlock = () => {
-    Alert.alert('Coming soon', 'Paid report unlock is coming soon — full findings will be available here once payment is connected.');
-  };
 
   const handleSharePdf = async () => {
     try {
@@ -1582,10 +1847,22 @@ function AuditReportScreen({ docId, back, openRequirements, fetchedAudit, onMoun
       <View>
         <BackButton label="Documents" onPress={back} />
         <Text style={styles.eyebrow}>AI audit report</Text>
-        <View style={{ alignItems: 'center', padding: 40, gap: 14 }}>
-          <ActivityIndicator size="large" color={colors.royal600} />
-          <Text style={styles.rowMeta}>Loading audit report…</Text>
-        </View>
+        {auditError ? (
+          <View style={{ alignItems: 'center', padding: 40, gap: 12 }}>
+            <Ionicons name="alert-circle-outline" size={32} color="#DC2626" />
+            <Text style={[styles.rowMeta, { textAlign: 'center' }]}>{auditError}</Text>
+            {onRetry && (
+              <Pressable style={[styles.smallButton, { backgroundColor: '#DC2626' }]} onPress={onRetry}>
+                <Text style={[styles.smallButtonText, { color: '#fff' }]}>Retry</Text>
+              </Pressable>
+            )}
+          </View>
+        ) : (
+          <View style={{ alignItems: 'center', padding: 40, gap: 14 }}>
+            <ActivityIndicator size="large" color={colors.royal600} />
+            <Text style={styles.rowMeta}>Loading audit report…</Text>
+          </View>
+        )}
       </View>
     );
   }
@@ -1598,10 +1875,10 @@ function AuditReportScreen({ docId, back, openRequirements, fetchedAudit, onMoun
 
       <LinearGradient colors={['#0B1F4B', '#1547C0']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.reportHero}>
         <ScoreRing value={score} large subLabel={status} />
-        <Text style={styles.reportText}>Generated {generatedAt} · {AUDIT_TIMELINE.length} audit stages completed</Text>
+        <Text style={styles.reportText}>Generated {generatedAt}</Text>
       </LinearGradient>
 
-      <Section title="AI audit stages">
+      <Section title="What this scan checks">
         {AUDIT_TIMELINE.map((step) => (
           <View key={step} style={[styles.taskRow, { gap: 10 }]}>
             <View style={{ width: 22, height: 22, borderRadius: 11, backgroundColor: colors.green100, alignItems: 'center', justifyContent: 'center' }}>
@@ -1612,74 +1889,32 @@ function AuditReportScreen({ docId, back, openRequirements, fetchedAudit, onMoun
         ))}
       </Section>
 
-      {!unlocked ? (
-        <View style={{ marginTop: 8 }}>
-          <View style={{ backgroundColor: '#FEF2F2', borderRadius: 16, borderWidth: 1, borderColor: '#FECACA', padding: 18, marginBottom: 12 }}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 12 }}>
-              <Ionicons name="warning" size={22} color="#DC2626" />
-              <View style={styles.flex}>
-                <Text style={{ color: '#991B1B', fontWeight: '900', fontSize: 15 }}>{criticalCount > 0 ? `${criticalCount} issue${criticalCount !== 1 ? 's' : ''} detected` : 'Report ready'}</Text>
-                <Text style={{ color: '#B91C1C', fontSize: 12, marginTop: 2 }}>Unlock to see full findings and fix instructions</Text>
-              </View>
-            </View>
-            {findings.slice(0, 3).map((f: any, i: number) => (
-              <View key={f.id} style={{ flexDirection: 'row', gap: 10, paddingVertical: 8, borderTopWidth: i > 0 ? 1 : 0, borderTopColor: '#FECACA', opacity: i === 0 ? 1 : 0.4 }}>
-                <View style={{ width: 28, height: 28, borderRadius: 8, backgroundColor: i === 0 ? `${severityColor[f.severity] ?? '#DC2626'}20` : '#FEE2E2', alignItems: 'center', justifyContent: 'center' }}>
-                  {i === 0
-                    ? <Ionicons name={f.severity === 'pass' ? 'checkmark-circle' : 'alert-circle'} size={16} color={severityColor[f.severity] ?? '#DC2626'} />
-                    : <Ionicons name="lock-closed" size={14} color="#DC2626" />}
+      <Section title="AI findings — full report">
+        {findings.map((finding: any) => {
+          const color: string = severityColor[finding.severity] ?? colors.slate500;
+          return (
+            <View key={finding.id} style={{ paddingVertical: 12, borderTopWidth: 1, borderTopColor: colors.slate100, gap: 6 }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                <View style={{ width: 28, height: 28, borderRadius: 8, backgroundColor: `${color}18`, alignItems: 'center', justifyContent: 'center' }}>
+                  <Ionicons name={finding.severity === 'pass' ? 'checkmark-circle' : finding.severity === 'warn' ? 'warning' : 'information-circle'} size={16} color={color} />
                 </View>
                 <View style={styles.flex}>
-                  {i === 0 ? <Text style={styles.rowTitle}>{f.title}</Text> : <View style={{ height: 12, width: '75%', backgroundColor: '#FECACA', borderRadius: 4, marginBottom: 4 }} />}
-                  {i === 0 ? <Text style={[styles.rowMeta, { color: '#B91C1C' }]}>{f.description}</Text> : <View style={{ height: 10, width: '50%', backgroundColor: '#FEE2E2', borderRadius: 4 }} />}
+                  <Text style={[styles.rowTitle, { color }]}>{finding.severity.toUpperCase()}</Text>
+                  <Text style={styles.rowTitle}>{finding.title}</Text>
+                </View>
+                <View style={[styles.statusPill, { backgroundColor: `${color}18` }]}>
+                  <Text style={[styles.statusText, { color }]}>{finding.confidence}% conf.</Text>
                 </View>
               </View>
-            ))}
-          </View>
-          <LinearGradient colors={['#0B1F4B', '#1A56DB']} style={{ borderRadius: 16, padding: 20, gap: 14, alignItems: 'center' }}>
-            <Ionicons name="lock-open-outline" size={32} color="#FCD34D" />
-            <Text style={{ color: '#fff', fontSize: 17, fontWeight: '900', textAlign: 'center' }}>Unlock Full Red-Flag Report</Text>
-            <Text style={{ color: 'rgba(255,255,255,0.7)', fontSize: 13, textAlign: 'center', lineHeight: 20 }}>See all {findings.length} findings with exact page locations, field names, and step-by-step fix instructions.</Text>
-            <Pressable style={{ width: '100%', backgroundColor: '#FCD34D', borderRadius: 12, paddingVertical: 14, alignItems: 'center' }} onPress={handleUnlock}>
-              <Text style={{ color: colors.navy900, fontWeight: '900', fontSize: 16 }}>Unlock for $4.99</Text>
-            </Pressable>
-            <Text style={{ color: 'rgba(255,255,255,0.45)', fontSize: 10, textAlign: 'center' }}>Paid unlock is coming soon — payment is not yet connected.</Text>
-          </LinearGradient>
-        </View>
-      ) : (
-        <View>
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: colors.green100, borderRadius: 12, padding: 12, marginBottom: 12 }}>
-            <Ionicons name="checkmark-circle" size={18} color={colors.green500} />
-            <Text style={{ color: '#065F46', fontWeight: '700', fontSize: 13 }}>Report unlocked — full findings available</Text>
-          </View>
-          <Section title="AI findings — full report">
-            {findings.map((finding: any) => {
-              const color: string = severityColor[finding.severity] ?? colors.slate500;
-              return (
-                <View key={finding.id} style={{ paddingVertical: 12, borderTopWidth: 1, borderTopColor: colors.slate100, gap: 6 }}>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-                    <View style={{ width: 28, height: 28, borderRadius: 8, backgroundColor: `${color}18`, alignItems: 'center', justifyContent: 'center' }}>
-                      <Ionicons name={finding.severity === 'pass' ? 'checkmark-circle' : finding.severity === 'warn' ? 'warning' : 'information-circle'} size={16} color={color} />
-                    </View>
-                    <View style={styles.flex}>
-                      <Text style={[styles.rowTitle, { color }]}>{finding.severity.toUpperCase()}</Text>
-                      <Text style={styles.rowTitle}>{finding.title}</Text>
-                    </View>
-                    <View style={[styles.statusPill, { backgroundColor: `${color}18` }]}>
-                      <Text style={[styles.statusText, { color }]}>{finding.confidence}% conf.</Text>
-                    </View>
-                  </View>
-                  <Text style={[styles.rowMeta, { marginLeft: 38, lineHeight: 18 }]}>{finding.description}</Text>
-                </View>
-              );
-            })}
-          </Section>
-          <Pressable style={[styles.primaryButton, { flexDirection: 'row', gap: 8 }]} onPress={handleSharePdf}>
-            <Ionicons name="share-outline" size={18} color="#fff" />
-            <Text style={styles.primaryButtonText}>Share PDF report</Text>
-          </Pressable>
-        </View>
-      )}
+              <Text style={[styles.rowMeta, { marginLeft: 38, lineHeight: 18 }]}>{finding.description}</Text>
+            </View>
+          );
+        })}
+      </Section>
+      <Pressable style={[styles.primaryButton, { flexDirection: 'row', gap: 8 }]} onPress={handleSharePdf}>
+        <Ionicons name="share-outline" size={18} color="#fff" />
+        <Text style={styles.primaryButtonText}>Share PDF report</Text>
+      </Pressable>
       <Pressable style={[styles.secondaryButton, { marginTop: 12 }]} onPress={openRequirements}>
         <Text style={styles.secondaryButtonText}>Compare requirements</Text>
       </Pressable>
@@ -1746,32 +1981,24 @@ function AnalysisScreen({ back, upload, openConsultants, app }: { back: () => vo
   );
 }
 
-const FEE_RATES: Record<string, { symbol: string; rate: number; label: string }> = {
-  USD: { symbol: '$',   rate: 1.00,  label: 'US Dollar'      },
-  AED: { symbol: 'AED ',rate: 3.67,  label: 'UAE Dirham'     },
-  INR: { symbol: '₹',   rate: 83.5,  label: 'Indian Rupee'   },
-  GBP: { symbol: '£',   rate: 0.79,  label: 'British Pound'  },
-  EUR: { symbol: '€',   rate: 0.92,  label: 'Euro'           },
-};
-const FEE_EUR = 80; // France Schengen base fee
 
-function RequirementsScreen({ back, openConsultants }: { back: () => void; openConsultants: () => void }) {
-  const [currency, setCurrency] = useState<keyof typeof FEE_RATES>('AED');
+function RequirementsScreen({ back, openConsultants, destinationCountry }: { back: () => void; openConsultants: () => void; destinationCountry?: string }) {
   const [reqData, setReqData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
-  const { symbol, rate } = FEE_RATES[currency];
+  const [loadError, setLoadError] = useState(false);
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
-    import('./src/api').then(({ fetchRequirements }) =>
-      fetchRequirements().then(data => { setReqData(data); setLoading(false); }).catch(() => setLoading(false))
-    );
-  }, []);
+    setLoading(true);
+    setLoadError(false);
+    fetchRequirements(destinationCountry)
+      .then(data => { setReqData(data); setLoading(false); })
+      .catch(() => { setLoadError(true); setLoading(false); });
+  }, [destinationCountry, attempt]);
 
-  const fees: string = reqData?.fees ?? 'EUR 80 + VFS service fee';
-  const processingTime: string = reqData?.processingTime ?? '10–15 business days';
+  const fees: string | null = reqData?.fees ?? null;
+  const processingTime: string | null = reqData?.processingTime ?? null;
   const freshness = reqData?.freshness;
-  const feeEur = parseInt(fees.match(/\d+/)?.[0] ?? '80', 10);
-  const localFee = Math.round(feeEur * (rate / FEE_RATES.EUR.rate));
   const reqList: any[] = reqData?.requirements ?? [];
   const sourceUrls: any[] = reqData?.sourceUrls ?? [];
 
@@ -1779,40 +2006,37 @@ function RequirementsScreen({ back, openConsultants }: { back: () => void; openC
     <View>
       <BackButton label="Home" onPress={back} />
       <Text style={styles.eyebrow}>Official-source intelligence</Text>
-      <Text style={styles.title}>Visa requirements</Text>
+      <Text style={styles.title}>Visa requirements{destinationCountry ? ` — ${destinationCountry}` : ''}</Text>
       {freshness && (
         <View style={[styles.notice, { flexDirection: 'row', gap: 6, alignItems: 'center' }]}>
           <Ionicons name="time-outline" size={14} color="#92400E" />
           <Text style={[styles.noticeText, { flex: 1 }]}>Fetched {new Date(freshness.fetchedAt).toLocaleDateString()} · Expires {new Date(freshness.expiresAt).toLocaleDateString()} · {freshness.ageHours}h old</Text>
         </View>
       )}
-      <Section title="Visa fee">
-        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 8 }}>
-          <View>
-            <Text style={styles.rowTitle}>Visa fee</Text>
-            <Text style={{ fontSize: 28, fontWeight: '900', color: colors.slate900 }}>€{feeEur}</Text>
-            <Text style={styles.rowMeta}>≈ {symbol}{localFee} {currency} (approx)</Text>
-          </View>
-          <View style={{ gap: 6 }}>
-            {(Object.keys(FEE_RATES) as Array<keyof typeof FEE_RATES>).filter(c => c !== 'EUR').map(c => (
-              <Pressable key={c} onPress={() => setCurrency(c)}
-                style={{ paddingHorizontal: 12, paddingVertical: 5, borderRadius: 16, backgroundColor: currency === c ? colors.royal600 : colors.slate100 }}>
-                <Text style={{ color: currency === c ? '#fff' : colors.slate700, fontWeight: '700', fontSize: 12 }}>{c}</Text>
-              </Pressable>
-            ))}
-          </View>
+      {loadError ? (
+        <View style={{ alignItems: 'center', paddingVertical: 24, gap: 10 }}>
+          <Ionicons name="alert-circle-outline" size={28} color="#DC2626" />
+          <Text style={[styles.rowMeta, { textAlign: 'center' }]}>Couldn't load official requirements for {destinationCountry ?? 'this destination'}. Showing nothing rather than a guess.</Text>
+          <Pressable style={[styles.smallButton, { backgroundColor: '#DC2626' }]} onPress={() => setAttempt(a => a + 1)}>
+            <Text style={[styles.smallButtonText, { color: '#fff' }]}>Retry</Text>
+          </Pressable>
         </View>
-        <Text style={styles.rowMeta}>Processing: {processingTime} · Embassy fee is non-refundable.</Text>
-      </Section>
-      {loading ? (
+      ) : loading ? (
         <View style={{ padding: 24, alignItems: 'center' }}><ActivityIndicator color={colors.royal600} /></View>
       ) : (
-        <Section title="Requirements checklist">
-          {reqList.map((item: any) => (
-            <TaskRow key={item.id} title={item.title} meta={item.description} done={item.satisfied} />
-          ))}
-          {reqList.length === 0 && <Text style={styles.rowMeta}>No requirements data available.</Text>}
-        </Section>
+        <>
+          <Section title="Visa fee">
+            <Text style={styles.rowTitle}>Visa fee</Text>
+            <Text style={{ fontSize: 24, fontWeight: '900', color: colors.slate900, marginTop: 4 }}>{fees}</Text>
+            <Text style={[styles.rowMeta, { marginTop: 6 }]}>Processing: {processingTime} · Embassy fee is non-refundable.</Text>
+          </Section>
+          <Section title="Requirements checklist">
+            {reqList.map((item: any) => (
+              <TaskRow key={item.id} title={item.title} meta={item.description} done={item.satisfied} />
+            ))}
+            {reqList.length === 0 && <Text style={styles.rowMeta}>No requirements data available.</Text>}
+          </Section>
+        </>
       )}
       {sourceUrls.length > 0 && (
         <Section title="Sources">
@@ -1836,21 +2060,64 @@ function RequirementsScreen({ back, openConsultants }: { back: () => void; openC
   );
 }
 
-function RequirementList({ documents }: { documents: ApiDocument[] }) {
+// Maps a real per-country requirement's title/id to the locally-uploaded
+// document type that would satisfy it — the backend's own `satisfied` flag
+// isn't tied to any specific application's uploads, so this is computed here.
+function matchesUploadedDoc(req: { id: string; title: string }, docMap: Map<string | undefined, ApiDocument>): boolean {
+  const text = `${req.id} ${req.title}`.toLowerCase();
+  if (text.includes('passport')) return !!docMap.get('passport');
+  if (text.includes('bank') || text.includes('financ') || text.includes('fund')) return !!docMap.get('finance');
+  if (text.includes('insur')) return !!docMap.get('insurance');
+  if (text.includes('itinerary') || text.includes('flight') || text.includes('hotel') || text.includes('reserv')) return !!docMap.get('itinerary');
+  if (text.includes('photo')) return !!docMap.get('photo');
+  if (text.includes('employ') || text.includes('student') || text.includes('enroll')) return !!docMap.get('employment');
+  return false;
+}
+
+function RequirementList({ documents, destinationCountry }: { documents: ApiDocument[]; destinationCountry?: string }) {
   const docMap = new Map(documents.map(d => [d.type?.toLowerCase(), d]));
-  const defaultReqs = [
-    { id: 'passport', title: 'Valid passport', description: 'Issued within last 10 years, valid 3+ months after departure.', satisfied: !!docMap.get('passport') },
-    { id: 'bank', title: 'Bank statements (3 months)', description: 'Recent statements showing sufficient daily funds.', satisfied: !!docMap.get('finance') },
-    { id: 'insurance', title: 'Travel medical insurance', description: '€30,000+ coverage across destination country.', satisfied: !!docMap.get('insurance') },
-    { id: 'itinerary', title: 'Flight & hotel reservation', description: 'Dates must match insurance and bank statement.', satisfied: !!docMap.get('itinerary') },
-    { id: 'photo', title: 'Biometric photo', description: '35mm × 45mm, white background, taken within last 6 months.', satisfied: !!docMap.get('photo') },
-    { id: 'employment', title: 'Employment or student proof', description: 'Letter from employer or university confirming status.', satisfied: !!docMap.get('employment') },
-  ];
+  const [reqs, setReqs] = useState<ApiRequirement[] | null>(null);
+  const [error, setError] = useState(false);
+  const [attempt, setAttempt] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    setError(false);
+    setReqs(null);
+    fetchRequirements(destinationCountry)
+      .then(data => { if (!cancelled) setReqs(data.requirements); })
+      .catch(() => { if (!cancelled) setError(true); });
+    return () => { cancelled = true; };
+  }, [destinationCountry, attempt]);
+
+  if (error) {
+    return (
+      <Section title="Checklist">
+        <View style={{ alignItems: 'center', paddingVertical: 20, gap: 10 }}>
+          <Ionicons name="alert-circle-outline" size={24} color="#DC2626" />
+          <Text style={[styles.rowMeta, { textAlign: 'center' }]}>Couldn't load the requirements checklist for {destinationCountry ?? 'this destination'}.</Text>
+          <Pressable style={[styles.smallButton, { backgroundColor: '#DC2626' }]} onPress={() => setAttempt(a => a + 1)}>
+            <Text style={[styles.smallButtonText, { color: '#fff' }]}>Retry</Text>
+          </Pressable>
+        </View>
+      </Section>
+    );
+  }
+
+  if (!reqs) {
+    return (
+      <Section title="Checklist">
+        <View style={{ padding: 24, alignItems: 'center' }}><ActivityIndicator color={colors.royal600} /></View>
+      </Section>
+    );
+  }
+
   return (
     <Section title="Checklist">
-      {defaultReqs.map((item) => (
-        <TaskRow key={item.id} title={item.title} meta={item.description} done={item.satisfied} />
+      {reqs.map((item) => (
+        <TaskRow key={item.id} title={item.title} meta={item.description} done={matchesUploadedDoc(item, docMap)} />
       ))}
+      {reqs.length === 0 && <Text style={styles.rowMeta}>No requirements data available for {destinationCountry ?? 'this destination'}.</Text>}
     </Section>
   );
 }
@@ -1988,7 +2255,6 @@ function ConsultantsScreen({ consultantList, loadError, retryLoad, back, openPro
           <View style={{ alignItems: 'flex-end', gap: 4 }}>
             <Text style={{ fontWeight: '900', color: colors.slate900, fontSize: 14 }}>{c.price}</Text>
             <Text style={[styles.rowMeta, { fontSize: 10 }]}>{c.availableToday ? '● Today' : c.nextSlot}</Text>
-            <Text style={{ fontSize: 10, color: colors.green500, fontWeight: '700' }}>{c.successRate} success</Text>
           </View>
         </Pressable>
       ))}
@@ -2006,7 +2272,6 @@ function ConsultantProfileScreen({ id, consultantList, back, book }: {
   if (!c) return <View><BackButton label="Consultants" onPress={back} /><Text style={[styles.rowMeta,{textAlign:'center',padding:32}]}>Consultant not found.</Text></View>;
   const stats: [IoniconName, string, string][] = [
     ['star',               'Rating',       `${c.rating}/5 (${c.reviews} reviews)`],
-    ['shield-checkmark',   'Success rate', c.successRate],
     ['time-outline',       'Response time',c.responseTime],
     ['location-outline',   'Jurisdictions',c.jurisdictions],
     ['language-outline',   'Languages',    c.languages],
@@ -2044,14 +2309,258 @@ function ConsultantProfileScreen({ id, consultantList, back, book }: {
       <Pressable style={styles.primaryButton} onPress={() => book(c.id)}>
         <Text style={styles.primaryButtonText}>Book session · from {c.price}</Text>
       </Pressable>
+      <ConsultantMessageBox consultantId={c.id} />
     </View>
   );
 }
 
-function BookingScreen({ consultantId, consultantList, sessionOpts, onMount, selected, back, select, pickSlot, continueToConsent }: {
+function ConsultantMessageBox({ consultantId }: { consultantId: string }) {
+  const [text, setText] = useState('');
+  const [sending, setSending] = useState(false);
+  const [sent, setSent] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function send() {
+    const trimmed = text.trim();
+    if (!trimmed || sending) return;
+    setSending(true);
+    setError(null);
+    try {
+      await apiSendMessage({ consultantId, text: trimmed });
+      setText('');
+      setSent(true);
+    } catch {
+      setError("Couldn't send your message. Try again.");
+    } finally {
+      setSending(false);
+    }
+  }
+
+  return (
+    <Section title="Message this consultant">
+      {sent && <Text style={[styles.rowMeta, { color: colors.green500, marginBottom: 8 }]}>Sent — find their reply under Profile → My messages.</Text>}
+      {error && <Text style={[styles.rowMeta, { color: '#DC2626', marginBottom: 8 }]}>{error}</Text>}
+      <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
+        <TextInput
+          value={text}
+          onChangeText={(v) => { setText(v); setSent(false); }}
+          placeholder="Ask a question before you book…"
+          style={[styles.input, { flex: 1 }]}
+          multiline
+          returnKeyType="send"
+          onSubmitEditing={send}
+        />
+        <Pressable style={[styles.send, sending && { opacity: 0.6 }]} onPress={send} disabled={sending}>
+          {sending ? <ActivityIndicator size="small" color="#fff" /> : <Ionicons name="send" size={18} color="#fff" />}
+        </Pressable>
+      </View>
+    </Section>
+  );
+}
+
+// The client-side counterpart to ConsultantConsoleScreen's conversation
+// list — without this, a message sent via ConsultantMessageBox had no way
+// to ever be read again once a consultant replied (the reply-viewing UI only
+// existed on the staff side). Same expand/reply pattern as the console.
+function MyConversationsScreen({ back }: { back: () => void }) {
+  const [threads, setThreads] = useState<ApiConversationThread[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
+  const [openThreadId, setOpenThreadId] = useState<string | null>(null);
+  const [threadMessages, setThreadMessages] = useState<ApiMessage[]>([]);
+  const [threadLoading, setThreadLoading] = useState(false);
+  const [replyText, setReplyText] = useState('');
+  const [sending, setSending] = useState(false);
+
+  function load() {
+    setLoading(true);
+    setError(false);
+    fetchMyConversations()
+      .then(r => setThreads(r.threads))
+      .catch(() => setError(true))
+      .finally(() => setLoading(false));
+  }
+  useEffect(load, []);
+
+  async function toggleThread(threadId: string) {
+    if (openThreadId === threadId) {
+      setOpenThreadId(null);
+      return;
+    }
+    setOpenThreadId(threadId);
+    setReplyText('');
+    setThreadMessages([]);
+    setThreadLoading(true);
+    try {
+      const { messages } = await fetchMessages(threadId);
+      setThreadMessages(messages);
+    } catch {
+      // Leave the thread empty — the reply box still works even if history fails to load.
+    } finally {
+      setThreadLoading(false);
+    }
+  }
+
+  async function sendReply(consultantId: string) {
+    const trimmed = replyText.trim();
+    if (!trimmed || sending) return;
+    setSending(true);
+    try {
+      const { message } = await apiSendMessage({ consultantId, text: trimmed });
+      setThreadMessages((prev) => [...prev, message]);
+      setReplyText('');
+    } catch {
+      Alert.alert('Could not send', 'Please try again.');
+    } finally {
+      setSending(false);
+    }
+  }
+
+  return (
+    <View>
+      <BackButton label="Profile" onPress={back} />
+      <Text style={styles.eyebrow}>Consultant messages</Text>
+      <Text style={styles.title}>My messages</Text>
+      {loading && <View style={{ padding: 20, alignItems: 'center' }}><ActivityIndicator color={colors.royal600} /></View>}
+      {error && <LoadErrorNotice onRetry={load} />}
+      {!loading && !error && (
+        <Section title="Conversations">
+          {threads.length === 0 && <Text style={[styles.rowMeta, { padding: 12 }]}>No conversations yet — message a consultant from their profile to start one.</Text>}
+          {threads.map((t) => {
+            const isOpen = openThreadId === t.threadId;
+            return (
+              <View key={t.threadId}>
+                <Pressable onPress={() => toggleThread(t.threadId)}>
+                  <View style={styles.taskRow}>
+                    <View style={[styles.consultantAvatar, { width: 36, height: 36, borderRadius: 18, backgroundColor: colors.royal50 }]}>
+                      <Text style={[styles.consultantAvatarText, { fontSize: 13 }]}>{t.consultantName.split(' ').map((n) => n[0]).join('')}</Text>
+                    </View>
+                    <View style={styles.flex}>
+                      <Text style={styles.rowTitle}>{t.consultantName}</Text>
+                      <Text style={styles.rowMeta} numberOfLines={1}>{t.lastMessage}</Text>
+                    </View>
+                    {t.status === 'New reply' && <View style={[styles.statusDot, { backgroundColor: colors.royal600, marginRight: 4 }]} />}
+                    <Ionicons name={isOpen ? 'chevron-up' : 'chevron-down'} size={16} color={colors.slate500} />
+                  </View>
+                </Pressable>
+                {isOpen && (
+                  <View style={{ paddingHorizontal: 4, paddingBottom: 12, gap: 8 }}>
+                    {threadLoading && <ActivityIndicator color={colors.royal600} />}
+                    {!threadLoading && threadMessages.map((m) => (
+                      <View key={m.id} style={{ alignSelf: m.senderRole === 'client' ? 'flex-end' : 'flex-start', maxWidth: '85%', backgroundColor: m.senderRole === 'client' ? colors.royal50 : colors.slate100, borderRadius: 10, padding: 8 }}>
+                        <Text style={{ fontSize: 13, color: colors.slate900 }}>{m.text}</Text>
+                      </View>
+                    ))}
+                    <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
+                      <TextInput
+                        value={replyText}
+                        onChangeText={setReplyText}
+                        placeholder="Reply…"
+                        style={[styles.input, { flex: 1 }]}
+                        multiline
+                        returnKeyType="send"
+                        onSubmitEditing={() => sendReply(t.consultantId)}
+                      />
+                      <Pressable style={[styles.send, sending && { opacity: 0.6 }]} onPress={() => sendReply(t.consultantId)} disabled={sending}>
+                        {sending ? <ActivityIndicator size="small" color="#fff" /> : <Ionicons name="send" size={18} color="#fff" />}
+                      </Pressable>
+                    </View>
+                  </View>
+                )}
+              </View>
+            );
+          })}
+        </Section>
+      )}
+    </View>
+  );
+}
+
+// Real "view and revoke" screen for consultant access grants — the profile
+// screen used to describe this feature ("View and revoke consultant access
+// from your profile") next to a plain, unclickable info row with no screen
+// behind it at all. GET /access-grants and DELETE /access-grants/:id were
+// already real and tested on the backend; only the mobile UI was missing.
+function AccessGrantsScreen({ back }: { back: () => void }) {
+  const [grants, setGrants] = useState<ApiAccessGrant[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
+  const [revokingId, setRevokingId] = useState<string | null>(null);
+
+  function load() {
+    setLoading(true);
+    setError(false);
+    fetchMyAccessGrants()
+      .then(r => setGrants(r.grants))
+      .catch(() => setError(true))
+      .finally(() => setLoading(false));
+  }
+  useEffect(load, []);
+
+  function confirmRevoke(grant: ApiAccessGrant) {
+    Alert.alert(
+      'Revoke access?',
+      `${grant.consultantName} will immediately lose access to this application.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Revoke', style: 'destructive', onPress: async () => {
+            setRevokingId(grant.grantId);
+            try {
+              await revokeAccessGrant(grant.grantId);
+              setGrants((prev) => prev.filter((g) => g.grantId !== grant.grantId));
+            } catch {
+              Alert.alert('Could not revoke access', 'Please try again.');
+            } finally {
+              setRevokingId(null);
+            }
+          },
+        },
+      ]
+    );
+  }
+
+  return (
+    <View>
+      <BackButton label="Profile" onPress={back} />
+      <Text style={styles.eyebrow}>Privacy and access</Text>
+      <Text style={styles.title}>Consultant access grants</Text>
+      <Text style={styles.bodyText}>Consultants you've shared application details with. Revoking removes their access immediately.</Text>
+      {loading && <View style={{ padding: 20, alignItems: 'center' }}><ActivityIndicator color={colors.royal600} /></View>}
+      {error && <LoadErrorNotice onRetry={load} />}
+      {!loading && !error && (
+        <Section title="Active grants">
+          {grants.length === 0 && <Text style={[styles.rowMeta, { padding: 12 }]}>You haven't shared access with any consultant yet.</Text>}
+          {grants.map((g) => (
+            <View key={g.grantId} style={styles.taskRow}>
+              <View style={styles.flex}>
+                <Text style={styles.rowTitle}>{g.consultantName}{g.destinationCountry ? ` · ${g.destinationCountry}` : ''}</Text>
+                <Text style={styles.rowMeta}>{g.categories.join(', ')}</Text>
+                <Text style={[styles.rowMeta, { fontSize: 11 }]}>Expires {new Date(g.expiresAt).toLocaleDateString()}</Text>
+              </View>
+              <Pressable
+                onPress={() => confirmRevoke(g)}
+                disabled={revokingId === g.grantId}
+                style={{ paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, backgroundColor: colors.slate100 }}
+              >
+                {revokingId === g.grantId
+                  ? <ActivityIndicator size="small" color="#DC2626" />
+                  : <Text style={{ color: '#DC2626', fontWeight: '700', fontSize: 12 }}>Revoke</Text>}
+              </Pressable>
+            </View>
+          ))}
+        </Section>
+      )}
+    </View>
+  );
+}
+
+function BookingScreen({ consultantId, consultantList, sessionOpts, loadError, retryLoad, onMount, selected, back, select, pickSlot, continueToConsent }: {
   consultantId: string;
   consultantList: ReturnType<typeof normalizeConsultant>[];
   sessionOpts: ReturnType<typeof normalizeSessionOption>[];
+  loadError?: string;
+  retryLoad: () => void;
   onMount: () => void;
   selected?: string;
   back: () => void;
@@ -2067,7 +2576,16 @@ function BookingScreen({ consultantId, consultantList, sessionOpts, onMount, sel
       <BackButton label="Consultant" onPress={back} />
       <Text style={styles.eyebrow}>VIP booking</Text>
       <Text style={styles.title}>Book {consultant?.name ?? 'consultant'}</Text>
-      {sessionOpts.length === 0 && (
+      {sessionOpts.length === 0 && loadError && (
+        <View style={{ alignItems: 'center', paddingVertical: 20, gap: 10 }}>
+          <Ionicons name="alert-circle-outline" size={28} color="#DC2626" />
+          <Text style={[styles.rowMeta, { textAlign: 'center' }]}>{loadError}</Text>
+          <Pressable style={[styles.smallButton, { backgroundColor: '#DC2626' }]} onPress={retryLoad}>
+            <Text style={[styles.smallButtonText, { color: '#fff' }]}>Retry</Text>
+          </Pressable>
+        </View>
+      )}
+      {sessionOpts.length === 0 && !loadError && (
         <View style={{ alignItems: 'center', paddingVertical: 20 }}>
           <ActivityIndicator size="large" color={colors.royal600} />
           <Text style={[styles.rowMeta, { marginTop: 8 }]}>Loading session options…</Text>
@@ -2231,21 +2749,28 @@ function ConfirmationScreen({ consultantId, consultantList, booking, done, score
 
 function ProfileScreen({
   authUser, openSettings, openConsultants, openConsole, openHr, openEmployee, openAdmin,
-  openCalculator, openBankBalance, openEmbassy, openTimeline, openComparison,
-  openVisaWaiver, openRejectionAnalyzer, openProfileHub, openProTier, openPartners,
+  openCalculator, openBankBalance, openEmbassy, openFaceVerification, openTimeline, openComparison,
+  openVisaWaiver, openRejectionAnalyzer, openProfileHub, openProTier, openPartners, openMyMessages, openAccessGrants, onSignOut,
 }: {
   authUser: AuthUser | null;
   openSettings: () => void; openConsultants: () => void; openConsole: () => void;
   openHr: () => void; openEmployee: () => void; openAdmin: () => void;
-  openCalculator: () => void; openBankBalance: () => void; openEmbassy: () => void;
+  openCalculator: () => void; openBankBalance: () => void; openEmbassy: () => void; openFaceVerification: () => void;
   openTimeline: () => void; openComparison: () => void;
   openVisaWaiver: () => void; openRejectionAnalyzer: () => void; openProfileHub: () => void; openProTier: () => void;
-  openPartners: () => void;
+  openPartners: () => void; openMyMessages: () => void; openAccessGrants: () => void; onSignOut: () => void;
 }) {
+  const confirmSignOut = () => {
+    Alert.alert('Sign out', 'Are you sure you want to sign out?', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Sign out', style: 'destructive', onPress: onSignOut },
+    ]);
+  };
   const tools: [IoniconName, string, () => void, string][] = [
     ['calculator-outline',   'Visa Score Calculator',   openCalculator,  colors.royal600],
     ['wallet-outline',       'Bank Balance Estimator',  openBankBalance, colors.green500],
     ['business-outline',     'Embassy Finder',          openEmbassy,     colors.navy900],
+    ['scan-outline',         'Face Verification',       openFaceVerification, colors.teal500],
     ['time-outline',         'Timeline Tracker',        openTimeline,    colors.purple600],
     ['git-compare-outline',  'Country Comparison',      openComparison,  colors.gold500],
     ['checkmark-done-outline','Visa Waiver Checker',   openVisaWaiver,  colors.teal500],
@@ -2277,11 +2802,18 @@ function ProfileScreen({
       </Section>
       <Section title="Privacy and access">
         <TaskRow title="Data deletion request" meta="GDPR / UAE PDPL queue with 30-day SLA." />
-        <TaskRow title="Consultant access grants" meta="View and revoke consultant access from your profile." />
+        <Pressable style={styles.taskRow} onPress={openAccessGrants}>
+          <View style={styles.flex}>
+            <Text style={styles.rowTitle}>Consultant access grants</Text>
+            <Text style={styles.rowMeta}>View and revoke consultant access from your profile.</Text>
+          </View>
+          <Ionicons name="chevron-forward" size={18} color={colors.slate300} />
+        </Pressable>
         <TaskRow title="Fingerprint sign-in" meta="Enable in Settings → Security." />
       </Section>
       <OfflineCacheCard />
       <Pressable style={styles.primaryButton} onPress={openSettings}><Text style={styles.primaryButtonText}>Settings</Text></Pressable>
+      <Pressable style={styles.secondaryButton} onPress={openMyMessages}><Text style={styles.secondaryButtonText}>My messages</Text></Pressable>
       <Pressable style={styles.secondaryButton} onPress={openConsultants}><Text style={styles.secondaryButtonText}>Manage consultants</Text></Pressable>
       {(authUser?.roles.includes('consultant') || authUser?.roles.includes('platform_admin')) && (
         <Pressable style={styles.secondaryButton} onPress={openConsole}><Text style={styles.secondaryButtonText}>Consultant console</Text></Pressable>
@@ -2295,6 +2827,13 @@ function ProfileScreen({
       {authUser?.roles.includes('platform_admin') && (
         <Pressable style={styles.secondaryButton} onPress={openAdmin}><Text style={styles.secondaryButtonText}>Admin overview</Text></Pressable>
       )}
+      <Pressable
+        style={{ marginTop: 24, minHeight: 50, borderRadius: 14, borderWidth: 1.5, borderColor: '#DC2626', alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: 8 }}
+        onPress={confirmSignOut}
+      >
+        <Ionicons name="log-out-outline" size={18} color="#DC2626" />
+        <Text style={{ color: '#DC2626', fontWeight: '900' }}>Sign out</Text>
+      </Pressable>
     </View>
   );
 }
@@ -2338,6 +2877,46 @@ function ConsultantConsoleScreen({ back }: { back: () => void }) {
   const crm = data?.crm ?? [];
   const queue = data?.queue ?? [];
   const conversations = data?.conversations ?? [];
+  const [openThreadId, setOpenThreadId] = useState<string | null>(null);
+  const [replyText, setReplyText] = useState('');
+  const [sending, setSending] = useState(false);
+  const [threadMessages, setThreadMessages] = useState<ApiMessage[]>([]);
+  const [threadLoading, setThreadLoading] = useState(false);
+
+  async function toggleThread(threadId: string) {
+    if (openThreadId === threadId) {
+      setOpenThreadId(null);
+      return;
+    }
+    setOpenThreadId(threadId);
+    setReplyText('');
+    setThreadMessages([]);
+    setThreadLoading(true);
+    try {
+      const { messages } = await fetchMessages(threadId);
+      setThreadMessages(messages);
+    } catch {
+      // Leave the thread empty — the reply box still works even if history fails to load.
+    } finally {
+      setThreadLoading(false);
+    }
+  }
+
+  async function sendReply(threadId: string) {
+    const trimmed = replyText.trim();
+    if (!trimmed || sending) return;
+    setSending(true);
+    try {
+      const { message } = await apiSendMessage({ threadId, text: trimmed });
+      setThreadMessages((prev) => [...prev, message]);
+      setReplyText('');
+    } catch {
+      Alert.alert('Could not send', 'Please try again.');
+    } finally {
+      setSending(false);
+    }
+  }
+
   return (
     <View>
       <BackButton label="Profile" onPress={back} />
@@ -2355,8 +2934,9 @@ function ConsultantConsoleScreen({ back }: { back: () => void }) {
           ))}
         </View>
       )}
-      {queue.length > 0 && (
+      {!loading && !error && (
         <Section title="Today's queue">
+          {queue.length === 0 && <Text style={[styles.rowMeta, { padding: 12 }]}>No shared applications yet — a client hasn't granted you access to any application.</Text>}
           {queue.map((item: any) => (
             <View key={item.id} style={styles.taskRow}>
               <View style={styles.flex}>
@@ -2367,19 +2947,51 @@ function ConsultantConsoleScreen({ back }: { back: () => void }) {
           ))}
         </Section>
       )}
-      {conversations.length > 0 && (
+      {!loading && !error && (
         <Section title="Conversations">
-          {conversations.map((item: any) => (
-            <View key={item.id} style={styles.taskRow}>
-              <View style={[styles.consultantAvatar, { width: 36, height: 36, borderRadius: 18, backgroundColor: colors.purple100 }]}>
-                <Text style={[styles.consultantAvatarText, { fontSize: 13 }]}>{item.applicant.split(' ').map((n: string) => n[0]).join('')}</Text>
+          {conversations.length === 0 && <Text style={[styles.rowMeta, { padding: 12 }]}>No messages yet.</Text>}
+          {conversations.map((item: any) => {
+            const isOpen = openThreadId === item.id;
+            return (
+              <View key={item.id}>
+                <Pressable onPress={() => toggleThread(item.id)}>
+                  <View style={styles.taskRow}>
+                    <View style={[styles.consultantAvatar, { width: 36, height: 36, borderRadius: 18, backgroundColor: colors.purple100 }]}>
+                      <Text style={[styles.consultantAvatarText, { fontSize: 13 }]}>{item.applicant.split(' ').map((n: string) => n[0]).join('')}</Text>
+                    </View>
+                    <View style={styles.flex}>
+                      <Text style={styles.rowTitle}>{item.applicant}</Text>
+                      <Text style={styles.rowMeta} numberOfLines={1}>{item.lastMessage}</Text>
+                    </View>
+                    <Ionicons name={isOpen ? 'chevron-up' : 'chevron-down'} size={16} color={colors.slate500} />
+                  </View>
+                </Pressable>
+                {isOpen && (
+                  <View style={{ paddingHorizontal: 4, paddingBottom: 12, gap: 8 }}>
+                    {threadLoading && <ActivityIndicator color={colors.royal600} />}
+                    {!threadLoading && threadMessages.map((m) => (
+                      <View key={m.id} style={{ alignSelf: m.senderRole === 'consultant' ? 'flex-end' : 'flex-start', maxWidth: '85%', backgroundColor: m.senderRole === 'consultant' ? colors.royal50 : colors.slate100, borderRadius: 10, padding: 8 }}>
+                        <Text style={{ fontSize: 13, color: colors.slate900 }}>{m.text}</Text>
+                      </View>
+                    ))}
+                    <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
+                      <TextInput
+                        value={replyText}
+                        onChangeText={setReplyText}
+                        placeholder="Reply…"
+                        style={[styles.input, { flex: 1 }]}
+                        returnKeyType="send"
+                        onSubmitEditing={() => sendReply(item.id)}
+                      />
+                      <Pressable style={[styles.send, sending && { opacity: 0.6 }]} onPress={() => sendReply(item.id)} disabled={sending}>
+                        {sending ? <ActivityIndicator size="small" color="#fff" /> : <Ionicons name="send" size={18} color="#fff" />}
+                      </Pressable>
+                    </View>
+                  </View>
+                )}
               </View>
-              <View style={styles.flex}>
-                <Text style={styles.rowTitle}>{item.applicant}</Text>
-                <Text style={styles.rowMeta}>{item.lastMessage}</Text>
-              </View>
-            </View>
-          ))}
+            );
+          })}
         </Section>
       )}
     </View>
@@ -2484,7 +3096,7 @@ const NOTIF_TABS = [
   { id: 'warning',      label: 'Alerts' },
 ] as const;
 
-function NotificationsScreen({ back, notifications, onMarkRead }: { back: () => void; notifications: ApiNotification[]; onMarkRead: (id: string) => void }) {
+function NotificationsScreen({ back, notifications, loadError, retryLoad, onMarkRead }: { back: () => void; notifications: ApiNotification[]; loadError?: string; retryLoad?: () => void; onMarkRead: (id: string) => void }) {
   const [activeFilter, setActiveFilter] = useState<string>('all');
   const filtered = activeFilter === 'all' ? notifications : notifications.filter(n => n.type === activeFilter);
 
@@ -2493,6 +3105,17 @@ function NotificationsScreen({ back, notifications, onMarkRead }: { back: () => 
       <BackButton label="Home" onPress={back} />
       <Text style={styles.eyebrow}>Notifications</Text>
       <Text style={styles.title}>Recent updates</Text>
+      {loadError && notifications.length === 0 && (
+        <View style={{ backgroundColor: '#FEF2F2', borderRadius: 12, borderWidth: 1, borderColor: '#FECACA', padding: 16, marginBottom: 12, alignItems: 'center', gap: 10 }}>
+          <Ionicons name="alert-circle-outline" size={24} color="#DC2626" />
+          <Text style={{ color: '#991B1B', textAlign: 'center' }}>{loadError}</Text>
+          {retryLoad && (
+            <Pressable style={[styles.smallButton, { backgroundColor: '#DC2626' }]} onPress={retryLoad}>
+              <Text style={[styles.smallButtonText, { color: '#fff' }]}>Retry</Text>
+            </Pressable>
+          )}
+        </View>
+      )}
       <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 12 }}>
         <View style={{ flexDirection: 'row', gap: 8, paddingBottom: 4 }}>
           {NOTIF_TABS.map(tab => {
@@ -2589,7 +3212,7 @@ function SearchScreen({ back, openApplication, openConsultant, appList, consulta
         <LinearGradient colors={['#6D28D9', '#7C3AED']} style={{ borderRadius: 16, padding: 16, marginBottom: 14, gap: 8 }}>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
             <Ionicons name="sparkles" size={16} color="rgba(255,255,255,0.8)" />
-            <Text style={{ color: 'rgba(255,255,255,0.7)', fontSize: 11, fontWeight: '700', letterSpacing: 0.5, textTransform: 'uppercase' }}>AI Answer</Text>
+            <Text style={{ color: 'rgba(255,255,255,0.7)', fontSize: 11, fontWeight: '700', letterSpacing: 0.5, textTransform: 'uppercase' }}>Quick answer</Text>
           </View>
           <Text style={{ color: '#fff', fontSize: 13, lineHeight: 20, fontWeight: '500' }}>{aiAnswer}</Text>
           <Text style={{ color: 'rgba(255,255,255,0.5)', fontSize: 10 }}>Visa-scoped · Not legal advice</Text>
@@ -2738,12 +3361,6 @@ function SettingsScreen({ back, authUser, onSignOut, openProfileHub }: { back: (
     ]);
   };
 
-  const handleSignOut = () => {
-    Alert.alert('Sign out?', 'You can sign back in anytime.', [
-      { text: 'Cancel', style: 'cancel' },
-      { text: 'Sign out', style: 'destructive', onPress: onSignOut },
-    ]);
-  };
 
   const handleDeleteData = () => {
     Alert.alert(
@@ -2839,7 +3456,7 @@ function SettingsScreen({ back, authUser, onSignOut, openProfileHub }: { back: (
               style={[styles.primaryButton, { paddingHorizontal: 20 }, twoFactorCode.length !== 6 && styles.disabledButton]}
               onPress={twoFactorCode.length === 6 ? handleVerify2fa : undefined}
             >
-              {twoFactorBusy ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryButtonText}>Verify</Text>}
+              {twoFactorBusy ? <ActivityIndicator color="#fff" /> : <Text style={[styles.primaryButtonText, twoFactorCode.length !== 6 && styles.disabledButtonText]}>Verify</Text>}
             </Pressable>
           </View>
         )}
@@ -2868,25 +3485,24 @@ function SettingsScreen({ back, authUser, onSignOut, openProfileHub }: { back: (
 
       <Section title="About">
         <LinkRow title="Contact support" meta="support@visawithease.app" onPress={() => openUrlSafely('mailto:support@visawithease.app')} />
-        <Finding title="Terms & privacy" meta="visawithease.app/legal" />
+        <LinkRow title="Privacy Policy" meta="visawithease.com/privacy" onPress={() => openUrlSafely('https://www.visawithease.com/privacy')} />
+        <LinkRow title="Terms of Service" meta="visawithease.com/terms" onPress={() => openUrlSafely('https://www.visawithease.com/terms')} />
       </Section>
 
       <OfflineCacheCard />
 
-      <Pressable
-        onPress={handleSignOut}
-        style={{ marginTop: 16, minHeight: 50, borderRadius: 14, borderWidth: 1.5, borderColor: '#DC2626', alignItems: 'center', justifyContent: 'center' }}
-      >
-        <Text style={{ color: '#DC2626', fontWeight: '900' }}>Sign out</Text>
-      </Pressable>
+      <Text style={[styles.rowMeta, { textAlign: 'center', marginTop: 20 }]}>
+        Looking to sign out? That's on the main Profile screen now.
+      </Text>
     </View>
   );
 }
 
-function BottomNav({ activeTab, setTab, unreadCount = 0 }: { activeTab: TabId; setTab: (tab: TabId) => void; unreadCount?: number }) {
+function BottomNav({ activeTab, setTab, unreadCount = 0, style }: { activeTab: TabId; setTab: (tab: TabId) => void; unreadCount?: number; style?: object }) {
   const chatUnread = unreadCount;
+  const insets = useSafeAreaInsets();
   return (
-    <View style={styles.bottomNav}>
+    <View style={[styles.bottomNav, { height: 58 + insets.bottom, paddingBottom: insets.bottom }, style]}>
       {tabs.map((item) => {
         const active = activeTab === item.id;
         const badge = item.id === 'chat' ? chatUnread : 0;
@@ -3132,42 +3748,55 @@ function ProTierScreen({ back, appList }: { back: () => void; appList: ReturnTyp
 }
 
 // ─── FEAT D: Ecosystem Partners ──────────────────────────────────────────────
-const MOBILE_PARTNER_CATEGORIES = [
-  {
-    id: 'flights', label: 'Flights', icon: 'airplane-outline' as IoniconName, color: '#1A56DB',
-    partners: [
-      { name: 'Emirates',  tagline: 'World-class connectivity from Dubai', discount: '8% off bookings',          url: 'https://www.emirates.com' },
-      { name: 'Air India', tagline: 'Direct routes India ↔ Schengen',     discount: '5% off + priority check-in',url: 'https://www.airindia.com' },
-      { name: 'flydubai',  tagline: 'Budget-friendly regional routes',     discount: 'AED 50 off first booking',  url: 'https://www.flydubai.com' },
-    ],
-  },
-  {
-    id: 'housing', label: 'Housing', icon: 'home-outline' as IoniconName, color: '#7C3AED',
-    partners: [
-      { name: 'Airbnb',       tagline: 'Verified stays with host ratings',     discount: '10% off first stay',         url: 'https://www.airbnb.com' },
-      { name: 'Booking.com',  tagline: 'Cancellation-friendly hotel bookings', discount: 'Genius Level 2 unlocked',     url: 'https://www.booking.com' },
-    ],
-  },
-  {
-    id: 'corporate', label: 'Corporate', icon: 'business-outline' as IoniconName, color: '#059669',
-    partners: [
-      { name: 'Deel',       tagline: 'International payroll and HR',   discount: '1 month free on annual plan', url: 'https://www.deel.com' },
-      { name: 'Remote.com', tagline: 'Employer of record worldwide',   discount: 'Waived onboarding fee',       url: 'https://remote.com' },
-    ],
-  },
-  {
-    id: 'insurance', label: 'Insurance', icon: 'shield-checkmark-outline' as IoniconName, color: '#DC2626',
-    partners: [
-      { name: 'AXA Travel',      tagline: 'Schengen-compliant medical coverage',        discount: 'AED 80 single-trip policy', url: 'https://www.axa-travel-insurance.com' },
-      { name: 'RSA Insurance',   tagline: 'UAE-issued travel insurance certificates',   discount: '12% off annual plan',       url: 'https://www.rsauae.com' },
-      { name: 'Oman Insurance',  tagline: 'Instant certificate for embassy submission', discount: 'Same-day issuance',         url: 'https://www.omaninsurance.ae' },
-    ],
-  },
-];
+// Cosmetic-only per-category icon/color — the actual partner list, discounts,
+// and links come from the real /partners endpoint via fetchPartners().
+const PARTNER_CATEGORY_META: Record<string, { label: string; icon: IoniconName; color: string }> = {
+  flights:   { label: 'Flights',   icon: 'airplane-outline',          color: '#1A56DB' },
+  housing:   { label: 'Housing',   icon: 'home-outline',              color: '#7C3AED' },
+  corporate: { label: 'Corporate', icon: 'business-outline',          color: '#059669' },
+  insurance: { label: 'Insurance', icon: 'shield-checkmark-outline',  color: '#DC2626' },
+};
 
 function EcosystemPartnersScreen({ back, score }: { back: () => void; score?: number }) {
-  const [activeCat, setActiveCat] = useState('flights');
-  const category = MOBILE_PARTNER_CATEGORIES.find(c => c.id === activeCat) ?? MOBILE_PARTNER_CATEGORIES[0];
+  const [data, setData] = useState<{ categories: string[]; partners: import('./src/api').ApiPartner[] } | null>(null);
+  const [error, setError] = useState(false);
+  const [attempt, setAttempt] = useState(0);
+  const [activeCat, setActiveCat] = useState<string | null>(null);
+
+  useEffect(() => {
+    setError(false);
+    setData(null);
+    fetchPartners()
+      .then(d => { setData(d); setActiveCat(prev => prev ?? d.categories[0]); })
+      .catch(() => setError(true));
+  }, [attempt]);
+
+  if (error) {
+    return (
+      <View>
+        <BackButton label="Home" onPress={back} />
+        <View style={{ alignItems: 'center', paddingVertical: 40, gap: 12 }}>
+          <Ionicons name="alert-circle-outline" size={32} color="#DC2626" />
+          <Text style={[styles.rowMeta, { textAlign: 'center' }]}>Couldn't load partner offers.</Text>
+          <Pressable style={[styles.smallButton, { backgroundColor: '#DC2626' }]} onPress={() => setAttempt(a => a + 1)}>
+            <Text style={[styles.smallButtonText, { color: '#fff' }]}>Retry</Text>
+          </Pressable>
+        </View>
+      </View>
+    );
+  }
+
+  if (!data || !activeCat) {
+    return (
+      <View>
+        <BackButton label="Home" onPress={back} />
+        <View style={{ padding: 40, alignItems: 'center' }}><ActivityIndicator size="large" color={colors.royal600} /></View>
+      </View>
+    );
+  }
+
+  const catPartners = data.partners.filter(p => p.category === activeCat);
+  const meta = PARTNER_CATEGORY_META[activeCat] ?? { label: activeCat, icon: 'gift-outline' as IoniconName, color: colors.royal600 };
 
   return (
     <View>
@@ -3183,44 +3812,48 @@ function EcosystemPartnersScreen({ back, score }: { back: () => void; score?: nu
       {/* Category tabs */}
       <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 16 }}>
         <View style={{ flexDirection: 'row', gap: 8, paddingBottom: 4 }}>
-          {MOBILE_PARTNER_CATEGORIES.map(cat => {
-            const active = cat.id === activeCat;
+          {data.categories.map(catId => {
+            const catMeta = PARTNER_CATEGORY_META[catId] ?? { label: catId, icon: 'gift-outline' as IoniconName, color: colors.royal600 };
+            const active = catId === activeCat;
             return (
-              <Pressable key={cat.id} onPress={() => setActiveCat(cat.id)} style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 14, paddingVertical: 9, borderRadius: 20, borderWidth: 2, borderColor: active ? cat.color : '#E2E8F0', backgroundColor: active ? `${cat.color}12` : '#fff' }}>
-                <Ionicons name={cat.icon} size={15} color={active ? cat.color : '#94A3B8'} />
-                <Text style={{ fontSize: 13, fontWeight: '700', color: active ? cat.color : '#64748B' }}>{cat.label}</Text>
+              <Pressable key={catId} onPress={() => setActiveCat(catId)} style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 14, paddingVertical: 9, borderRadius: 20, borderWidth: 2, borderColor: active ? catMeta.color : '#E2E8F0', backgroundColor: active ? `${catMeta.color}12` : '#fff' }}>
+                <Ionicons name={catMeta.icon} size={15} color={active ? catMeta.color : '#94A3B8'} />
+                <Text style={{ fontSize: 13, fontWeight: '700', color: active ? catMeta.color : '#64748B' }}>{catMeta.label}</Text>
               </Pressable>
             );
           })}
         </View>
       </ScrollView>
       {/* Partner cards */}
-      <Section title={`${category.label} partners`}>
-        {category.partners.map(partner => (
-          <View key={partner.name} style={{ backgroundColor: '#fff', borderRadius: 14, borderWidth: 1.5, borderColor: '#E2E8F0', padding: 16, marginBottom: 10, gap: 10 }}>
+      <Section title={`${meta.label} partners`}>
+        {catPartners.map(partner => (
+          <View key={partner.id} style={{ backgroundColor: '#fff', borderRadius: 14, borderWidth: 1.5, borderColor: '#E2E8F0', padding: 16, marginBottom: 10, gap: 10 }}>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
-              <View style={{ width: 44, height: 44, borderRadius: 12, backgroundColor: `${category.color}15`, alignItems: 'center', justifyContent: 'center' }}>
-                <Ionicons name={category.icon} size={20} color={category.color} />
+              <View style={{ width: 44, height: 44, borderRadius: 12, backgroundColor: `${meta.color}15`, alignItems: 'center', justifyContent: 'center' }}>
+                <Ionicons name={meta.icon} size={20} color={meta.color} />
               </View>
               <View style={styles.flex}>
                 <Text style={{ fontWeight: '900', fontSize: 15, color: '#0F172A' }}>{partner.name}</Text>
-                <Text style={{ fontSize: 12, color: '#64748B', marginTop: 2 }}>{partner.tagline}</Text>
+                {!!partner.tagline && <Text style={{ fontSize: 12, color: '#64748B', marginTop: 2 }}>{partner.tagline}</Text>}
               </View>
             </View>
-            <View style={{ backgroundColor: `${category.color}12`, borderRadius: 10, padding: 10, flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-              <Ionicons name="gift-outline" size={14} color={category.color} />
-              <Text style={{ color: category.color, fontWeight: '700', fontSize: 13 }}>{partner.discount}</Text>
+            <View style={{ backgroundColor: `${meta.color}12`, borderRadius: 10, padding: 10, flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+              <Ionicons name="gift-outline" size={14} color={meta.color} />
+              <Text style={{ color: meta.color, fontWeight: '700', fontSize: 13 }}>{partner.discount}</Text>
             </View>
-            <Pressable style={{ borderRadius: 10, borderWidth: 2, borderColor: category.color, paddingVertical: 11, alignItems: 'center', flexDirection: 'row', justifyContent: 'center', gap: 8 }}
-              onPress={() => openUrlSafely(partner.url)}>
-              <Ionicons name="open-outline" size={14} color={category.color} />
-              <Text style={{ color: category.color, fontWeight: '700', fontSize: 13 }}>Visit {partner.name}</Text>
-            </Pressable>
+            {!!partner.url && (
+              <Pressable style={{ borderRadius: 10, borderWidth: 2, borderColor: meta.color, paddingVertical: 11, alignItems: 'center', flexDirection: 'row', justifyContent: 'center', gap: 8 }}
+                onPress={() => openUrlSafely(partner.url!)}>
+                <Ionicons name="open-outline" size={14} color={meta.color} />
+                <Text style={{ color: meta.color, fontWeight: '700', fontSize: 13 }}>Visit {partner.name}</Text>
+              </Pressable>
+            )}
           </View>
         ))}
+        {catPartners.length === 0 && <Text style={[styles.rowMeta, { textAlign: 'center', paddingVertical: 12 }]}>No partners in this category yet.</Text>}
       </Section>
       <View style={{ backgroundColor: '#F8FAFC', borderRadius: 12, borderWidth: 1, borderColor: '#E2E8F0', padding: 14, marginTop: 4 }}>
-        <Text style={{ color: '#64748B', fontSize: 12, lineHeight: 18 }}><Text style={{ color: '#0F172A', fontWeight: '700' }}>Transparency note: </Text>Visa With Ease earns a referral commission (3–8%) when you use partner links. This funds the free tier and keeps the app ad-free.</Text>
+        <Text style={{ color: '#64748B', fontSize: 12, lineHeight: 18 }}><Text style={{ color: '#0F172A', fontWeight: '700' }}>Transparency note: </Text>Visa With Ease earns a referral commission when you use partner links. This funds the free tier and keeps the app ad-free.</Text>
       </View>
     </View>
   );
@@ -3252,11 +3885,12 @@ function CalendarPickerScreen({ consultantId, back, confirm }: { consultantId: s
   useEffect(() => {
     if (!consultantId) return;
     setLoadingSlots(true);
-    fetchBookingSlots(consultantId)
+    const dateKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(selectedDay).padStart(2, '0')}`;
+    fetchBookingSlots(consultantId, dateKey)
       .then(d => setTakenSlots(d.takenSlots ?? []))
       .catch(() => setTakenSlots([]))
       .finally(() => setLoadingSlots(false));
-  }, [consultantId]);
+  }, [consultantId, selectedDay]);
 
   const Slot = ({ t }: { t: string }) => {
     const taken = takenSlots.includes(t);
@@ -3339,6 +3973,17 @@ const CALC_DESTINATIONS = [
   'Kenya', 'South Africa', 'Brazil',
 ];
 const CALC_VISA_TYPES = ['Tourist', 'Business', 'Student', 'Work', 'Family Reunion', 'Transit', 'Medical'];
+// What consulates weigh most heavily per visa type — used to make the
+// recommendation actually reflect the selected type, not just the sliders.
+const CALC_VISA_TYPE_TIP: Record<string, string> = {
+  Tourist: 'a clear day-by-day itinerary and a return/onward ticket',
+  Business: 'an invitation letter from the host company and proof of your own employment',
+  Student: 'your enrollment/admission letter and proof of tuition + living-cost funds',
+  Work: 'your signed job offer and the employer’s sponsorship or work-permit approval',
+  'Family Reunion': 'proof of the relationship (marriage/birth certificates) and your sponsor’s financial standing',
+  Transit: 'your onward ticket and the visa (if required) for your final destination',
+  Medical: 'a letter from the treating hospital and proof of funds to cover treatment',
+};
 
 function VisaCalculatorScreen({ back }: { back: () => void }) {
   const [destination, setDestination] = useState(0);
@@ -3348,12 +3993,14 @@ function VisaCalculatorScreen({ back }: { back: () => void }) {
   const [employment, setEmployment] = useState(3);
   const [ties, setTies] = useState(3);
   const score = Math.round((finance * 0.30 + travel * 0.25 + employment * 0.25 + ties * 0.20) * 20);
+  const destinationLabel = CALC_DESTINATIONS[destination];
+  const visaTypeLabel = CALC_VISA_TYPES[visaType];
 
   const getReco = () => {
-    if (finance < 3) return 'Strengthen bank statements with 3+ months of consistent income.';
-    if (travel < 3) return 'Prior approved visas significantly boost approval odds.';
-    if (employment < 3) return 'A strong employment letter with salary details helps credibility.';
-    return 'Your profile looks solid. Upload all required documents for a full audit.';
+    if (finance < 3) return `Strengthen bank statements with 3+ months of consistent income — for a ${destinationLabel} ${visaTypeLabel.toLowerCase()} visa, consulates also weigh ${CALC_VISA_TYPE_TIP[visaTypeLabel]}.`;
+    if (travel < 3) return `Prior approved visas significantly boost approval odds for ${destinationLabel}. Also prioritize ${CALC_VISA_TYPE_TIP[visaTypeLabel]}.`;
+    if (employment < 3) return `A strong employment letter with salary details helps credibility. For a ${visaTypeLabel.toLowerCase()} visa to ${destinationLabel}, don't skip ${CALC_VISA_TYPE_TIP[visaTypeLabel]}.`;
+    return `Your profile looks solid for a ${destinationLabel} ${visaTypeLabel.toLowerCase()} visa. Make sure you have ${CALC_VISA_TYPE_TIP[visaTypeLabel]}, then upload everything for a full audit.`;
   };
 
   const Slider = ({ label, value, onChange }: { label: string; value: number; onChange: (v: number) => void }) => (
@@ -3453,17 +4100,19 @@ function BankBalanceScreen({ back }: { back: () => void }) {
   const [travelers, setTravelers] = useState(1);
   const [rates, setRates] = useState<Record<string, number>>({});
   const [ratesLoading, setRatesLoading] = useState(true);
+  const [ratesError, setRatesError] = useState(false);
 
   useEffect(() => {
     fetchExchangeRates()
       .then(d => { setRates(d.rates); })
-      .catch(() => {})
+      .catch(() => setRatesError(true))
       .finally(() => setRatesLoading(false));
   }, []);
 
   const data = BANK_DATA[BANK_COUNTRIES[country]];
   // data.daily is in the destination currency (EUR, GBP, etc.), not USD
   const totalLocal = data.daily * days * travelers;
+  const usingLiveRate = !ratesError && rates[data.currency] != null;
   const liveRate = rates[data.currency] ?? data.rate;
   const totalUSD = Math.round(totalLocal / liveRate);
 
@@ -3477,7 +4126,7 @@ function BankBalanceScreen({ back }: { back: () => void }) {
           <Text style={{ color: '#fff', fontSize: 36, fontWeight: '900' }}>{data.symbol}{totalLocal.toLocaleString()} {data.currency}</Text>
           {ratesLoading
             ? <ActivityIndicator color="rgba(255,255,255,0.8)" style={{ marginTop: 4 }} />
-            : <Text style={{ color: 'rgba(255,255,255,0.8)', fontWeight: '600', marginTop: 4 }}>≈ ${totalUSD.toLocaleString()} USD</Text>
+            : <Text style={{ color: 'rgba(255,255,255,0.8)', fontWeight: '600', marginTop: 4 }}>≈ ${totalUSD.toLocaleString()} USD{usingLiveRate ? '' : ' (estimated rate)'}</Text>
           }
         </View>
         <Text style={styles.reportText}>Minimum recommended bank balance for your trip</Text>
@@ -3523,6 +4172,90 @@ function BankBalanceScreen({ back }: { back: () => void }) {
 }
 
 // ─── Embassy Finder ───────────────────────────────────────────────────────────
+// Every UN member state plus a handful of common travel destinations — this
+// is what makes the destination picker below work for literally any country,
+// not just the ~24 we have verified static addresses for.
+const WORLD_COUNTRIES = [
+  'Afghanistan','Albania','Algeria','Andorra','Angola','Antigua and Barbuda','Argentina','Armenia','Australia','Austria',
+  'Azerbaijan','Bahamas','Bahrain','Bangladesh','Barbados','Belarus','Belgium','Belize','Benin','Bhutan',
+  'Bolivia','Bosnia and Herzegovina','Botswana','Brazil','Brunei','Bulgaria','Burkina Faso','Burundi','Cabo Verde','Cambodia',
+  'Cameroon','Canada','Central African Republic','Chad','Chile','China','Colombia','Comoros','Congo','Costa Rica',
+  "Cote d'Ivoire",'Croatia','Cuba','Cyprus','Czechia','Democratic Republic of the Congo','Denmark','Djibouti','Dominica','Dominican Republic',
+  'Ecuador','Egypt','El Salvador','Equatorial Guinea','Eritrea','Estonia','Eswatini','Ethiopia','Fiji','Finland',
+  'France','Gabon','Gambia','Georgia','Germany','Ghana','Greece','Grenada','Guatemala','Guinea',
+  'Guinea-Bissau','Guyana','Haiti','Honduras','Hungary','Iceland','India','Indonesia','Iran','Iraq',
+  'Ireland','Israel','Italy','Jamaica','Japan','Jordan','Kazakhstan','Kenya','Kiribati','Kuwait',
+  'Kyrgyzstan','Laos','Latvia','Lebanon','Lesotho','Liberia','Libya','Liechtenstein','Lithuania','Luxembourg',
+  'Madagascar','Malawi','Malaysia','Maldives','Mali','Malta','Marshall Islands','Mauritania','Mauritius','Mexico',
+  'Micronesia','Moldova','Monaco','Mongolia','Montenegro','Morocco','Mozambique','Myanmar','Namibia','Nauru',
+  'Nepal','Netherlands','New Zealand','Nicaragua','Niger','Nigeria','North Korea','North Macedonia','Norway','Oman',
+  'Pakistan','Palau','Palestine','Panama','Papua New Guinea','Paraguay','Peru','Philippines','Poland','Portugal',
+  'Qatar','Romania','Russia','Rwanda','Saint Kitts and Nevis','Saint Lucia','Saint Vincent and the Grenadines','Samoa','San Marino','Sao Tome and Principe',
+  'Saudi Arabia','Senegal','Serbia','Seychelles','Sierra Leone','Singapore','Slovakia','Slovenia','Solomon Islands','Somalia',
+  'South Africa','South Korea','South Sudan','Spain','Sri Lanka','Sudan','Suriname','Sweden','Switzerland','Syria',
+  'Taiwan','Tajikistan','Tanzania','Thailand','Timor-Leste','Togo','Tonga','Trinidad and Tobago','Tunisia','Turkey',
+  'Turkmenistan','Tuvalu','Uganda','Ukraine','United Arab Emirates','United Kingdom','United States','Uruguay','Uzbekistan','Vanuatu',
+  'Vatican City','Venezuela','Vietnam','Yemen','Zambia','Zimbabwe'
+];
+
+// Drop-in replacement for a plain country TextInput — shows live matching
+// suggestions from the full 190+ country list as the user types, instead of
+// a bare free-text field with no help. Rendered inline (not absolutely
+// positioned) so it just pushes following content down while open, which
+// sidesteps the layering issues an overlay would have inside a ScrollView.
+function CountryAutocompleteInput({ value, onChangeText, placeholder, style }: {
+  value: string;
+  onChangeText: (v: string) => void;
+  placeholder?: string;
+  style?: any;
+}) {
+  const [focused, setFocused] = useState(false);
+  const trimmed = value.trim().toLowerCase();
+  const suggestions = focused && trimmed.length > 0
+    ? WORLD_COUNTRIES.filter(c => c.toLowerCase().includes(trimmed) && c.toLowerCase() !== trimmed).slice(0, 6)
+    : [];
+  return (
+    <View>
+      <TextInput
+        value={value}
+        onChangeText={onChangeText}
+        placeholder={placeholder}
+        placeholderTextColor={colors.slate500}
+        style={style ?? styles.searchInput}
+        autoCapitalize="words"
+        onFocus={() => setFocused(true)}
+        // Delayed so a tap on a suggestion row below registers before the
+        // list disappears (blur fires before the row's onPress otherwise).
+        onBlur={() => setTimeout(() => setFocused(false), 150)}
+      />
+      {suggestions.length > 0 && (
+        <View style={{ backgroundColor: colors.white, borderRadius: 12, borderWidth: 1, borderColor: colors.slate100, marginTop: 6, overflow: 'hidden' }}>
+          {suggestions.map((c, i) => (
+            <Pressable
+              key={c}
+              onPress={() => { onChangeText(c); setFocused(false); }}
+              style={{ paddingVertical: 11, paddingHorizontal: 14, borderTopWidth: i === 0 ? 0 : 1, borderTopColor: colors.slate50 }}
+            >
+              <Text style={{ color: colors.slate800, fontSize: 14 }}>{c}</Text>
+            </Pressable>
+          ))}
+        </View>
+      )}
+    </View>
+  );
+}
+
+// Common name variants people actually type for their residence, mapped to
+// the canonical key VERIFIED_EMBASSIES is keyed by.
+const HOST_COUNTRY_ALIASES: Record<string, string> = {
+  'uae': 'United Arab Emirates', 'dubai': 'United Arab Emirates', 'abu dhabi': 'United Arab Emirates',
+  'united arab emirates': 'United Arab Emirates',
+};
+function normalizeHostCountry(input: string): string {
+  const key = input.trim().toLowerCase();
+  return HOST_COUNTRY_ALIASES[key] ?? input.trim();
+}
+
 const EMBASSIES: Record<string, { name: string; address: string; phone: string; hours: string; website: string }> = {
   'France':          { name: 'French Consulate General Dubai',      address: 'Al Hamra, Abu Dhabi, UAE',               phone: '+971 2 613 1700', hours: 'Mon–Fri 9:00–12:30', website: 'ae.ambafrance.org' },
   'United Kingdom':  { name: 'British Embassy Dubai',               address: 'Al Seef Road, Bur Dubai, UAE',            phone: '+971 4 309 4444', hours: 'Mon–Thu 8:00–16:00', website: 'gov.uk/world/uae' },
@@ -3551,50 +4284,179 @@ const EMBASSIES: Record<string, { name: string; address: string; phone: string; 
 };
 const EMBASSY_COUNTRIES = Object.keys(EMBASSIES);
 
-function EmbassyFinderScreen({ back }: { back: () => void }) {
-  const [selected, setSelected] = useState(0);
-  const emb = EMBASSIES[EMBASSY_COUNTRIES[selected]];
-  const rows: [IoniconName, string, string, (() => void) | undefined][] = [
-    ['location-outline', 'Address', emb.address, undefined],
-    ['call-outline', 'Phone', emb.phone, () => openUrlSafely(`tel:${emb.phone}`)],
-    ['time-outline', 'Consular hours', emb.hours, undefined],
-    ['globe-outline', 'Website', emb.website, () => openUrlSafely(`https://${emb.website}`)],
-  ];
+// Verified static directories, keyed by the host country the missions sit
+// in. Add more host countries here only with real, checked addresses —
+// everywhere else falls back to a live, honest search instead of a made-up
+// address (see the "no verified data" branch in EmbassyFinderScreen).
+const VERIFIED_EMBASSIES: Record<string, typeof EMBASSIES> = {
+  'United Arab Emirates': EMBASSIES,
+};
+
+function EmbassyFinderScreen({ back, residenceCountry }: { back: () => void; residenceCountry?: string }) {
+  const [hostCountry, setHostCountry] = useState(residenceCountry?.trim() || 'United Arab Emirates');
+  const [editingHost, setEditingHost] = useState(false);
+  // Preferences can finish loading after this screen has already mounted —
+  // pick up a residence country that arrives late, but only if the user
+  // hasn't already started typing their own.
+  const hostTouchedRef = useRef(false);
+  useEffect(() => {
+    if (!hostTouchedRef.current && residenceCountry?.trim()) setHostCountry(residenceCountry.trim());
+  }, [residenceCountry]);
+  const [query, setQuery] = useState('');
+  const [selectedCountry, setSelectedCountry] = useState(EMBASSY_COUNTRIES[0]);
+
+  const normalizedHost = normalizeHostCountry(hostCountry);
+  const verifiedForHost = VERIFIED_EMBASSIES[normalizedHost];
+  const trimmedQuery = query.trim().toLowerCase();
+  const searchPool = trimmedQuery ? WORLD_COUNTRIES : EMBASSY_COUNTRIES;
+  const filteredCountries = searchPool.filter(c => c.toLowerCase().includes(trimmedQuery));
+  const emb = verifiedForHost?.[selectedCountry];
+
+  const mapsQuery = `Embassy or Consulate of ${selectedCountry} in ${hostCountry.trim() || 'my country'}`;
+  const rows: [IoniconName, string, string, (() => void) | undefined][] = emb
+    ? [
+        ['location-outline', 'Address · tap for directions', emb.address, () => openUrlSafely(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(emb.address)}`)],
+        ['call-outline', 'Phone', emb.phone, () => openUrlSafely(`tel:${emb.phone}`)],
+        ['time-outline', 'Consular hours', emb.hours, undefined],
+        ['globe-outline', 'Website', emb.website, () => openUrlSafely(`https://${emb.website}`)],
+      ]
+    : [];
+
   return (
     <View>
       <BackButton label="Home" onPress={back} />
       <Text style={styles.eyebrow}>Consulate directory</Text>
       <Text style={styles.title}>Embassy Finder</Text>
-      <Section title="Select destination country">
-        <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-          <View style={{ flexDirection: 'row', gap: 8, paddingBottom: 4 }}>
-            {EMBASSY_COUNTRIES.map((c, i) => (
-              <Pressable key={c} onPress={() => setSelected(i)}
-                style={{ paddingHorizontal: 14, paddingVertical: 8, borderRadius: 20, backgroundColor: selected === i ? colors.navy900 : colors.slate100 }}>
-                <Text style={{ color: selected === i ? '#fff' : colors.slate700, fontWeight: '700', fontSize: 13 }}>{c}</Text>
-              </Pressable>
-            ))}
+
+      <Section title="Your location">
+        {editingHost ? (
+          <View>
+            <View style={[styles.searchInput, { flexDirection: 'row', alignItems: 'center', gap: 8 }]}>
+              <Ionicons name="location-outline" size={16} color={colors.slate500} />
+              <TextInput
+                value={hostCountry}
+                onChangeText={(v) => { hostTouchedRef.current = true; setHostCountry(v); }}
+                placeholder="Your country, e.g. India, Germany, Nigeria"
+                placeholderTextColor={colors.slate500}
+                autoCapitalize="words"
+                autoFocus
+                onSubmitEditing={() => setEditingHost(false)}
+                style={{ flex: 1, fontSize: 14, color: colors.slate900, padding: 0 }}
+              />
+              <Pressable onPress={() => setEditingHost(false)}><Ionicons name="checkmark-circle" size={20} color={colors.green500} /></Pressable>
+            </View>
+            {(() => {
+              const trimmedHost = hostCountry.trim().toLowerCase();
+              const hostSuggestions = trimmedHost
+                ? WORLD_COUNTRIES.filter(c => c.toLowerCase().includes(trimmedHost) && c.toLowerCase() !== trimmedHost).slice(0, 6)
+                : [];
+              return hostSuggestions.length > 0 ? (
+                <View style={{ backgroundColor: colors.white, borderRadius: 12, borderWidth: 1, borderColor: colors.slate100, marginTop: 6, overflow: 'hidden' }}>
+                  {hostSuggestions.map((c, i) => (
+                    <Pressable
+                      key={c}
+                      onPress={() => { hostTouchedRef.current = true; setHostCountry(c); setEditingHost(false); }}
+                      style={{ paddingVertical: 11, paddingHorizontal: 14, borderTopWidth: i === 0 ? 0 : 1, borderTopColor: colors.slate50 }}
+                    >
+                      <Text style={{ color: colors.slate800, fontSize: 14 }}>{c}</Text>
+                    </Pressable>
+                  ))}
+                </View>
+              ) : null;
+            })()}
           </View>
-        </ScrollView>
+        ) : (
+          <Pressable style={styles.taskRow} onPress={() => setEditingHost(true)}>
+            <View style={[styles.quickIconBox, { backgroundColor: colors.royal50, width: 36, height: 36 }]}>
+              <Ionicons name="location" size={18} color={colors.royal600} />
+            </View>
+            <View style={styles.flex}>
+              <Text style={styles.rowTitle}>{hostCountry.trim() || 'Set your country'}</Text>
+              <Text style={styles.rowMeta}>{residenceCountry?.trim() === hostCountry.trim() ? 'From your profile settings · tap to change' : 'Tap to change'}</Text>
+            </View>
+            <Ionicons name="create-outline" size={16} color={colors.slate300} />
+          </Pressable>
+        )}
+      </Section>
+
+      <View style={[styles.searchInput, { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 14 }]}>
+        <Ionicons name="search-outline" size={16} color={colors.slate500} />
+        <TextInput
+          value={query}
+          onChangeText={setQuery}
+          placeholder="Search any country in the world…"
+          placeholderTextColor={colors.slate500}
+          style={{ flex: 1, fontSize: 14, color: colors.slate900, padding: 0 }}
+        />
+        {query.length > 0 && (
+          <Pressable onPress={() => setQuery('')}>
+            <Ionicons name="close-circle" size={16} color={colors.slate500} />
+          </Pressable>
+        )}
+      </View>
+      <Section title="Select destination country">
+        {filteredCountries.length === 0 ? (
+          <Text style={[styles.rowMeta, { paddingVertical: 8 }]}>No countries match "{query}".</Text>
+        ) : (
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+            <View style={{ flexDirection: 'row', gap: 8, paddingBottom: 4 }}>
+              {filteredCountries.map((c) => (
+                <Pressable key={c} onPress={() => setSelectedCountry(c)}
+                  style={{ paddingHorizontal: 14, paddingVertical: 8, borderRadius: 20, backgroundColor: selectedCountry === c ? colors.navy900 : colors.slate100 }}>
+                  <Text style={{ color: selectedCountry === c ? '#fff' : colors.slate700, fontWeight: '700', fontSize: 13 }}>{c}</Text>
+                </Pressable>
+              ))}
+            </View>
+          </ScrollView>
+        )}
       </Section>
       <LinearGradient colors={['#0B1F4B','#1547C0']} style={[styles.reportHero, { marginBottom: 16 }]}>
         <Ionicons name="business-outline" size={36} color="#fff" />
-        <Text style={{ color: '#fff', fontSize: 18, fontWeight: '900', textAlign: 'center' }}>{emb.name}</Text>
+        <Text style={{ color: '#fff', fontSize: 18, fontWeight: '900', textAlign: 'center' }}>{emb ? emb.name : `${selectedCountry} in ${hostCountry.trim() || 'your country'}`}</Text>
       </LinearGradient>
-      <Section title="Contact details">
-        {rows.map(([icon, label, value, onPress]) => (
-          <Pressable key={label} style={[styles.taskRow, { gap: 14 }]} onPress={onPress} disabled={!onPress}>
-            <View style={[styles.quickIconBox, { backgroundColor: onPress ? colors.royal50 : colors.slate50, width: 36, height: 36 }]}>
-              <Ionicons name={icon} size={18} color={onPress ? colors.royal600 : colors.slate500} />
+      {emb ? (
+        <Section title="Contact details">
+          {rows.map(([icon, label, value, onPress]) => (
+            <Pressable key={label} style={[styles.taskRow, { gap: 14 }]} onPress={onPress} disabled={!onPress}>
+              <View style={[styles.quickIconBox, { backgroundColor: onPress ? colors.royal50 : colors.slate50, width: 36, height: 36 }]}>
+                <Ionicons name={icon} size={18} color={onPress ? colors.royal600 : colors.slate500} />
+              </View>
+              <View style={styles.flex}>
+                <Text style={styles.rowTitle}>{label}</Text>
+                <Text style={[styles.rowMeta, { color: onPress ? colors.royal600 : colors.slate500 }]}>{value}</Text>
+              </View>
+              {onPress && <Ionicons name="open-outline" size={14} color={colors.royal600} />}
+            </Pressable>
+          ))}
+        </Section>
+      ) : (
+        <Section title="Find the official location">
+          <Finding
+            title="We don't have a verified address on file for this pair yet"
+            meta={`Rather than guess, search live for the real result — this looks up "${mapsQuery}" directly.`}
+          />
+          <Pressable style={[styles.taskRow, { gap: 14 }]} onPress={() => openUrlSafely(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(mapsQuery)}`)}>
+            <View style={[styles.quickIconBox, { backgroundColor: colors.royal50, width: 36, height: 36 }]}>
+              <Ionicons name="map-outline" size={18} color={colors.royal600} />
             </View>
             <View style={styles.flex}>
-              <Text style={styles.rowTitle}>{label}</Text>
-              <Text style={[styles.rowMeta, { color: onPress ? colors.royal600 : colors.slate500 }]}>{value}</Text>
+              <Text style={styles.rowTitle}>Find on Google Maps</Text>
+              <Text style={[styles.rowMeta, { color: colors.royal600 }]}>Live search · opens in Maps</Text>
             </View>
-            {onPress && <Ionicons name="open-outline" size={14} color={colors.royal600} />}
+            <Ionicons name="open-outline" size={14} color={colors.royal600} />
           </Pressable>
-        ))}
-      </Section>
+          <Pressable style={[styles.taskRow, { gap: 14 }]} onPress={() => openUrlSafely(`https://www.google.com/search?q=${encodeURIComponent(`${selectedCountry} ministry of foreign affairs consulate in ${hostCountry.trim() || 'my country'}`)}`)}>
+            <View style={[styles.quickIconBox, { backgroundColor: colors.royal50, width: 36, height: 36 }]}>
+              <Ionicons name="globe-outline" size={18} color={colors.royal600} />
+            </View>
+            <View style={styles.flex}>
+              <Text style={styles.rowTitle}>Search the official government site</Text>
+              <Text style={[styles.rowMeta, { color: colors.royal600 }]}>Live search · opens in browser</Text>
+            </View>
+            <Ionicons name="open-outline" size={14} color={colors.royal600} />
+          </Pressable>
+        </Section>
+      )}
       <View style={styles.disclaimer}>
         <Text style={styles.disclaimerText}>Verify hours and appointment requirements on the official embassy website before visiting.</Text>
       </View>
@@ -3602,36 +4464,206 @@ function EmbassyFinderScreen({ back }: { back: () => void }) {
   );
 }
 
-// ─── Timeline Tracker ─────────────────────────────────────────────────────────
-const TIMELINE_STAGE_LABELS = [
-  'Documents collected',
-  'AI audit complete',
-  'Requirements verified',
-  'Insurance uploaded',
-  'Appointment booked',
-  'Application submitted',
-  'Decision expected',
-];
+// ─── Face Verification ────────────────────────────────────────────────────────
+// Real on-device liveness/identity check via Google ML Kit face detection —
+// no simulated pass/fail. A capture is only marked verified when ML Kit
+// itself finds exactly one face with both eyes open; if the model can't run
+// at all, that's surfaced as its own "unavailable" state rather than a fake pass.
+type FaceVerifyStage = 'intro' | 'camera' | 'checking' | 'pass' | 'fail' | 'unavailable';
 
-function buildTimelineStages(intendedFrom?: string) {
-  const base = intendedFrom ? new Date(intendedFrom) : new Date();
-  const offsets = [-42, -35, -28, -21, -14, -7, 0];
-  return TIMELINE_STAGE_LABELS.map((label, i) => {
-    const d = new Date(base.getTime() + offsets[i] * 24 * 60 * 60 * 1000);
-    const date = d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
-    const done = d < new Date();
-    return { label, date, done };
-  });
+function FaceVerificationScreen({ back }: { back: () => void }) {
+  const insets = useSafeAreaInsets();
+  const [permission, requestPermission] = useCameraPermissions();
+  const [stage, setStage] = useState<FaceVerifyStage>('intro');
+  const [captured, setCaptured] = useState<string | null>(null);
+  const [detail, setDetail] = useState('');
+  const cameraRef = useRef<CameraView>(null);
+
+  const analyze = async (uri: string) => {
+    setStage('checking');
+    try {
+      const { default: FaceDetection } = await import('@react-native-ml-kit/face-detection');
+      const faces = await FaceDetection.detect(uri, { performanceMode: 'accurate', classificationMode: 'all' });
+      if (faces.length === 0) {
+        setDetail('No face detected. Make sure your face is centered and well lit.');
+        setStage('fail');
+        return;
+      }
+      if (faces.length > 1) {
+        setDetail(`${faces.length} faces detected. Only you should be in frame.`);
+        setStage('fail');
+        return;
+      }
+      const face = faces[0];
+      const leftOpen = face.leftEyeOpenProbability ?? 1;
+      const rightOpen = face.rightEyeOpenProbability ?? 1;
+      if (leftOpen < 0.35 || rightOpen < 0.35) {
+        setDetail('Eyes appear closed. Keep your eyes open and try again.');
+        setStage('fail');
+        return;
+      }
+      setDetail('One face detected, eyes open — identity check passed.');
+      setStage('pass');
+    } catch {
+      setDetail('On-device face check is unavailable on this device right now.');
+      setStage('unavailable');
+    }
+  };
+
+  const capturePhoto = async () => {
+    if (!cameraRef.current) return;
+    try {
+      const photo = await cameraRef.current.takePictureAsync({ quality: 0.85, base64: false });
+      const uri = photo?.uri ?? null;
+      if (!uri) { setDetail('Capture failed — try again.'); setStage('fail'); return; }
+      setCaptured(uri);
+      await analyze(uri);
+    } catch {
+      setDetail('Capture failed — try again.');
+      setStage('fail');
+    }
+  };
+
+  const retry = () => { setCaptured(null); setDetail(''); setStage('camera'); };
+
+  if (stage === 'intro') {
+    return (
+      <View>
+        <BackButton label="Profile" onPress={back} />
+        <Text style={styles.eyebrow}>Identity check</Text>
+        <Text style={styles.title}>Face Verification</Text>
+        <LinearGradient colors={['#0B1F4B', '#1547C0']} style={[styles.reportHero, { marginBottom: 16 }]}>
+          <Ionicons name="scan-outline" size={36} color="#fff" />
+          <Text style={{ color: '#fff', fontSize: 16, fontWeight: '900', textAlign: 'center' }}>Confirm it's really you</Text>
+        </LinearGradient>
+        <Section title="How it works">
+          <Finding title="On-device only" meta="The photo is analyzed on your phone using Google ML Kit — it is not uploaded anywhere for this check." />
+          <Finding title="One face, eyes open" meta="We check that exactly one face is visible and both eyes are open, similar to a passport-photo liveness check." />
+          <Finding title="Good lighting helps" meta="Face a light source and remove sunglasses or a mask for best results." />
+        </Section>
+        <Pressable style={styles.primaryButton} onPress={async () => {
+          if (!permission?.granted) { const r = await requestPermission(); if (!r.granted) return; }
+          setStage('camera');
+        }}>
+          <Text style={styles.primaryButtonText}>Start verification</Text>
+        </Pressable>
+      </View>
+    );
+  }
+
+  if (!permission?.granted) {
+    return (
+      <View style={{ flex: 1, backgroundColor: colors.navy900, padding: 32, alignItems: 'center', justifyContent: 'center', gap: 20 }}>
+        <Ionicons name="camera-outline" size={64} color="rgba(255,255,255,0.4)" />
+        <Text style={{ color: '#fff', fontSize: 20, fontWeight: '900', textAlign: 'center' }}>Camera access needed</Text>
+        <Pressable style={[styles.primaryButton, { width: '100%' }]} onPress={requestPermission}>
+          <Text style={styles.primaryButtonText}>Allow camera</Text>
+        </Pressable>
+        <Pressable onPress={back}><Text style={{ color: 'rgba(255,255,255,0.5)', fontWeight: '700' }}>Cancel</Text></Pressable>
+      </View>
+    );
+  }
+  // The CameraView's native preview surface is composited by Android
+  // outside the normal view-drawing order — unmounting it the instant a
+  // photo is captured can leave a stale frame visibly on top of whatever
+  // renders next. It stays mounted (deactivated via `active`) through the
+  // checking/pass/fail/unavailable stages below, and the result UI is
+  // drawn as an opaque sibling over it instead of replacing it outright.
+  const statusMeta: Record<Exclude<FaceVerifyStage, 'intro' | 'camera'>, { icon: IoniconName; color: string; label: string }> = {
+    checking:    { icon: 'sync-outline',            color: colors.royal600, label: 'Checking…' },
+    pass:        { icon: 'checkmark-circle',        color: colors.green500, label: 'Verified' },
+    fail:        { icon: 'close-circle',            color: '#DC2626',       label: 'Not verified' },
+    unavailable: { icon: 'alert-circle-outline',    color: colors.slate500, label: 'Unavailable' },
+  };
+  const resultStage = stage === 'checking' || stage === 'pass' || stage === 'fail' || stage === 'unavailable' ? stage : null;
+  const meta = resultStage ? statusMeta[resultStage] : null;
+  return (
+    <View style={{ flex: 1, backgroundColor: '#000' }}>
+      <StatusBar barStyle="light-content" />
+      <CameraView ref={cameraRef} style={{ flex: 1 }} facing="front" active={!resultStage}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', padding: 16, paddingTop: STATUSBAR_H + 16 }}>
+          <Pressable onPress={back} style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(0,0,0,0.4)', alignItems: 'center', justifyContent: 'center' }}>
+            <Ionicons name="arrow-back" size={22} color="#fff" />
+          </Pressable>
+          <View style={{ flex: 1, alignItems: 'center' }}>
+            <Text style={{ color: '#fff', fontWeight: '900', fontSize: 15 }}>Face Verification</Text>
+            <Text style={{ color: 'rgba(255,255,255,0.6)', fontSize: 11, marginTop: 2 }}>Center your face in the oval</Text>
+          </View>
+          <View style={{ width: 40 }} />
+        </View>
+        <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+          <View style={{ width: SCAN_BOX * 0.65, height: SCAN_BOX * 0.85, borderRadius: SCAN_BOX, borderWidth: 3, borderColor: '#0EA5E9' }} />
+        </View>
+        <View style={{ paddingBottom: 48 + insets.bottom, alignItems: 'center', gap: 16 }}>
+          <Pressable onPress={capturePhoto} style={{ width: 72, height: 72, borderRadius: 36, backgroundColor: '#fff', borderWidth: 4, borderColor: 'rgba(255,255,255,0.4)', alignItems: 'center', justifyContent: 'center' }}>
+            <View style={{ width: 56, height: 56, borderRadius: 28, backgroundColor: '#fff' }} />
+          </Pressable>
+          <Text style={{ color: 'rgba(255,255,255,0.6)', fontSize: 12 }}>Tap to capture</Text>
+        </View>
+      </CameraView>
+      {meta && (
+        <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: '#000', alignItems: 'center', justifyContent: 'center', padding: 32, gap: 16 }}>
+          {captured && <Image source={{ uri: captured }} style={StyleSheet.absoluteFill} resizeMode="cover" />}
+          {/* Solid scrim independent of the captured photo's brightness —
+              a bright/white capture would otherwise wash out the white
+              status text and make it unreadable. */}
+          <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.55)' }} />
+          {stage === 'checking' ? (
+            <ActivityIndicator size="large" color="#fff" />
+          ) : (
+            <Ionicons name={meta.icon} size={64} color={meta.color} />
+          )}
+          <Text style={{ color: '#fff', fontSize: 22, fontWeight: '900', textAlign: 'center' }}>{meta.label}</Text>
+          {!!detail && <Text style={{ color: 'rgba(255,255,255,0.75)', textAlign: 'center', lineHeight: 20 }}>{detail}</Text>}
+          {stage !== 'checking' && (
+            <View style={{ flexDirection: 'row', gap: 12, marginTop: 12, width: '100%' }}>
+              {stage !== 'pass' && (
+                <Pressable onPress={retry} style={{ flex: 1, height: 52, borderRadius: 14, backgroundColor: 'rgba(255,255,255,0.15)', alignItems: 'center', justifyContent: 'center' }}>
+                  <Text style={{ color: '#fff', fontWeight: '700' }}>Try again</Text>
+                </Pressable>
+              )}
+              <Pressable onPress={back} style={{ flex: 1, height: 52, borderRadius: 14, backgroundColor: colors.royal600, alignItems: 'center', justifyContent: 'center' }}>
+                <Text style={{ color: '#fff', fontWeight: '700' }}>Done</Text>
+              </Pressable>
+            </View>
+          )}
+        </View>
+      )}
+    </View>
+  );
 }
 
-function TimelineTrackerScreen({ back, openUpload, intendedFrom }: { back: () => void; openUpload: () => void; intendedFrom?: string }) {
-  const stages = buildTimelineStages(intendedFrom);
+// ─── Timeline Tracker ─────────────────────────────────────────────────────────
+// Each stage's "done" status is derived from real app state (uploaded
+// documents, real audit results, actual application status) — not from how
+// many days are left before the trip.
+function buildTimelineStages(app: ReturnType<typeof normalizeApp> | null, documents: ApiDocument[], hasAuditResult: boolean, hasBooking: boolean) {
+  const decided = app?.statusRaw === 'approved' || app?.statusRaw === 'rejected';
+  const submitted = decided || app?.statusRaw === 'submitted';
+  return [
+    { label: 'Documents collected', done: documents.length > 0, note: documents.length > 0 ? `${documents.length} uploaded` : 'None uploaded yet' },
+    { label: 'AI audit complete', done: hasAuditResult, note: hasAuditResult ? 'At least one document audited' : 'Run an audit from Documents' },
+    { label: 'Requirements met', done: !!app && app.documentsUploaded >= app.documentsRequired && app.documentsRequired > 0, note: app ? `${app.documentsUploaded}/${app.documentsRequired} required documents` : 'No application yet' },
+    { label: 'Insurance uploaded', done: documents.some(d => d.type?.toLowerCase() === 'insurance'), note: documents.some(d => d.type?.toLowerCase() === 'insurance') ? 'Uploaded' : 'Not uploaded yet' },
+    { label: 'Consultant appointment booked', done: hasBooking, note: hasBooking ? 'Booked this session' : 'Not booked yet' },
+    { label: 'Application submitted', done: submitted, note: submitted ? 'Submitted' : 'Not submitted yet' },
+    { label: 'Decision received', done: decided, note: decided ? (app?.statusRaw === 'approved' ? 'Approved' : 'Rejected') : 'Awaiting decision' },
+  ];
+}
+
+function TimelineTrackerScreen({ back, openUpload, app, documents, hasAuditResult, hasBooking }: { back: () => void; openUpload: () => void; app: ReturnType<typeof normalizeApp> | null; documents: ApiDocument[]; hasAuditResult: boolean; hasBooking: boolean }) {
+  const stages = buildTimelineStages(app, documents, hasAuditResult, hasBooking);
   const currentIdx = stages.findIndex(s => !s.done);
   return (
     <View>
       <BackButton label="Home" onPress={back} />
       <Text style={styles.eyebrow}>Application progress</Text>
       <Text style={styles.title}>Timeline Tracker</Text>
+      {!app && (
+        <View style={[styles.notice, { marginBottom: 12 }]}>
+          <Text style={styles.noticeText}>Create an application to start tracking real progress.</Text>
+        </View>
+      )}
       <Section title="Current application timeline">
         {stages.map((stage, i) => {
           const isCurrent = i === currentIdx;
@@ -3651,14 +4683,14 @@ function TimelineTrackerScreen({ back, openUpload, intendedFrom }: { back: () =>
               </View>
               <View style={{ flex: 1, paddingBottom: 8 }}>
                 <Text style={[styles.rowTitle, isCurrent && { color: colors.royal600 }]}>{stage.label}</Text>
-                <Text style={styles.rowMeta}>{stage.date}{isCurrent ? ' · Current step' : ''}</Text>
+                <Text style={styles.rowMeta}>{stage.note}{isCurrent ? ' · Current step' : ''}</Text>
               </View>
             </View>
           );
         })}
       </Section>
       <Pressable style={styles.primaryButton} onPress={openUpload}>
-        <Text style={styles.primaryButtonText}>Upload insurance to advance</Text>
+        <Text style={styles.primaryButtonText}>Upload documents to advance</Text>
       </Pressable>
     </View>
   );
@@ -3752,6 +4784,7 @@ function CountryComparisonScreen({ back }: { back: () => void }) {
 
 // ─── Splash Screen ───────────────────────────────────────────────────────────
 function SplashScreen({ onDone }: { onDone: () => void }) {
+  const insets = useSafeAreaInsets();
   const [progress] = useState(new Animated.Value(0));
 
   useEffect(() => {
@@ -3775,7 +4808,7 @@ function SplashScreen({ onDone }: { onDone: () => void }) {
       </Text>
       <Text style={{ color: 'rgba(255,255,255,0.45)', fontSize: 13, marginTop: 8, fontWeight: '500' }}>Smart check. Stronger application. Smoother journey.</Text>
       {/* Progress bar */}
-      <View style={{ position: 'absolute', bottom: 48, left: 40, right: 40 }}>
+      <View style={{ position: 'absolute', bottom: 48 + insets.bottom, left: 40, right: 40 }}>
         <View style={{ height: 3, backgroundColor: 'rgba(255,255,255,0.12)', borderRadius: 2, overflow: 'hidden' }}>
           <Animated.View style={{ height: '100%', width: barWidth, backgroundColor: '#1A56DB', borderRadius: 2 }} />
         </View>
@@ -3785,7 +4818,7 @@ function SplashScreen({ onDone }: { onDone: () => void }) {
 }
 
 // ─── Register Screen ──────────────────────────────────────────────────────────
-function RegisterScreen({ back, onSuccess }: { back: () => void; onSuccess: (session: AuthSession) => void }) {
+function RegisterScreen({ back, onSuccess, setStickyFooter }: { back: () => void; onSuccess: (session: AuthSession) => void; setStickyFooter: (node: React.ReactNode) => void }) {
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -3819,6 +4852,15 @@ function RegisterScreen({ back, onSuccess }: { back: () => void; onSuccess: (ses
       setLoading(false);
     }
   };
+
+  useEffect(() => {
+    setStickyFooter(
+      <Pressable style={[styles.primaryButton, { marginTop: 0 }, !canCreate && styles.disabledButton]} onPress={canCreate ? handleCreate : undefined}>
+        {loading ? <ActivityIndicator color="#fff" /> : <Text style={[styles.primaryButtonText, !canCreate && styles.disabledButtonText]}>Create account</Text>}
+      </Pressable>
+    );
+    return () => setStickyFooter(null);
+  }, [canCreate, loading, name, email, password, accepted]);
 
   return (
     <View style={styles.welcome}>
@@ -3854,18 +4896,127 @@ function RegisterScreen({ back, onSuccess }: { back: () => void; onSuccess: (ses
           <Text style={{ color: '#DC2626', fontSize: 13 }}>{error}</Text>
         </View>
       ) : null}
-      <Pressable style={[styles.primaryButton, !canCreate && styles.disabledButton]} onPress={handleCreate}>
-        {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryButtonText}>Create account</Text>}
-      </Pressable>
     </View>
   );
 }
 
 // ─── Email Verification Screen ───────────────────────────────────────────────
+const OTP_LENGTH = 6;
+
+function OtpBoxes({ digits, onChange, onComplete, shake }: {
+  digits: string[];
+  onChange: (next: string[]) => void;
+  onComplete: (code: string) => void;
+  shake: boolean;
+}) {
+  const inputRefs = useRef<Array<TextInput | null>>([]);
+  const scales = useRef(digits.map(() => new Animated.Value(1))).current;
+  const shakeX = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    if (!shake) return;
+    Animated.sequence([
+      Animated.timing(shakeX, { toValue: 8, duration: 45, useNativeDriver: true }),
+      Animated.timing(shakeX, { toValue: -8, duration: 45, useNativeDriver: true }),
+      Animated.timing(shakeX, { toValue: 6, duration: 45, useNativeDriver: true }),
+      Animated.timing(shakeX, { toValue: -6, duration: 45, useNativeDriver: true }),
+      Animated.timing(shakeX, { toValue: 0, duration: 45, useNativeDriver: true }),
+    ]).start();
+  }, [shake]);
+
+  const popBox = (i: number) => {
+    Animated.sequence([
+      Animated.timing(scales[i], { toValue: 1.22, duration: 90, useNativeDriver: true }),
+      Animated.spring(scales[i], { toValue: 1, useNativeDriver: true, friction: 4, tension: 140 }),
+    ]).start();
+  };
+
+  const setDigit = (i: number, next: string[]) => {
+    onChange(next);
+    const joined = next.join('');
+    if (joined.length === OTP_LENGTH && next.every(d => d !== '')) {
+      onComplete(joined);
+    }
+  };
+
+  const handleChange = (i: number, val: string) => {
+    const clean = val.replace(/[^0-9]/g, '');
+    if (clean.length > 1) {
+      // Pasted or autofilled multiple digits at once — spread across boxes.
+      const chars = clean.split('').slice(0, OTP_LENGTH - i);
+      const next = [...digits];
+      chars.forEach((c, idx) => { next[i + idx] = c; });
+      chars.forEach((_, idx) => popBox(i + idx));
+      const lastIdx = Math.min(i + chars.length, OTP_LENGTH - 1);
+      inputRefs.current[lastIdx]?.focus();
+      setDigit(i, next);
+      return;
+    }
+    const next = [...digits];
+    next[i] = clean;
+    if (clean) {
+      popBox(i);
+      if (i < OTP_LENGTH - 1) inputRefs.current[i + 1]?.focus();
+    }
+    setDigit(i, next);
+  };
+
+  const handleKeyPress = (i: number, e: { nativeEvent: { key: string } }) => {
+    if (e.nativeEvent.key === 'Backspace' && !digits[i] && i > 0) {
+      inputRefs.current[i - 1]?.focus();
+    }
+  };
+
+  return (
+    <Animated.View style={{ flexDirection: 'row', gap: 10, justifyContent: 'center', transform: [{ translateX: shakeX }] }}>
+      {digits.map((d, i) => (
+        <Animated.View key={i} style={{ transform: [{ scale: scales[i] }] }}>
+          <TextInput
+            ref={r => { inputRefs.current[i] = r; }}
+            value={d}
+            onChangeText={(v) => handleChange(i, v)}
+            onKeyPress={(e) => handleKeyPress(i, e)}
+            keyboardType="number-pad"
+            textContentType="oneTimeCode"
+            autoFocus={i === 0}
+            maxLength={OTP_LENGTH}
+            style={{
+              width: 46, height: 56, borderRadius: 12, borderWidth: 2,
+              borderColor: d ? colors.royal600 : colors.slate200,
+              backgroundColor: d ? colors.royal50 : '#fff',
+              textAlign: 'center', fontSize: 24, fontWeight: '900', color: colors.slate900,
+            }}
+          />
+        </Animated.View>
+      ))}
+    </Animated.View>
+  );
+}
+
 function VerifyEmailScreen({ email, onDone }: { email: string; onDone: () => void }) {
-  const [code, setCode] = useState('');
+  const [digits, setDigits] = useState<string[]>(Array(OTP_LENGTH).fill(''));
+  const [shake, setShake] = useState(false);
+  const code = digits.join('');
   const [resendSeconds, setResendSeconds] = useState(60);
   const [verified, setVerified] = useState(false);
+  const [verifying, setVerifying] = useState(false);
+  const [resendStatus, setResendStatus] = useState<'idle' | 'sending' | 'sent' | 'error'>('idle');
+
+  const doVerify = async (submittedCode: string) => {
+    if (verifying) return;
+    setVerifying(true);
+    try {
+      await verifyEmailOtp(email, submittedCode);
+      setVerified(true);
+    } catch {
+      setShake(true);
+      setTimeout(() => setShake(false), 300);
+      setDigits(Array(OTP_LENGTH).fill(''));
+      Alert.alert('Invalid code', 'The verification code is incorrect or expired. Please try again.');
+    } finally {
+      setVerifying(false);
+    }
+  };
 
   useEffect(() => {
     if (resendSeconds <= 0) return;
@@ -3893,29 +5044,39 @@ function VerifyEmailScreen({ email, onDone }: { email: string; onDone: () => voi
         <>
           <Text style={styles.title}>Check your inbox</Text>
           <Text style={[styles.bodyText, { textAlign: 'center' }]}>We sent a 6-digit code to {email}. Enter it below to verify your account.</Text>
-          <View style={styles.stepCard}>
-            <TextInput value={code} onChangeText={setCode} keyboardType="number-pad" maxLength={6} placeholder="000000" style={[styles.searchInput, { textAlign: 'center', fontSize: 24, fontWeight: '900', letterSpacing: 8 }]} />
+          <View style={{ marginVertical: 20 }}>
+            <OtpBoxes digits={digits} onChange={setDigits} onComplete={doVerify} shake={shake} />
           </View>
-          <Pressable style={[styles.primaryButton, code.length < 6 && styles.disabledButton]} onPress={code.length === 6 ? async () => {
-            try {
-              await verifyEmailOtp(email, code);
-              setVerified(true);
-            } catch {
-              Alert.alert('Invalid code', 'The verification code is incorrect or expired. Please try again.');
+          <Pressable style={[styles.primaryButton, (code.length < 6 || verifying) && styles.disabledButton]} disabled={code.length < 6 || verifying} onPress={code.length === 6 ? () => doVerify(code) : undefined}>
+            {verifying
+              ? <ActivityIndicator color="#fff" />
+              : <Text style={[styles.primaryButtonText, code.length < 6 && styles.disabledButtonText]}>Verify email</Text>
             }
-          } : undefined}>
-            <Text style={styles.primaryButtonText}>Verify email</Text>
           </Pressable>
           <Pressable
-            disabled={resendSeconds > 0}
-            style={{ marginTop: 14 }}
+            disabled={resendSeconds > 0 || resendStatus === 'sending'}
+            style={{ marginTop: 14, minHeight: 24 }}
             onPress={async () => {
-              setResendSeconds(60);
-              try { await sendVerificationEmail(email); } catch { /* keep the timer running either way */ }
+              setResendStatus('sending');
+              try {
+                await sendVerificationEmail(email);
+                setResendSeconds(60);
+                setResendStatus('sent');
+              } catch {
+                setResendStatus('error');
+              }
             }}
           >
-            <Text style={[styles.rowMeta, { textAlign: 'center', color: resendSeconds > 0 ? colors.slate300 : colors.royal600 }]}>
-              {resendSeconds > 0 ? `Resend in ${resendSeconds}s` : 'Resend code'}
+            <Text style={[styles.rowMeta, { textAlign: 'center', fontWeight: '700', color:
+              resendStatus === 'error' ? '#DC2626'
+              : resendStatus === 'sent' ? colors.green500
+              : resendSeconds > 0 ? colors.slate500
+              : colors.royal600 }]}>
+              {resendStatus === 'sending' ? 'Sending…'
+                : resendStatus === 'error' ? "Couldn't resend — tap to try again"
+                : resendStatus === 'sent' && resendSeconds > 0 ? `Sent! Resend again in ${resendSeconds}s`
+                : resendSeconds > 0 ? `Resend in ${resendSeconds}s`
+                : 'Resend code'}
             </Text>
           </Pressable>
         </>
@@ -3927,21 +5088,45 @@ function VerifyEmailScreen({ email, onDone }: { email: string; onDone: () => voi
 // ─── Camera Scanner Screen ────────────────────────────────────────────────────
 const SCAN_BOX = SCREEN_W - 64;
 
-function CameraScreen({ docType, back, onCapture }: { docType: string; back: () => void; onCapture: () => void }) {
+function CameraScreen({ docType, back, onCapture }: { docType: string; back: () => void; onCapture: (extractedText?: string, imageBase64?: string, mimeType?: string) => void }) {
+  const insets = useSafeAreaInsets();
   const [permission, requestPermission] = useCameraPermissions();
   const [flash, setFlash] = useState<'off' | 'on'>('off');
   const [facing] = useState<'front' | 'back'>('back');
   const [captured, setCaptured] = useState<string | null>(null);
-  const [quality, setQuality] = useState<'checking' | 'good' | 'warn' | null>(null);
+  const [quality, setQuality] = useState<'checking' | 'good' | 'warn' | 'unverified' | null>(null);
+  const [detectedText, setDetectedText] = useState('');
+  const [imageBase64, setImageBase64] = useState<string | undefined>(undefined);
   const cameraRef = useRef<CameraView>(null);
 
   const capturePhoto = async () => {
     if (!cameraRef.current) return;
     try {
       const photo = await cameraRef.current.takePictureAsync({ quality: 0.85, base64: false });
-      setCaptured(photo?.uri ?? null);
+      const uri = photo?.uri ?? null;
+      setCaptured(uri);
+      if (!uri) { setQuality('warn'); return; }
       setQuality('checking');
-      setTimeout(() => setQuality('good'), 1200);
+      // Read the real captured file for upload — this is what lets the
+      // backend run actual AI vision on the document instead of only the
+      // on-device OCR text below.
+      try {
+        setImageBase64(await FileSystem.readAsStringAsync(uri, { encoding: FileSystem.EncodingType.Base64 }));
+      } catch {
+        setImageBase64(undefined);
+      }
+      // Real on-device OCR (Google ML Kit) — not a simulated result. A
+      // document with a readable amount of text is marked good; near-empty
+      // OCR output (blur, glare, blank frame) is flagged for a retake.
+      try {
+        const { default: TextRecognition } = await import('@react-native-ml-kit/text-recognition');
+        const result = await TextRecognition.recognize(uri);
+        const text = (result?.text ?? '').trim();
+        setDetectedText(text);
+        setQuality(text.length >= 15 ? 'good' : 'warn');
+      } catch {
+        setQuality('unverified');
+      }
     } catch {
       setQuality('warn');
     }
@@ -3992,8 +5177,11 @@ function CameraScreen({ docType, back, onCapture }: { docType: string; back: () 
               <View style={{ position: 'absolute', left: 0, right: 0, top: '40%', height: 2, backgroundColor: 'rgba(14,165,233,0.7)' }} />
             </View>
           </View>
-          {/* Capture button */}
-          <View style={{ paddingBottom: 48, alignItems: 'center', gap: 16 }}>
+          {/* Capture button — paddingBottom must clear the Android system nav
+              bar/gesture pill since this screen renders outside the app's
+              normal Header/BottomNav shell. Uses the real safe-area inset,
+              not a Dimensions guess, so it clears on every device/skin. */}
+          <View style={{ paddingBottom: 48 + insets.bottom, alignItems: 'center', gap: 16 }}>
             <Pressable onPress={capturePhoto} style={{ width: 72, height: 72, borderRadius: 36, backgroundColor: '#fff', borderWidth: 4, borderColor: 'rgba(255,255,255,0.4)', alignItems: 'center', justifyContent: 'center' }}>
               <View style={{ width: 56, height: 56, borderRadius: 28, backgroundColor: '#fff' }} />
             </Pressable>
@@ -4004,34 +5192,47 @@ function CameraScreen({ docType, back, onCapture }: { docType: string; back: () 
         // Preview captured image
         <View style={{ flex: 1 }}>
           <Image source={{ uri: captured }} style={{ flex: 1, resizeMode: 'contain', backgroundColor: '#000' }} />
-          {/* Quality feedback */}
-          <View style={{ position: 'absolute', top: 48, left: 0, right: 0, alignItems: 'center' }}>
+          {/* Quality feedback — driven by real on-device OCR, not a timer */}
+          <View style={{ position: 'absolute', top: 48, left: 0, right: 0, alignItems: 'center', paddingHorizontal: 24 }}>
             {quality === 'checking' && (
               <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.7)', padding: 12, borderRadius: 20 }}>
                 <ActivityIndicator size="small" color="#0EA5E9" />
-                <Text style={{ color: '#fff', fontWeight: '700' }}>Checking quality…</Text>
+                <Text style={{ color: '#fff', fontWeight: '700' }}>Reading document…</Text>
               </View>
             )}
             {quality === 'good' && (
-              <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center', backgroundColor: 'rgba(16,185,129,0.9)', padding: 12, borderRadius: 20 }}>
-                <Ionicons name="checkmark-circle" size={18} color="#fff" />
-                <Text style={{ color: '#fff', fontWeight: '700' }}>Quality looks good!</Text>
+              <View style={{ gap: 6, alignItems: 'center', width: '100%' }}>
+                <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center', backgroundColor: 'rgba(16,185,129,0.9)', padding: 12, borderRadius: 20 }}>
+                  <Ionicons name="checkmark-circle" size={18} color="#fff" />
+                  <Text style={{ color: '#fff', fontWeight: '700' }}>Text detected — looks readable</Text>
+                </View>
+                {!!detectedText && (
+                  <View style={{ backgroundColor: 'rgba(0,0,0,0.65)', borderRadius: 12, padding: 10, maxWidth: '100%' }}>
+                    <Text style={{ color: 'rgba(255,255,255,0.85)', fontSize: 11 }} numberOfLines={2}>{detectedText.replace(/\n/g, ' ')}</Text>
+                  </View>
+                )}
               </View>
             )}
             {quality === 'warn' && (
               <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center', backgroundColor: 'rgba(245,158,11,0.9)', padding: 12, borderRadius: 20 }}>
                 <Ionicons name="warning-outline" size={18} color="#fff" />
-                <Text style={{ color: '#fff', fontWeight: '700' }}>Retake — glare detected</Text>
+                <Text style={{ color: '#fff', fontWeight: '700' }}>Little to no text found — retake in better light</Text>
+              </View>
+            )}
+            {quality === 'unverified' && (
+              <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center', backgroundColor: 'rgba(100,116,139,0.9)', padding: 12, borderRadius: 20 }}>
+                <Ionicons name="information-circle-outline" size={18} color="#fff" />
+                <Text style={{ color: '#fff', fontWeight: '700' }}>Captured — on-device check unavailable</Text>
               </View>
             )}
           </View>
-          {/* Action buttons */}
-          <View style={{ position: 'absolute', bottom: 40, left: 24, right: 24, flexDirection: 'row', gap: 12 }}>
-            <Pressable onPress={() => { setCaptured(null); setQuality(null); }} style={{ flex: 1, height: 52, borderRadius: 14, backgroundColor: 'rgba(255,255,255,0.15)', alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: 8 }}>
+          {/* Action buttons — same Android nav-bar clearance as the capture button above */}
+          <View style={{ position: 'absolute', bottom: 40 + insets.bottom, left: 24, right: 24, flexDirection: 'row', gap: 12 }}>
+            <Pressable onPress={() => { setCaptured(null); setQuality(null); setDetectedText(''); setImageBase64(undefined); }} style={{ flex: 1, height: 52, borderRadius: 14, backgroundColor: 'rgba(255,255,255,0.15)', alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: 8 }}>
               <Ionicons name="refresh-outline" size={20} color="#fff" />
               <Text style={{ color: '#fff', fontWeight: '700' }}>Retake</Text>
             </Pressable>
-            <Pressable onPress={onCapture} style={{ flex: 1, height: 52, borderRadius: 14, backgroundColor: quality === 'good' ? colors.green500 : colors.royal600, alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: 8 }}>
+            <Pressable onPress={() => onCapture(detectedText || undefined, imageBase64, 'image/jpeg')} style={{ flex: 1, height: 52, borderRadius: 14, backgroundColor: quality === 'good' ? colors.green500 : colors.royal600, alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: 8 }}>
               <Ionicons name="cloud-upload-outline" size={20} color="#fff" />
               <Text style={{ color: '#fff', fontWeight: '700' }}>Use this photo</Text>
             </Pressable>
@@ -4052,9 +5253,13 @@ const AI_STAGES = [
   { label: 'Generating validated findings report',duration: '',     done: false  },
 ];
 
-function LiveAnalysisScreen({ docTitle, documentId, applicationId, onDone }: {
+function LiveAnalysisScreen({ docTitle, documentId, documentType, extractedText, imageBase64, mimeType, applicationId, onDone }: {
   docTitle: string;
   documentId: string;
+  documentType?: string;
+  extractedText?: string;
+  imageBase64?: string;
+  mimeType?: string;
   applicationId?: string;
   onDone: (result: import('./src/api').ApiAuditResult) => void;
 }) {
@@ -4084,7 +5289,7 @@ function LiveAnalysisScreen({ docTitle, documentId, applicationId, onDone }: {
     (async () => {
       try {
         await createUploadSlot({ applicationId, documentId });
-        const { result: auditResult } = await enqueueAudit({ applicationId, documentId });
+        const { result: auditResult } = await enqueueAudit({ applicationId, documentId, documentType, extractedText, imageBase64, mimeType });
         if (cancelled) return;
         clearInterval(stageTimer);
         setStageIdx(AI_STAGES.length);
@@ -4100,7 +5305,7 @@ function LiveAnalysisScreen({ docTitle, documentId, applicationId, onDone }: {
     })();
 
     return () => { cancelled = true; clearInterval(stageTimer); };
-  }, [applicationId, documentId, attempt]);
+  }, [applicationId, documentId, documentType, extractedText, imageBase64, mimeType, attempt]);
 
   const stages = AI_STAGES.map((s, i) => ({
     ...s,
@@ -4206,7 +5411,7 @@ const PROFILE_SECTIONS = [
   { id: 'contacts',    label: 'Emergency contacts',      icon: 'call-outline'          as IoniconName, done: false },
 ];
 
-function ProfileHubScreen({ back, authUser }: { back: () => void; authUser: AuthUser | null }) {
+function ProfileHubScreen({ back, authUser, applicationId }: { back: () => void; authUser: AuthUser | null; applicationId?: string }) {
   const [activeSection, setActiveSection] = useState<string | null>(null);
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
@@ -4234,6 +5439,11 @@ function ProfileHubScreen({ back, authUser }: { back: () => void; authUser: Auth
     try {
       const r = await updateProfile(patch);
       setProfile(r.profile);
+      // Keep the "carried forward" nationality used by new-application
+      // onboarding in sync with whatever the user edits here.
+      if (patch.personal?.nationality) {
+        savePreferences({ nationality: patch.personal.nationality });
+      }
       setActiveSection(null);
     } catch (err) {
       Alert.alert('Could not save', err instanceof Error ? err.message : 'Please check your connection and try again. Your changes have not been saved.');
@@ -4246,7 +5456,7 @@ function ProfileHubScreen({ back, authUser }: { back: () => void; authUser: Auth
   if (activeSection === 'personal')   return <ProfilePersonalScreen   back={() => setActiveSection(null)} profile={profile} onSave={d => handleSave({ personal: d })} />;
   if (activeSection === 'passport')   return <ProfilePassportScreen   back={() => setActiveSection(null)} profile={profile} onSave={d => handleSave({ passport: d })} />;
   if (activeSection === 'travel')     return <ProfileTravelScreen     back={() => setActiveSection(null)} profile={profile} onSave={d => handleSave({ travelHistory: d })} />;
-  if (activeSection === 'financials') return <ProfileFinancialsScreen back={() => setActiveSection(null)} profile={profile} onSave={d => handleSave({ financials: d })} />;
+  if (activeSection === 'financials') return <ProfileFinancialsScreen back={() => setActiveSection(null)} profile={profile} onSave={d => handleSave({ financials: d })} applicationId={applicationId} />;
   if (activeSection === 'employment') return <ProfileEmploymentScreen back={() => setActiveSection(null)} profile={profile} onSave={d => handleSave({ employment: d })} />;
   if (activeSection === 'contacts')   return <ProfileContactsScreen   back={() => setActiveSection(null)} profile={profile} onSave={d => handleSave({ contacts: d })} />;
 
@@ -4261,7 +5471,7 @@ function ProfileHubScreen({ back, authUser }: { back: () => void; authUser: Auth
         <Text style={{ color: 'rgba(255,255,255,0.6)', fontSize: 12, textAlign: 'center' }}>A complete profile enables auto-fill on new applications and improves AI score accuracy.</Text>
       </LinearGradient>
       <View style={[styles.notice, { marginBottom: 4 }]}>
-        <Text style={styles.noticeText}>AI tip: Completing financial and employment sections can increase your visa readiness score by up to 18 points.</Text>
+        <Text style={styles.noticeText}>AI tip: Consulates weigh financial and employment evidence heavily — completing those sections strengthens your application's readiness.</Text>
       </View>
       <Section title="Profile sections">
         {PROFILE_SECTIONS.map((s) => {
@@ -4312,7 +5522,7 @@ function ProfilePersonalScreen({ back, profile, onSave }: { back: () => void; pr
       </View>
       {!canSave && <Text style={[styles.rowMeta, { color: colors.gold500, marginBottom: 8 }]}>First and last name are required.</Text>}
       <Pressable style={[styles.primaryButton, !canSave && styles.disabledButton]} onPress={canSave ? () => onSave({ firstName, lastName, nationality, dateOfBirth: dob, phone, gender }) : undefined}>
-        <Text style={styles.primaryButtonText}>Save personal details</Text>
+        <Text style={[styles.primaryButtonText, !canSave && styles.disabledButtonText]}>Save personal details</Text>
       </Pressable>
     </View>
   );
@@ -4341,7 +5551,7 @@ function ProfilePassportScreen({ back, profile, onSave }: { back: () => void; pr
       </View>
       {!canSave && <Text style={[styles.rowMeta, { color: colors.gold500, marginBottom: 8 }]}>Passport number and expiry date are required.</Text>}
       <Pressable style={[styles.primaryButton, !canSave && styles.disabledButton]} onPress={canSave ? () => onSave({ passportNumber, issueDate, expiryDate, issuingCountry }) : undefined}>
-        <Text style={styles.primaryButtonText}>Save passport details</Text>
+        <Text style={[styles.primaryButtonText, !canSave && styles.disabledButtonText]}>Save passport details</Text>
       </Pressable>
     </View>
   );
@@ -4380,11 +5590,18 @@ function ProfileTravelScreen({ back, profile, onSave }: { back: () => void; prof
       <Text style={styles.title}>Travel history</Text>
       <Text style={styles.bodyText}>Prior visa approvals significantly improve your approval odds. Add trips from the last 5 years.</Text>
       <Section title="Prior trips">
-        {trips.map(t => (
-          <View key={t.country} style={styles.taskRow}>
-            <Text style={{ fontSize: 22, width: 36 }}>{t.country.split(' ')[0]}</Text>
+        {trips.map((t, i) => (
+          <View key={`${t.country}-${i}`} style={styles.taskRow}>
+            {/* Country is plain typed/dictated text with no flag emoji ever
+                attached to it — splitting on spaces to fake a flag used to
+                garble every name (e.g. "United Arab Emirates" rendered
+                "United" as a giant icon and "Arab Emirates" as the title).
+                A neutral icon plus the untouched full name is honest. */}
+            <View style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: colors.royal50, alignItems: 'center', justifyContent: 'center' }}>
+              <Ionicons name="earth-outline" size={18} color={colors.royal600} />
+            </View>
             <View style={styles.flex}>
-              <Text style={styles.rowTitle}>{t.country.split(' ').slice(1).join(' ')}</Text>
+              <Text style={styles.rowTitle}>{t.country}</Text>
               <Text style={styles.rowMeta}>{t.years}</Text>
             </View>
             <View style={[styles.statusPill, { backgroundColor: colors.green100 }]}>
@@ -4443,18 +5660,43 @@ function ProfileTravelScreen({ back, profile, onSave }: { back: () => void; prof
 }
 
 // ─── Profile: Financials ──────────────────────────────────────────────────────
-function ProfileFinancialsScreen({ back, profile, onSave }: { back: () => void; profile: UserProfile | null; onSave: (d: NonNullable<UserProfile['financials']>) => void }) {
+function ProfileFinancialsScreen({ back, profile, onSave, applicationId }: { back: () => void; profile: UserProfile | null; onSave: (d: NonNullable<UserProfile['financials']>) => void; applicationId?: string }) {
   const [statements, setStatements] = useState<{ label: string; score: number }[]>(profile?.financials?.statements ?? []);
+  const [auditingIdx, setAuditingIdx] = useState<number | null>(null);
 
   const uploadStatement = async () => {
     try {
       const result = await DocumentPicker.getDocumentAsync({ type: ['application/pdf', 'image/*'], copyToCacheDirectory: false });
-      if (!result.canceled && result.assets?.[0]) {
-        const now = new Date();
-        const label = now.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' });
-        setStatements(prev => [...prev, { label, score: 0 }]);
+      if (result.canceled || !result.assets?.[0]) return;
+      const now = new Date();
+      const label = now.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' });
+      const idx = statements.length;
+      setStatements(prev => [...prev, { label, score: 0 }]);
+
+      if (!applicationId) {
+        // No active application to attach this document to — be honest that
+        // it's saved locally but hasn't actually been scored, rather than
+        // showing a fake "Pending" that can never resolve.
+        Alert.alert('Saved without audit', 'Create a visa application first so this statement can be run through the real AI audit — for now it\'s saved but unscored.');
+        return;
       }
-    } catch { /* user cancelled */ }
+      setAuditingIdx(idx);
+      try {
+        const asset = result.assets[0];
+        const documentId = `doc-financials-${Date.now()}`;
+        const imageBase64 = await FileSystem.readAsStringAsync(asset.uri, { encoding: FileSystem.EncodingType.Base64 });
+        await createUploadSlot({ applicationId, documentId });
+        const { result: auditResult } = await enqueueAudit({
+          applicationId, documentId, documentType: 'bank', imageBase64,
+          mimeType: asset.mimeType ?? 'application/octet-stream',
+        });
+        setStatements(prev => prev.map((s, i) => i === idx ? { ...s, score: auditResult.score } : s));
+      } catch {
+        Alert.alert('Audit failed', 'Your statement was saved, but the AI audit could not run. Check your connection and try again from Documents.');
+      } finally {
+        setAuditingIdx(null);
+      }
+    } catch { /* user cancelled the picker */ }
   };
 
   return (
@@ -4469,12 +5711,16 @@ function ProfileFinancialsScreen({ back, profile, onSave }: { back: () => void; 
       <Section title="Bank statements">
         {statements.map((m, idx) => (
           <View key={idx} style={styles.taskRow}>
-            <View style={[styles.quickIconBox, { width: 36, height: 36, backgroundColor: colors.green100 }]}>
-              <Ionicons name="checkmark-circle-outline" size={18} color={colors.green500} />
+            <View style={[styles.quickIconBox, { width: 36, height: 36, backgroundColor: auditingIdx === idx ? colors.royal50 : colors.green100 }]}>
+              {auditingIdx === idx
+                ? <ActivityIndicator size="small" color={colors.royal600} />
+                : <Ionicons name="checkmark-circle-outline" size={18} color={colors.green500} />}
             </View>
             <View style={styles.flex}>
               <Text style={styles.rowTitle}>{m.label}</Text>
-              <Text style={styles.rowMeta}>{m.score > 0 ? `Audited · Score ${m.score}` : 'Uploaded · Pending audit'}</Text>
+              <Text style={styles.rowMeta}>
+                {auditingIdx === idx ? 'Running AI audit…' : m.score > 0 ? `Audited · Score ${m.score}` : 'Saved — not yet audited'}
+              </Text>
             </View>
           </View>
         ))}
@@ -4554,7 +5800,7 @@ function ProfileEmploymentScreen({ back, profile, onSave }: { back: () => void; 
         )}
       </Section>
       <Pressable style={[styles.primaryButton, (!employer.trim() || !title.trim()) && styles.disabledButton]} onPress={(employer.trim() && title.trim()) ? () => onSave({ employer, jobTitle: title, annualIncomeUsd: income, resumeUploaded, resumeFileName }) : undefined}>
-        <Text style={styles.primaryButtonText}>Save employment details</Text>
+        <Text style={[styles.primaryButtonText, (!employer.trim() || !title.trim()) && styles.disabledButtonText]}>Save employment details</Text>
       </Pressable>
     </View>
   );
@@ -4583,7 +5829,7 @@ function ProfileContactsScreen({ back, profile, onSave }: { back: () => void; pr
       </View>
       {!canSave && <Text style={[styles.rowMeta, { color: colors.gold500, marginBottom: 8 }]}>Name and phone number are required.</Text>}
       <Pressable style={[styles.primaryButton, !canSave && styles.disabledButton]} onPress={canSave ? () => onSave({ emergencyName: name, emergencyPhone: phone, emergencyRelation: relation }) : undefined}>
-        <Text style={styles.primaryButtonText}>Save emergency contacts</Text>
+        <Text style={[styles.primaryButtonText, !canSave && styles.disabledButtonText]}>Save emergency contacts</Text>
       </Pressable>
     </View>
   );
@@ -4889,7 +6135,7 @@ function RejectionAnalyzerScreen({ back, openChat }: { back: () => void; openCha
             style={[styles.searchInput, { minHeight: 130, textAlignVertical: 'top', paddingTop: 12, lineHeight: 20 }]}
           />
           <Pressable style={[styles.primaryButton, (!text.trim() || analyzing) && styles.disabledButton]} onPress={text.trim() && !analyzing ? analyze : undefined}>
-            {analyzing ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryButtonText}>Analyze rejection</Text>}
+            {analyzing ? <ActivityIndicator color="#fff" /> : <Text style={[styles.primaryButtonText, !text.trim() && styles.disabledButtonText]}>Analyze rejection</Text>}
           </Pressable>
         </>
       ) : (
@@ -4958,9 +6204,15 @@ function OfflineCacheCard() {
 }
 
 const styles = StyleSheet.create({
-  shell: { flex: 1, backgroundColor: colors.slate50, paddingTop: STATUSBAR_H },
+  // No manual paddingTop here — the root SafeAreaView (edges=['top']) applies
+  // the real top inset itself, correct on notches/cutouts too, not just a
+  // StatusBar.currentHeight guess.
+  shell: { flex: 1, backgroundColor: colors.slate50 },
   content: { padding: 18, paddingBottom: 28 },
-  withNav: { paddingBottom: BOTTOM_NAV_H + 20 },
+  // Normal-flow block, not absolutely positioned — it's stacked above
+  // BottomNav inside a shared bottom-anchored wrapper (see render), so its
+  // own position never needs to be coordinated against BottomNav's height.
+  stickyFooterBar: { backgroundColor: colors.white, borderTopWidth: 1, borderTopColor: colors.slate100, paddingHorizontal: 18, paddingTop: 10, paddingBottom: 14 },
   flex: { flex: 1 },
   header: { height: 58, paddingHorizontal: 18, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: colors.white, borderBottomColor: colors.slate100, borderBottomWidth: 1 },
   headerActions: { flexDirection: 'row', gap: 8 },
@@ -4996,6 +6248,9 @@ const styles = StyleSheet.create({
   goldButton: { minHeight: 48, borderRadius: 14, backgroundColor: colors.gold500, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 12, marginTop: 12 },
   secondaryButton: { minHeight: 48, borderRadius: 14, borderWidth: 1, borderColor: colors.royal600, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 12, marginTop: 10 },
   disabledButton: { backgroundColor: colors.slate300 },
+  // White text on slate300 is ~1.5:1 contrast (fails WCAG AA) — every button
+  // that pairs disabledButton with primaryButtonText must also apply this.
+  disabledButtonText: { color: colors.slate700 },
   primaryButtonText: { color: colors.white, fontWeight: '900', textAlign: 'center' },
   secondaryButtonText: { color: colors.royal600, fontWeight: '900', textAlign: 'center' },
   smallButton: { backgroundColor: colors.royal600, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 9, flexDirection: 'row', alignItems: 'center', gap: 4 },
@@ -5037,8 +6292,12 @@ const styles = StyleSheet.create({
   disclaimer: { backgroundColor: colors.gold100, borderRadius: 12, padding: 10 },
   disclaimerText: { color: '#92400E', fontSize: 11, fontWeight: '900', textAlign: 'center' },
   composer: { flexDirection: 'row', gap: 8, alignItems: 'center' },
-  input: { flex: 1, height: 46, borderRadius: 23, borderColor: colors.slate200, borderWidth: 1, backgroundColor: colors.white, paddingHorizontal: 14 },
-  searchInput: { height: 50, borderRadius: 14, borderColor: colors.slate200, borderWidth: 1, backgroundColor: colors.white, paddingHorizontal: 14, marginBottom: 14 },
+  input: { flex: 1, height: 46, borderRadius: 23, borderColor: colors.slate200, borderWidth: 1, backgroundColor: colors.white, paddingHorizontal: 14, color: colors.slate900 },
+  // color is load-bearing, not decoration: without it, typed text falls back
+  // to the platform/theme default, which on some Android devices resolves
+  // to near-white on this input's white background — the original
+  // "white text on signup/OTP screens" bug, root-caused here.
+  searchInput: { height: 50, borderRadius: 14, borderColor: colors.slate200, borderWidth: 1, backgroundColor: colors.white, paddingHorizontal: 14, marginBottom: 14, color: colors.slate900 },
   send: { width: 46, height: 46, borderRadius: 23, backgroundColor: colors.royal600, alignItems: 'center', justifyContent: 'center' },
   sendText: { color: colors.white, fontWeight: '900' },
   consultantCard: { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: colors.white, borderRadius: 16, borderColor: colors.slate100, borderWidth: 1, padding: 14, marginBottom: 12 },
@@ -5063,7 +6322,9 @@ const styles = StyleSheet.create({
   badge_light: { color: colors.white, backgroundColor: 'rgba(255,255,255,0.16)' },
   badge_neutral: { color: colors.slate700, backgroundColor: colors.slate100 },
   badge_warn: { color: '#92400E', backgroundColor: colors.gold100 },
-  bottomNav: { position: 'absolute', left: 0, right: 0, bottom: 0, height: BOTTOM_NAV_H, flexDirection: 'row', backgroundColor: colors.white, borderTopColor: colors.slate100, borderTopWidth: 1, paddingHorizontal: 8, paddingTop: 8, paddingBottom: NAV_BAR_H },
+  // height/paddingBottom below are placeholder fallbacks — BottomNav always
+  // overrides them inline with the real safe-area inset for this device.
+  bottomNav: { position: 'absolute', left: 0, right: 0, bottom: 0, height: 58, flexDirection: 'row', backgroundColor: colors.white, borderTopColor: colors.slate100, borderTopWidth: 1, paddingHorizontal: 8, paddingTop: 8, paddingBottom: 0 },
   navItem: { flex: 1, alignItems: 'center', gap: 3, paddingTop: 6, borderRadius: 16, position: 'relative' },
   navPill: { position: 'absolute', top: 0, width: 32, height: 3, borderRadius: 2, backgroundColor: colors.royal600 },
   navLabel: { color: colors.slate500, fontSize: 10, fontWeight: '800' },

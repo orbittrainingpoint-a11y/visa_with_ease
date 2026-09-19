@@ -89,13 +89,19 @@ async function postWithTimeout(config: ProviderConfig, input: ChatRequest, groun
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
+    // Each provider has its own real auth scheme — sending the wrong one
+    // (e.g. a bogus `Authorization: Bearer <api key>` to Gemini, which
+    // authenticates via the `?key=` query param already in its endpoint URL)
+    // makes some providers reject the request outright with 401, even
+    // though the key itself is valid. This was never caught before because
+    // AI_MOCK was always true, so this code path never actually ran.
+    const headers: Record<string, string> =
+      config.name === 'claude'
+        ? { 'content-type': 'application/json', 'x-api-key': config.apiKey ?? '', 'anthropic-version': '2023-06-01' }
+        : { 'content-type': 'application/json' }; // gemini: auth is the ?key= already in config.endpoint
     const response = await fetch(config.endpoint, {
       method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-api-key': config.apiKey ?? '',
-        authorization: config.name === 'gemini' ? `Bearer ${config.apiKey}` : ''
-      },
+      headers,
       body: JSON.stringify(config.buildBody(input, grounding)),
       signal: controller.signal
     });
@@ -148,7 +154,7 @@ const geminiConfig: ProviderConfig = {
   apiKey: process.env.GOOGLE_GEMINI_API_KEY,
   endpoint:
     process.env.GEMINI_API_URL ??
-    `https://generativelanguage.googleapis.com/v1beta/models/${process.env.GEMINI_MODEL ?? 'gemini-1.5-flash'}:generateContent?key=${process.env.GOOGLE_GEMINI_API_KEY ?? ''}`,
+    `https://generativelanguage.googleapis.com/v1beta/models/${process.env.GEMINI_MODEL ?? 'gemini-3.6-flash'}:generateContent?key=${process.env.GOOGLE_GEMINI_API_KEY ?? ''}`,
   buildBody: (input, grounding) => ({
     systemInstruction: { parts: [{ text: systemPromptFor(grounding) }] },
     contents: [{ parts: [{ text: input.message }] }]

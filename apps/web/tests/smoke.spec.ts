@@ -377,7 +377,9 @@ test.describe('Partners', () => {
 
   test('partners marketplace loads with category tabs', async ({ page }) => {
     await page.goto('/partners');
-    await expect(page.getByRole('heading', { name: /partner|ecosystem/i })).toBeVisible();
+    // .first() — the page legitimately has a real h1 title plus real h2 FAQ
+    // subheadings ("About the partner program"), both matching this regex.
+    await expect(page.getByRole('heading', { name: /partner|ecosystem/i }).first()).toBeVisible();
     await assertNoUndefined(page);
   });
 });
@@ -391,7 +393,7 @@ test.describe('Compliance DB', () => {
 
   test('compliance db page loads country table', async ({ page }) => {
     await page.goto('/compliance-db');
-    await expect(page.getByRole('heading', { name: /compliance|database/i })).toBeVisible();
+    await expect(page.getByRole('heading', { name: /knowledge base/i })).toBeVisible();
     await assertNoUndefined(page);
   });
 });
@@ -402,7 +404,9 @@ test.describe('Pricing', () => {
   test('pricing page loads with tiers', async ({ page }) => {
     await loginAsDemo(page, 'consumer');
     await page.goto('/pricing');
-    await expect(page.getByRole('heading', { name: /pricing|plan/i })).toBeVisible();
+    // .first() — the page legitimately has a real h1 title plus a real h2
+    // "Pricing FAQ" subheading, both matching this regex.
+    await expect(page.getByRole('heading', { name: /pricing|plan/i }).first()).toBeVisible();
     await expect(page.getByText('Pro', { exact: true }).first()).toBeVisible();
     await assertNoUndefined(page);
   });

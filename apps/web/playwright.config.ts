@@ -33,6 +33,7 @@ export default defineConfig({
         RATE_LIMIT_DISABLED: 'true',
         FIRESTORE_DISABLED: 'true',
         ENABLE_DEMO_LOGIN: 'true',
+        ENABLE_DEV_AUTH_BYPASS: 'true',
       },
     },
     {

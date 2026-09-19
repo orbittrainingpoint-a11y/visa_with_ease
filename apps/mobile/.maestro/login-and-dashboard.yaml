@@ -1,0 +1,22 @@
+appId: app.visaiq.mobile
+---
+- launchApp:
+    clearState: true
+- assertVisible: "Continue with Google"
+- tapOn: "I already have an account"
+- assertVisible: "Sign in"
+- tapOn: "you@example.com"
+- inputText: "sarah.mathew@example.com"
+- tapOn: "I accept Terms, Privacy and AI disclaimer."
+- tapOn: "Password"
+- inputText: "demo1234"
+# Submitting via the keyboard's own Done key, not tapping the button — the
+# button sits low enough on this form that the keyboard covers it entirely
+# once the password field is focused (a real bug found and fixed this round:
+# added onSubmitEditing to the password field so this path works at all).
+- pressKey: Enter
+# A real login with zero existing applications routes straight into
+# onboarding (routeAfterAuth: applications.length === 0 -> 'onboarding'),
+# not to an empty dashboard — this is real, intentional app behavior.
+- assertVisible: "Choose visa type"
+- assertVisible: "Schengen Tourist"

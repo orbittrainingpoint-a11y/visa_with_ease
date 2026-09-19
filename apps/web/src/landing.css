@@ -795,7 +795,7 @@
 .sc-cap-item.active { background: #fff; border-color: var(--border); }
 .sc-cap-n { font-weight: 800; font-size: 12.5px; color: var(--t3); flex-shrink: 0; width: 24px; padding-top: 2px; }
 .sc-cap-item.active .sc-cap-n { color: var(--blue); }
-.sc-cap-item h4 { font-size: 14.5px; font-weight: 700; margin: 0 0 3px; color: var(--t1); }
+.sc-cap-item h3 { font-size: 14.5px; font-weight: 700; margin: 0 0 3px; color: var(--t1); }
 .sc-cap-item p { font-size: 12.5px; color: var(--t3); line-height: 1.5; margin: 0; }
 .sc-active-caption { font-size: 13px; color: var(--t3); line-height: 1.55; margin: 0.75rem auto 0; max-width: 380px; }
 .showcase2-viewport { position: relative; display: flex; align-items: center; justify-content: center; }
@@ -913,7 +913,7 @@
     min-width: 62px;
   }
   .sc-cap-item p { display: none; }
-  .sc-cap-item h4 { font-size: 11.5px; white-space: nowrap; margin: 0; }
+  .sc-cap-item h3 { font-size: 11.5px; white-space: nowrap; margin: 0; }
   .sc-cap-n { width: auto; padding-top: 0; font-size: 15px; }
   .app-promo { grid-template-columns: 1fr; text-align: center; }
   .app-promo-list { align-items: flex-start; max-width: 380px; margin-left: auto; margin-right: auto; }

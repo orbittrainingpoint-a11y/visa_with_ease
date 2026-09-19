@@ -4,6 +4,7 @@ import {
   BarChart3,
   Bell,
   Bot,
+  BookOpen,
   Building2,
   CalendarClock,
   CheckCircle2,
@@ -17,11 +18,14 @@ import {
   Home,
   Lock,
   LockKeyhole,
+  Menu,
   MessageCircle,
+  Pencil,
   Plane,
   PlaneTakeoff,
-  RefreshCw,
+  Plus,
   Settings,
+  Save,
   Search,
   ShieldCheck,
   Sparkles,
@@ -31,6 +35,7 @@ import {
   Phone,
   Clock,
   X,
+  Trash2,
   Unlock,
   Upload,
   Users,
@@ -43,7 +48,7 @@ import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } fro
 import { Link, NavLink, Navigate, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import LandingPage from './LandingPage';
 import { BlogIndexPage, BlogPostPage, POSTS } from './Blog';
-import type { AuditResult, AuthSessionResponse, ChatResponse, RequirementsResponse, VisaApplication } from '@visaiq/contracts';
+import type { AuditResult, AuthSessionResponse, ChatResponse, Requirement, RequirementsResponse, VisaApplication } from '@visaiq/contracts';
 import { applications as fallbackApplications, auditResult as fallbackAuditResult, requirements as fallbackRequirements } from '@visaiq/mock-data';
 import { scoreColor } from '@visaiq/design-system';
 
@@ -88,12 +93,16 @@ function showToast(message: string, type: Toast['type'] = 'info') {
 
 // Builds and downloads a real CSV from real rows — no fake "exported" toast
 // with nothing behind it.
-function downloadCsv(filename: string, headers: string[], rows: (string | number)[][]) {
+export function toCsv(headers: string[], rows: (string | number)[][]): string {
   const escape = (v: string | number) => {
     const s = String(v);
     return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
-  const csv = [headers, ...rows].map((row) => row.map(escape).join(',')).join('\n');
+  return [headers, ...rows].map((row) => row.map(escape).join(',')).join('\n');
+}
+
+function downloadCsv(filename: string, headers: string[], rows: (string | number)[][]) {
+  const csv = toCsv(headers, rows);
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
@@ -103,7 +112,11 @@ function downloadCsv(filename: string, headers: string[], rows: (string | number
   URL.revokeObjectURL(url);
 }
 
-const nav = [
+// `roles` gates a nav entry to only the roles listed — omit it for anything
+// every signed-in user should see. Must mirror the <Route> guards below and
+// the backend's requireRole checks, or a user sees a link that just bounces
+// them back to /app when clicked.
+const nav: { to: string; label: string; icon: typeof Home; roles?: string[] }[] = [
   { to: '/app', label: 'Dashboard', icon: Home },
   { to: '/analysis', label: 'Analysis', icon: Sparkles },
   { to: '/onboarding', label: 'Onboarding', icon: PlaneTakeoff },
@@ -112,8 +125,8 @@ const nav = [
   { to: '/requirements', label: 'Requirements', icon: Globe2 },
   { to: '/chat', label: 'AI Assistant', icon: Bot },
   { to: '/consultants', label: 'Consultants', icon: Users },
-  { to: '/consultant-console', label: 'Console', icon: MessageCircle },
-  { to: '/hr', label: 'HR portal', icon: LockKeyhole },
+  { to: '/consultant-console', label: 'Console', icon: MessageCircle, roles: ['consultant', 'platform_admin'] },
+  { to: '/hr', label: 'HR portal', icon: LockKeyhole, roles: ['hr_admin', 'platform_admin'] },
   { to: '/employee', label: 'Employee', icon: ShieldCheck },
   { to: '/booking', label: 'Booking', icon: CalendarClock },
   { to: '/visa-calculator', label: 'Visa Calculator', icon: CircleDollarSign },
@@ -129,10 +142,11 @@ const nav = [
   { to: '/partners', label: 'Partners', icon: Package },
   { to: '/compliance-db', label: 'Compliance DB', icon: Globe2 },
   { to: '/investor', label: 'Investor Demo', icon: TrendingUp },
-  { to: '/admin/users', label: 'Users', icon: Users },
-  { to: '/admin/audit-log', label: 'Audit log', icon: FileText },
+  { to: '/admin/users', label: 'Users', icon: Users, roles: ['platform_admin'] },
+  { to: '/admin/audit-log', label: 'Audit log', icon: FileText, roles: ['platform_admin'] },
+  { to: '/admin/knowledge-base', label: 'Knowledge base', icon: BookOpen, roles: ['platform_admin'] },
   { to: '/settings', label: 'Settings', icon: Settings },
-  { to: '/admin', label: 'Admin', icon: BarChart3 }
+  { to: '/admin', label: 'Admin', icon: BarChart3, roles: ['platform_admin'] }
 ];
 
 function ToastContainer() {
@@ -171,6 +185,12 @@ export function App() {
   const [showNotifs, setShowNotifs] = useState(false);
   const [showSearch, setShowSearch] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  // Below 900px .sidebar becomes an off-canvas drawer (see styles.css) instead
+  // of sitting inline above the page content — the old always-inline layout
+  // forced mobile users to scroll past ~20 nav links to reach anything, and
+  // its static-flow height intercepted clicks on the header below it.
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  useEffect(() => { setMobileNavOpen(false); }, [location.pathname]);
 
   if (publicPaths.includes(location.pathname) || location.pathname.startsWith('/blog')) {
     return <PublicSite />;
@@ -195,12 +215,13 @@ export function App() {
     <div className="app-shell">
       <ToastContainer />
       <CookieBanner />
-      <aside className="sidebar">
+      {mobileNavOpen && <div className="sidebar-backdrop" onClick={() => setMobileNavOpen(false)} />}
+      <aside className={`sidebar${mobileNavOpen ? ' open' : ''}`}>
         <Link className="brand" to="/">
           <img src="/logo-icon.png" alt="" /><span className="brand-word"><b>Visa</b> With <b className="brand-ease">Ease</b></span>
         </Link>
         <nav>
-          {nav.map((item) => (
+          {nav.filter(item => !item.roles || item.roles.some(r => session.user.roles.includes(r))).map((item) => (
             <NavLink key={item.to} to={item.to} end={item.to === '/'}>
               <item.icon size={18} />
               {item.label}
@@ -217,6 +238,9 @@ export function App() {
       </aside>
       <main>
         <header className="topbar">
+          <button className="icon-button mobile-nav-toggle" aria-label="Open menu" onClick={() => setMobileNavOpen(true)}>
+            <Menu size={19} />
+          </button>
           <button className="search" onClick={() => setShowSearch(true)} style={{ cursor: 'pointer', border: 'none', background: 'none', textAlign: 'left', width: '100%', maxWidth: 340 }}>
             <Search size={17} />
             <span>Search applications, documents, consultants…</span>
@@ -245,12 +269,12 @@ export function App() {
           <Route path="/consultants" element={<Consultants />} />
           <Route path="/consultants/:id" element={<ConsultantProfile />} />
           <Route path="/consultant-console" element={
-            session.user.roles.includes('consultant')
+            session.user.roles.includes('consultant') || session.user.roles.includes('platform_admin')
               ? <ConsultantConsole />
               : <Navigate to="/app" replace />
           } />
           <Route path="/hr" element={
-            session.user.roles.includes('hr_admin')
+            session.user.roles.includes('hr_admin') || session.user.roles.includes('platform_admin')
               ? <HrPortal />
               : <Navigate to="/app" replace />
           } />
@@ -279,6 +303,11 @@ export function App() {
           <Route path="/admin/audit-log" element={
             session.user.roles.includes('platform_admin')
               ? <AuditLog />
+              : <Navigate to="/app" replace />
+          } />
+          <Route path="/admin/knowledge-base" element={
+            session.user.roles.includes('platform_admin')
+              ? <KnowledgeBase />
               : <Navigate to="/app" replace />
           } />
           <Route path="/pricing" element={<PricingPage />} />
@@ -532,25 +561,25 @@ function useStoredSession() {
   return [session, setSession] as const;
 }
 
-function initials(name: string) {
+export function initials(name: string) {
   return name.split(' ').map((part) => part[0]).join('').slice(0, 2).toUpperCase();
 }
 
-function greeting() {
+export function greeting() {
   const hour = new Date().getHours();
   if (hour < 12) return 'Good morning';
   if (hour < 18) return 'Good afternoon';
   return 'Good evening';
 }
 
-function daysUntil(dateISO: string) {
+export function daysUntil(dateISO: string) {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   const target = new Date(`${dateISO}T00:00:00`);
   return Math.ceil((target.getTime() - today.getTime()) / 86_400_000);
 }
 
-function relativeTripLabel(dateISO: string) {
+export function relativeTripLabel(dateISO: string) {
   const days = daysUntil(dateISO);
   if (days < 0) return `${Math.abs(days)} days overdue`;
   if (days === 0) return 'today';
@@ -558,12 +587,12 @@ function relativeTripLabel(dateISO: string) {
   return `${days} days`;
 }
 
-function sourceFreshnessLabel(freshness: RequirementsResponse['freshness']) {
+export function sourceFreshnessLabel(freshness: RequirementsResponse['freshness']) {
   const expiresIn = Math.max(0, Math.ceil((Date.parse(freshness.expiresAt) - Date.now()) / 3_600_000));
   return `Fetched ${freshness.ageHours}h ago, expires in ${expiresIn}h under the 24h cache policy.`;
 }
 
-function formatDateTime(value: string) {
+export function formatDateTime(value: string) {
   return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value));
 }
 
@@ -1046,7 +1075,7 @@ const ACTIVITY_FEED = [
 function Dashboard() {
   const sessionData = getStoredSession();
   const firstName = sessionData?.user.name.split(' ')[0] ?? 'there';
-  const { data: applicationData } = useApi<{ applications: VisaApplication[] }>('/applications', { applications: fallbackApplications });
+  const { data: applicationData, error: applicationsError } = useApi<{ applications: VisaApplication[] }>('/applications', { applications: fallbackApplications });
   const { data: requirements } = useApi<RequirementsResponse>('/requirements', fallbackRequirements);
   const active = applicationData.applications[0] ?? fallbackApplications[0];
   const { data: documentData } = useApi<{ documents: Array<{ id: string; title: string; status: string; issue: string }> }>(
@@ -1067,13 +1096,17 @@ function Dashboard() {
         </Link>
       </div>
 
+      {applicationsError && (
+        <div className="action-status error">Couldn't load your real applications — showing cached demo data below until the connection is restored.</div>
+      )}
+
       <div className="hero-grid">
         <article className="readiness-hero" style={{ background: 'linear-gradient(135deg, #0B1F4B 0%, #1A56DB 100%)', position: 'relative', overflow: 'hidden' }}>
           <div style={{ position: 'absolute', right: -40, top: -40, width: 200, height: 200, borderRadius: '50%', background: 'rgba(14,165,233,0.12)' }} />
           <div style={{ position: 'absolute', right: 60, bottom: -60, width: 120, height: 120, borderRadius: '50%', background: 'rgba(245,158,11,0.15)' }} />
           <div style={{ position: 'relative' }}>
             <span className="eyebrow" style={{ color: '#93C5FD' }}>Next trip · {tripLabel} · {daysLeft} days</span>
-            <h2 style={{ color: '#fff', fontSize: 26, margin: '8px 0 4px' }}>🇫🇷 {active.destinationCountry}</h2>
+            <h2 style={{ color: '#fff', fontSize: 26, margin: '8px 0 4px' }}>{active.destinationFlag} {active.destinationCountry}</h2>
             <p style={{ color: 'rgba(255,255,255,0.7)', margin: 0, fontSize: 14 }}>{active.visaType} · {active.refCode}</p>
           </div>
           <Score value={active.readinessScore} size="large" />
@@ -1699,7 +1732,7 @@ function ApplicationDetail() {
 
 type ChatMsg = { id: string; role: 'user' | 'ai'; text: string; suggestions?: string[] };
 
-function greetingFor(active: VisaApplication, firstName: string): ChatMsg {
+export function greetingFor(active: VisaApplication, firstName: string): ChatMsg {
   const missing = active.documentsRequired - active.documentsUploaded;
   const status = missing > 0
     ? `You have ${missing} document${missing === 1 ? '' : 's'} left to upload and ${active.issuesCount} open issue${active.issuesCount === 1 ? '' : 's'}.`
@@ -2018,14 +2051,23 @@ function HrPortal() {
 }
 
 function EmployeePortal() {
-  const { data } = useApi<{
-    profile: { name: string; company: string; homeCountry: string };
+  // Empty/neutral fallback, not a fake named person — a real API failure
+  // must not read like it's showing someone's actual real profile.
+  const { data, loading, error } = useApi<{
+    profile: { name: string; company: string; homeCountry: string } | null;
     tasks: Array<{ id: string; title: string; due: string; status: string }>;
-  }>('/employee', { profile: { name: 'Sarah Mathew', company: 'Acme Global Mobility', homeCountry: 'India' }, tasks: [] });
+  }>('/employee', { profile: null, tasks: [] });
 
   return (
     <section className="page">
-      <div className="page-title"><div><p>Employee portal</p><h1>{data.profile.name} · {data.profile.company}</h1><span className="rowMeta">{data.profile.homeCountry} passport holder</span></div></div>
+      <div className="page-title">
+        <div>
+          <p>Employee portal</p>
+          <h1>{data.profile ? (data.profile.company ? `${data.profile.name} · ${data.profile.company}` : data.profile.name) : loading ? 'Loading…' : 'Profile unavailable'}</h1>
+          {data.profile && <span className="rowMeta">{data.profile.homeCountry} passport holder</span>}
+        </div>
+      </div>
+      {error && <div className="action-status error">Couldn't load your profile or tasks — {error}</div>}
       <div className="cards-list">
         {data.tasks.map((task) => (
           <article className="app-card" key={task.id}>
@@ -2544,19 +2586,17 @@ async function postJson<T>(path: string, body: unknown, method: 'POST' | 'PUT' |
 }
 
 function Admin() {
-  const { data } = useApi<{
+  // Empty fallback, not plausible-looking placeholder numbers — a failed
+  // fetch on the platform-admin overview must read as "failed to load," not
+  // as if it were real operational data.
+  const { data, error } = useApi<{
     metrics: Array<{ label: string; value: string; trend: string }>;
     aiMonitoring: Array<{ provider: string; status: string; latency: string }>;
     users: Array<{ segment: string; count: number }>;
     revenue: Array<{ label: string; value: string }>;
     requirementsDb: Array<{ route: string; freshness: string; coverage: string }>;
   }>('/admin/overview', {
-    metrics: [
-      { label: 'Monthly active users', value: '5,000 target', trend: 'tracking' },
-      { label: 'AI audit accuracy', value: '94%', trend: 'stable' },
-      { label: 'Deletion SLA queue', value: '0 overdue', trend: 'healthy' },
-      { label: 'Consultant conversion', value: '5% target', trend: 'growing' }
-    ],
+    metrics: [],
     aiMonitoring: [],
     users: [],
     revenue: [],
@@ -2571,6 +2611,7 @@ function Admin() {
           <h1>Operations overview</h1>
         </div>
       </div>
+      {error && <div className="action-status error">Couldn't load operations data — {error}</div>}
       <div className="admin-grid">
         {data.metrics.map((item) => <Metric key={item.label} icon={BarChart3} label={item.label} value={`${item.value} · ${item.trend}`} />)}
       </div>
@@ -2586,7 +2627,10 @@ function Admin() {
         </article>
       </div>
       <article className="panel">
-        <h2>Requirements database</h2>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+          <h2 style={{ margin: 0 }}>Requirements database</h2>
+          <Link to="/admin/knowledge-base" className="primary-button" style={{ padding: '7px 14px', fontSize: 12 }}><BookOpen size={14} /> Manage knowledge base</Link>
+        </div>
         <div className="cards-list compact">
           {data.requirementsDb.map((item) => <div className="app-card" key={item.route}><Globe2 size={20} /><div><h3>{item.route}</h3><p>{item.freshness}</p></div><span className="status ready">{item.coverage}</span></div>)}
         </div>
@@ -2617,23 +2661,6 @@ function QuickActions() {
   );
 }
 
-function RecentActivity() {
-  return (
-    <article className="panel">
-      <h2>Recent activity</h2>
-      {fallbackAuditResult.findings.map((finding) => (
-        <div className="activity-row" key={finding.id}>
-          <CheckCircle2 size={18} />
-          <div>
-            <strong>{finding.title}</strong>
-            <span>{finding.confidence}% confidence</span>
-          </div>
-        </div>
-      ))}
-    </article>
-  );
-}
-
 function Metric({ icon: Icon, label, value, tone }: { icon: typeof Upload; label: string; value: string; tone?: 'warn' }) {
   return (
     <article className={`metric ${tone ?? ''}`}>
@@ -2656,7 +2683,7 @@ type NotifItem = { id: string; title: string; body: string; time: string; type: 
 
 const NOTIF_COLORS: Record<string, string> = { audit: '#10B981', warning: '#F59E0B', booking: '#1A56DB', update: '#7C3AED', info: '#0EA5E9' };
 
-function notifColor(type: string) {
+export function notifColor(type: string) {
   return NOTIF_COLORS[type] ?? '#94A3B8';
 }
 
@@ -2815,7 +2842,7 @@ function ToolInfoSections({ intro, tips, steps, faqs, related }: {
       </article>
 
       <div className="page-title" style={{ marginTop: 36, marginBottom: 16 }}>
-        <div><p>Before you rely on this number</p><h1 style={{ fontSize: 22 }}>What experienced applicants know</h1></div>
+        <div><p>Before you rely on this number</p><h2 style={{ fontSize: 22 }}>What experienced applicants know</h2></div>
       </div>
       <article className="panel" style={{ marginBottom: 8 }}>
         <ul style={{ margin: 0, paddingLeft: 20, display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -2826,7 +2853,7 @@ function ToolInfoSections({ intro, tips, steps, faqs, related }: {
       </article>
 
       <div className="page-title" style={{ marginTop: 36, marginBottom: 16 }}>
-        <div><p>How it works</p><h1 style={{ fontSize: 22 }}>{steps.length} steps</h1></div>
+        <div><p>How it works</p><h2 style={{ fontSize: 22 }}>{steps.length} steps</h2></div>
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 16, marginBottom: 8 }}>
         {steps.map((s, i) => (
@@ -2839,7 +2866,7 @@ function ToolInfoSections({ intro, tips, steps, faqs, related }: {
       </div>
 
       <div className="page-title" style={{ marginTop: 36, marginBottom: 16 }}>
-        <div><p>Frequently asked</p><h1 style={{ fontSize: 22 }}>Questions about this tool</h1></div>
+        <div><p>Frequently asked</p><h2 style={{ fontSize: 22 }}>Questions about this tool</h2></div>
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 8 }}>
         {faqs.map(f => (
@@ -2851,7 +2878,7 @@ function ToolInfoSections({ intro, tips, steps, faqs, related }: {
       </div>
 
       <div className="page-title" style={{ marginTop: 36, marginBottom: 16 }}>
-        <div><p>Explore more</p><h1 style={{ fontSize: 22 }}>Related tools</h1></div>
+        <div><p>Explore more</p><h2 style={{ fontSize: 22 }}>Related tools</h2></div>
       </div>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
         {related.map(r => (
@@ -3137,8 +3164,8 @@ function EmbassyFinder() {
           {emb && (
             <>
               <article className="panel" style={{ background: 'linear-gradient(135deg,#0B1F4B,#1547C0)', color: '#fff', padding: 28 }}>
-                <h2 style={{ color: '#DBEAFE', fontSize: 12, fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase', marginBottom: 8 }}>{emb.country}{emb.city ? ` · ${emb.city}` : ''}</h2>
-                <h1 style={{ fontSize: 24, fontWeight: 900 }}>{emb.name}</h1>
+                <h3 style={{ color: '#DBEAFE', fontSize: 12, fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase', marginBottom: 8 }}>{emb.country}{emb.city ? ` · ${emb.city}` : ''}</h3>
+                <h2 style={{ fontSize: 24, fontWeight: 900, margin: 0, color: '#fff' }}>{emb.name}</h2>
               </article>
               <article className="panel">
                 {rows.map(([label, value]) => (
@@ -3554,7 +3581,7 @@ function HelpCenter() {
           {filtered.length === 0 && <p style={{ color: '#94A3B8', textAlign: 'center', padding: 32 }}>No results for "{query}"</p>}
 
           <div className="page-title" style={{ marginTop: 28, marginBottom: 12 }}>
-            <div><p>Read more</p><h1 style={{ fontSize: 20 }}>Popular guides</h1></div>
+            <div><p>Read more</p><h2 style={{ fontSize: 20 }}>Popular guides</h2></div>
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 14 }}>
             {guides.map(g => (
@@ -3593,16 +3620,36 @@ function HelpCenter() {
 
 // ─── Referral System ──────────────────────────────────────────────────────────
 function Referrals() {
+  const { data, loading, refetch } = useApi<{
+    referralCode: string;
+    referralLink: string;
+    stats: { pending: number; converted: number; totalEarned: number };
+    history: Array<{ name: string; status: string; date: string; credit: string }>;
+  }>('/referrals', { referralCode: '', referralLink: '', stats: { pending: 0, converted: 0, totalEarned: 0 }, history: [] });
   const [copied, setCopied] = useState(false);
-  const referralCode = 'SARAH2026';
-  const referralLink = `https://visawithease.app/join?ref=${referralCode}`;
-  const copy = () => { navigator.clipboard?.writeText(referralLink); setCopied(true); setTimeout(() => setCopied(false), 2000); showToast('Referral link copied!', 'success'); };
+  const [claimCode, setClaimCode] = useState('');
+  const [claiming, setClaiming] = useState(false);
+  const copy = () => { navigator.clipboard?.writeText(data.referralLink); setCopied(true); setTimeout(() => setCopied(false), 2000); showToast('Referral link copied!', 'success'); };
 
-  const stats = [{ label: 'Friends invited', value: '3' }, { label: 'Signed up', value: '2' }, { label: 'Credits earned', value: '$20' }, { label: 'Pending payout', value: '$10' }];
-  const history = [
-    { name: 'Aisha K.', status: 'Signed up', date: 'Jun 5', credit: '+$10' },
-    { name: 'Raj M.',   status: 'Signed up', date: 'May 28', credit: '+$10' },
-    { name: 'Lena T.',  status: 'Invited',   date: 'May 20', credit: '—' },
+  async function claim() {
+    const code = claimCode.trim();
+    if (!code) return;
+    setClaiming(true);
+    try {
+      await postJson('/referrals/claim', { code });
+      showToast('Referral code applied!', 'success');
+      setClaimCode('');
+      refetch();
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Could not apply that code', 'error');
+    } finally {
+      setClaiming(false);
+    }
+  }
+
+  const stats = [
+    { label: 'Friends converted', value: String(data.stats.converted) },
+    { label: 'Credits earned', value: `$${data.stats.totalEarned}` },
   ];
 
   return (
@@ -3613,26 +3660,34 @@ function Referrals() {
           <article className="panel" style={{ background: 'linear-gradient(135deg,#0B1F4B,#1A56DB)', color: '#fff', textAlign: 'center', padding: 32 }}>
             <div style={{ fontSize: 48, marginBottom: 8 }}>🎁</div>
             <h2 style={{ color: '#fff', margin: '0 0 8px' }}>Earn $10 per referral</h2>
-            <p style={{ color: 'rgba(255,255,255,0.7)', fontSize: 14, marginBottom: 20 }}>Share your link. When a friend signs up and books their first session, you both get $10 credit.</p>
+            <p style={{ color: 'rgba(255,255,255,0.7)', fontSize: 14, marginBottom: 20 }}>Share your link. When a friend signs up and claims your code, you both get $10 credit.</p>
             <div style={{ display: 'flex', gap: 8, background: 'rgba(255,255,255,0.1)', borderRadius: 12, padding: '10px 14px', alignItems: 'center', marginBottom: 14 }}>
-              <code style={{ flex: 1, fontSize: 13, color: '#93C5FD', fontFamily: 'JetBrains Mono, monospace', wordBreak: 'break-all' }}>{referralLink}</code>
-              <button onClick={copy} style={{ padding: '6px 14px', borderRadius: 8, border: 'none', background: copied ? '#10B981' : '#fff', color: copied ? '#fff' : '#0B1F4B', fontWeight: 700, fontSize: 12, cursor: 'pointer', flexShrink: 0 }}>{copied ? 'Copied!' : 'Copy'}</button>
+              <code style={{ flex: 1, fontSize: 13, color: '#93C5FD', fontFamily: 'JetBrains Mono, monospace', wordBreak: 'break-all' }}>{loading ? 'Loading…' : data.referralLink}</code>
+              <button onClick={copy} disabled={loading} style={{ padding: '6px 14px', borderRadius: 8, border: 'none', background: copied ? '#10B981' : '#fff', color: copied ? '#fff' : '#0B1F4B', fontWeight: 700, fontSize: 12, cursor: 'pointer', flexShrink: 0 }}>{copied ? 'Copied!' : 'Copy'}</button>
             </div>
             <div style={{ display: 'flex', gap: 8, justifyContent: 'center' }}>
-              <button onClick={() => window.open('https://wa.me/?text=' + encodeURIComponent('Join Visa With Ease — AI-powered visa guidance. Use my referral code: VWE-REF'), '_blank')} style={{ padding: '9px 20px', borderRadius: 10, border: '1.5px solid rgba(255,255,255,0.3)', background: 'transparent', color: '#fff', fontWeight: 700, fontSize: 13, cursor: 'pointer' }}>Share via WhatsApp</button>
-              <button onClick={() => window.open('mailto:?subject=Join%20Visa%20With%20Ease&body=' + encodeURIComponent('Join Visa With Ease — AI-powered visa guidance. Use my referral code: VWE-REF'), '_blank')} style={{ padding: '9px 20px', borderRadius: 10, border: '1.5px solid rgba(255,255,255,0.3)', background: 'transparent', color: '#fff', fontWeight: 700, fontSize: 13, cursor: 'pointer' }}>Share via Email</button>
+              <button onClick={() => window.open('https://wa.me/?text=' + encodeURIComponent(`Join Visa With Ease — AI-powered visa guidance. Use my referral code: ${data.referralCode}`), '_blank')} style={{ padding: '9px 20px', borderRadius: 10, border: '1.5px solid rgba(255,255,255,0.3)', background: 'transparent', color: '#fff', fontWeight: 700, fontSize: 13, cursor: 'pointer' }}>Share via WhatsApp</button>
+              <button onClick={() => window.open('mailto:?subject=Join%20Visa%20With%20Ease&body=' + encodeURIComponent(`Join Visa With Ease — AI-powered visa guidance. Use my referral code: ${data.referralCode}`), '_blank')} style={{ padding: '9px 20px', borderRadius: 10, border: '1.5px solid rgba(255,255,255,0.3)', background: 'transparent', color: '#fff', fontWeight: 700, fontSize: 13, cursor: 'pointer' }}>Share via Email</button>
+            </div>
+          </article>
+          <article className="panel">
+            <h2>Have a friend's code?</h2>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <input value={claimCode} onChange={e => setClaimCode(e.target.value)} placeholder="Enter referral code" style={{ flex: 1, padding: '10px 14px', borderRadius: 10, border: '1px solid #E2E8F0', fontSize: 13 }} />
+              <button onClick={claim} disabled={claiming || !claimCode.trim()} style={{ padding: '10px 18px', borderRadius: 10, border: 'none', background: '#0B1F4B', color: '#fff', fontWeight: 700, fontSize: 13, cursor: 'pointer', opacity: claiming || !claimCode.trim() ? 0.6 : 1 }}>{claiming ? 'Applying…' : 'Apply'}</button>
             </div>
           </article>
           <article className="panel">
             <h2>Referral history</h2>
-            {history.map(r => (
-              <div key={r.name} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 0', borderBottom: '1px solid #F8FAFC' }}>
-                <div style={{ width: 36, height: 36, borderRadius: 18, background: '#EFF6FF', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 900, fontSize: 13, color: '#1A56DB' }}>{r.name[0]}</div>
+            {!loading && data.history.length === 0 && <p style={{ color: '#94A3B8', fontSize: 13 }}>No referrals yet — share your link to start earning.</p>}
+            {data.history.map(r => (
+              <div key={`${r.name}-${r.date}`} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 0', borderBottom: '1px solid #F8FAFC' }}>
+                <div style={{ width: 36, height: 36, borderRadius: 18, background: '#EFF6FF', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 900, fontSize: 13, color: '#1A56DB' }}>{r.name[0]?.toUpperCase()}</div>
                 <div style={{ flex: 1 }}>
                   <div style={{ fontSize: 13, fontWeight: 700, color: '#0F172A' }}>{r.name}</div>
-                  <div style={{ fontSize: 12, color: '#64748B' }}>{r.status} · {r.date}</div>
+                  <div style={{ fontSize: 12, color: '#64748B' }}>{r.status} · {new Date(r.date).toLocaleDateString()}</div>
                 </div>
-                <span style={{ fontWeight: 900, color: r.credit === '—' ? '#CBD5E1' : '#10B981' }}>{r.credit}</span>
+                <span style={{ fontWeight: 900, color: '#10B981' }}>{r.credit}</span>
               </div>
             ))}
           </article>
@@ -3640,7 +3695,7 @@ function Referrals() {
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
           {stats.map(s => (
             <article key={s.label} className="panel" style={{ textAlign: 'center', padding: 18 }}>
-              <div style={{ fontSize: 26, fontWeight: 900, color: '#0F172A' }}>{s.value}</div>
+              <div style={{ fontSize: 26, fontWeight: 900, color: '#0F172A' }}>{loading ? '…' : s.value}</div>
               <div style={{ fontSize: 12, color: '#64748B', marginTop: 4 }}>{s.label}</div>
             </article>
           ))}
@@ -3651,7 +3706,7 @@ function Referrals() {
 }
 
 // ─── Admin User Management ────────────────────────────────────────────────────
-interface AdminUser { uid: string; name: string; email: string; roles: string[]; status: 'active' | 'suspended'; createdAt: string }
+interface AdminUser { uid: string; name: string; email: string; roles: string[]; status: 'active' | 'suspended'; createdAt: string; source?: 'seed' }
 const ADMIN_SEGMENTS = ['All', 'Active', 'Suspended'];
 
 function AdminUsers() {
@@ -3705,7 +3760,10 @@ function AdminUsers() {
             {filtered.map((u, i) => (
               <tr key={u.uid} style={{ borderBottom: '1px solid #F8FAFC', background: i % 2 === 0 ? '#fff' : '#FAFAFA' }}>
                 <td style={{ padding: '12px 16px' }}>
-                  <div style={{ fontWeight: 700, color: '#0F172A' }}>{u.name}</div>
+                  <div style={{ fontWeight: 700, color: '#0F172A', display: 'flex', alignItems: 'center', gap: 6 }}>
+                    {u.name}
+                    {u.source === 'seed' && <span style={{ padding: '1px 8px', borderRadius: 10, background: '#F1F5F9', color: '#64748B', fontWeight: 700, fontSize: 10 }}>Demo account</span>}
+                  </div>
                   <div style={{ fontSize: 11, color: '#94A3B8' }}>{u.email}</div>
                 </td>
                 <td style={{ padding: '12px 16px', color: '#475569', fontSize: 12 }}>{u.roles.join(', ')}</td>
@@ -3779,13 +3837,13 @@ function CardSkeleton() {
 const RISK_COLORS = { low: { bg: '#D1FAE5', text: '#065F46' }, medium: { bg: '#FEF3C7', text: '#92400E' }, high: { bg: '#FEF2F2', text: '#991B1B' } };
 const HIGH_RISK_ACTIONS = ['SUSPEND_USER', 'DELETE', 'RESTORE_USER'];
 const MEDIUM_RISK_ACTIONS = ['DATA_DELETION', 'PROFILE_UPDATE'];
-function riskForAction(action: string): 'low' | 'medium' | 'high' {
+export function riskForAction(action: string): 'low' | 'medium' | 'high' {
   if (HIGH_RISK_ACTIONS.some(a => action.includes(a))) return 'high';
   if (MEDIUM_RISK_ACTIONS.some(a => action.includes(a))) return 'medium';
   return 'low';
 }
 
-interface AuditLogEntry { id: string; actor: string; action: string; resource: string; at: string; ip: string }
+interface AuditLogEntry { id: string; actor: string; action: string; resource: string; at: string; ip: string; source?: 'seed' }
 
 function AuditLog() {
   const { data } = useApi<{ entries: AuditLogEntry[]; total: number }>('/admin/audit-log', { entries: [], total: 0 });
@@ -3823,7 +3881,10 @@ function AuditLog() {
               return (
                 <tr key={e.id} style={{ borderBottom: '1px solid #F8FAFC', background: i % 2 === 0 ? '#fff' : '#FAFAFA' }}>
                   <td style={{ padding: '10px 16px', color: '#64748B', fontSize: 12, whiteSpace: 'nowrap', fontFamily: 'monospace' }}>{e.time}</td>
-                  <td style={{ padding: '10px 16px', fontWeight: 700, color: '#0F172A' }}>{e.actor}</td>
+                  <td style={{ padding: '10px 16px', fontWeight: 700, color: '#0F172A' }}>
+                    {e.actor}
+                    {e.source === 'seed' && <span style={{ marginLeft: 6, padding: '1px 8px', borderRadius: 10, background: '#F1F5F9', color: '#64748B', fontWeight: 700, fontSize: 10 }}>Demo</span>}
+                  </td>
                   <td style={{ padding: '10px 16px', color: '#334155' }}>{e.action}</td>
                   <td style={{ padding: '10px 16px', color: '#64748B', fontSize: 12, fontFamily: 'monospace' }}>{e.target}</td>
                   <td style={{ padding: '10px 16px', color: '#94A3B8', fontSize: 11, fontFamily: 'monospace' }}>{e.ip}</td>
@@ -3836,6 +3897,207 @@ function AuditLog() {
         {filtered.length === 0 && <p style={{ color: '#94A3B8', textAlign: 'center', padding: 32 }}>No entries match filter</p>}
       </article>
       <p style={{ fontSize: 12, color: '#94A3B8', marginTop: 8 }}>Showing {filtered.length} of {entries.length} entries · Log is append-only and cannot be modified.</p>
+    </section>
+  );
+}
+
+// ─── Knowledge base (admin-managed visa requirements) ──────────────────────────
+// Real CRUD against /admin/knowledge-base — a platform_admin can add a new
+// country or correct an existing one here, and it's live for both the web
+// and mobile apps immediately (the backend checks this override before
+// falling back to the built-in dataset). No code deploy needed.
+const KB_COVERAGE_OPTIONS: RequirementsResponse['coverageStatus'][] = ['supported', 'partial', 'unsupported'];
+
+function emptyOverrideForm(): { coverageStatus: RequirementsResponse['coverageStatus']; fees: string; processingTime: string; requirements: Requirement[]; sourceUrls: RequirementsResponse['sourceUrls'] } {
+  return { coverageStatus: 'supported', fees: '', processingTime: '', requirements: [], sourceUrls: [] };
+}
+
+function KnowledgeBase() {
+  const { data, loading, error, refetch } = useApi<{ overrides: Record<string, RequirementsResponse> }>('/admin/knowledge-base', { overrides: {} });
+  const countries = Object.keys(data.overrides).sort();
+  const [editingCountry, setEditingCountry] = useState<string | null>(null); // null = closed, '' = adding new
+  const [countryNameInput, setCountryNameInput] = useState('');
+  const [form, setForm] = useState(emptyOverrideForm());
+  const [saving, setSaving] = useState(false);
+
+  function startAdd() {
+    setForm(emptyOverrideForm());
+    setCountryNameInput('');
+    setEditingCountry('');
+  }
+
+  function startEdit(country: string) {
+    const existing = data.overrides[country];
+    setForm({
+      coverageStatus: existing.coverageStatus,
+      fees: existing.fees,
+      processingTime: existing.processingTime,
+      requirements: existing.requirements.map((r) => ({ ...r })),
+      sourceUrls: existing.sourceUrls.map((s) => ({ ...s }))
+    });
+    setCountryNameInput(country);
+    setEditingCountry(country);
+  }
+
+  function addRequirement() {
+    setForm((f) => ({ ...f, requirements: [...f.requirements, { id: `req-${Date.now()}`, title: '', description: '', required: true, satisfied: false, sourceIds: [] }] }));
+  }
+  function updateRequirement(i: number, patch: Partial<Requirement>) {
+    setForm((f) => ({ ...f, requirements: f.requirements.map((r, idx) => (idx === i ? { ...r, ...patch } : r)) }));
+  }
+  function removeRequirement(i: number) {
+    setForm((f) => ({ ...f, requirements: f.requirements.filter((_, idx) => idx !== i) }));
+  }
+
+  function addSource() {
+    setForm((f) => ({ ...f, sourceUrls: [...f.sourceUrls, { id: `src-${Date.now()}`, label: '', url: '' }] }));
+  }
+  function updateSource(i: number, patch: Partial<{ id: string; label: string; url: string }>) {
+    setForm((f) => ({ ...f, sourceUrls: f.sourceUrls.map((s, idx) => (idx === i ? { ...s, ...patch } : s)) }));
+  }
+  function removeSource(i: number) {
+    setForm((f) => ({ ...f, sourceUrls: f.sourceUrls.filter((_, idx) => idx !== i) }));
+  }
+
+  async function save() {
+    const country = countryNameInput.trim();
+    if (!/^[A-Za-z][A-Za-z '.-]{0,79}$/.test(country)) {
+      showToast('Enter a valid country name (letters, spaces, apostrophes, hyphens only)', 'error');
+      return;
+    }
+    if (!form.fees.trim() || !form.processingTime.trim()) {
+      showToast('Fees and processing time are required', 'error');
+      return;
+    }
+    if (form.requirements.some((r) => !r.title.trim() || !r.description.trim())) {
+      showToast('Every requirement needs a title and description', 'error');
+      return;
+    }
+    setSaving(true);
+    try {
+      await postJson(`/admin/knowledge-base/${encodeURIComponent(country)}`, {
+        coverageStatus: form.coverageStatus,
+        fees: form.fees.trim(),
+        processingTime: form.processingTime.trim(),
+        requirements: form.requirements,
+        sourceUrls: form.sourceUrls
+      }, 'PUT');
+      showToast(`Saved ${country} to the knowledge base`, 'success');
+      setEditingCountry(null);
+      refetch();
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Failed to save', 'error');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function remove(country: string) {
+    if (!window.confirm(`Remove the knowledge-base override for ${country}? It reverts to the built-in default.`)) return;
+    try {
+      await postJson(`/admin/knowledge-base/${encodeURIComponent(country)}`, {}, 'DELETE');
+      showToast(`Removed override for ${country} — reverted to default`, 'success');
+      refetch();
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Failed to remove', 'error');
+    }
+  }
+
+  return (
+    <section className="page">
+      <div className="page-title">
+        <div>
+          <p>Platform admin</p>
+          <h1>Visa requirements knowledge base</h1>
+        </div>
+        {editingCountry === null && (
+          <button className="primary-button" type="button" onClick={startAdd}><Plus size={16} /> Add country</button>
+        )}
+      </div>
+      <p style={{ fontSize: 13, color: '#64748B', marginTop: -8, marginBottom: 16 }}>
+        Countries listed here override the app's built-in defaults for both mobile and web, immediately — no deploy needed. Countries not listed still work, using the built-in dataset.
+      </p>
+      {error && <div className="action-status error">Couldn't load the knowledge base — {error}</div>}
+
+      {editingCountry !== null && (
+        <article className="panel" style={{ marginBottom: 20 }}>
+          <h2 style={{ marginTop: 0 }}>{editingCountry ? `Edit ${editingCountry}` : 'Add a country'}</h2>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
+            <label style={{ fontSize: 12, color: '#475569', fontWeight: 700 }}>
+              Country name
+              <input value={countryNameInput} onChange={(e) => setCountryNameInput(e.target.value)} disabled={!!editingCountry} placeholder="e.g. Portugal" style={{ display: 'block', width: '100%', marginTop: 4, padding: '9px 12px', borderRadius: 8, border: '1px solid #E2E8F0', fontSize: 14 }} />
+            </label>
+            <label style={{ fontSize: 12, color: '#475569', fontWeight: 700 }}>
+              Coverage status
+              <select value={form.coverageStatus} onChange={(e) => setForm((f) => ({ ...f, coverageStatus: e.target.value as RequirementsResponse['coverageStatus'] }))} style={{ display: 'block', width: '100%', marginTop: 4, padding: '9px 12px', borderRadius: 8, border: '1px solid #E2E8F0', fontSize: 14 }}>
+                {KB_COVERAGE_OPTIONS.map((o) => <option key={o} value={o}>{o}</option>)}
+              </select>
+            </label>
+            <label style={{ fontSize: 12, color: '#475569', fontWeight: 700 }}>
+              Fees
+              <input value={form.fees} onChange={(e) => setForm((f) => ({ ...f, fees: e.target.value }))} placeholder="e.g. EUR 80 + service fee" style={{ display: 'block', width: '100%', marginTop: 4, padding: '9px 12px', borderRadius: 8, border: '1px solid #E2E8F0', fontSize: 14 }} />
+            </label>
+            <label style={{ fontSize: 12, color: '#475569', fontWeight: 700 }}>
+              Processing time
+              <input value={form.processingTime} onChange={(e) => setForm((f) => ({ ...f, processingTime: e.target.value }))} placeholder="e.g. 10-15 business days" style={{ display: 'block', width: '100%', marginTop: 4, padding: '9px 12px', borderRadius: 8, border: '1px solid #E2E8F0', fontSize: 14 }} />
+            </label>
+          </div>
+
+          <h3 style={{ fontSize: 14, marginBottom: 8 }}>Requirements</h3>
+          {form.requirements.map((r, i) => (
+            <div key={r.id} style={{ display: 'flex', gap: 8, marginBottom: 8, alignItems: 'center' }}>
+              <input value={r.title} onChange={(e) => updateRequirement(i, { title: e.target.value })} placeholder="Title, e.g. Valid passport" style={{ flex: 1, padding: '8px 10px', borderRadius: 8, border: '1px solid #E2E8F0', fontSize: 13 }} />
+              <input value={r.description} onChange={(e) => updateRequirement(i, { description: e.target.value })} placeholder="Description" style={{ flex: 2, padding: '8px 10px', borderRadius: 8, border: '1px solid #E2E8F0', fontSize: 13 }} />
+              <label style={{ fontSize: 12, color: '#475569', display: 'flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }}>
+                <input type="checkbox" checked={r.required} onChange={(e) => updateRequirement(i, { required: e.target.checked })} /> Required
+              </label>
+              <button type="button" onClick={() => removeRequirement(i)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#DC2626' }}><Trash2 size={16} /></button>
+            </div>
+          ))}
+          <button type="button" onClick={addRequirement} style={{ padding: '6px 12px', borderRadius: 8, border: '1px dashed #CBD5E1', background: 'transparent', color: '#475569', fontSize: 12, fontWeight: 700, cursor: 'pointer', marginBottom: 16 }}><Plus size={12} /> Add requirement</button>
+
+          <h3 style={{ fontSize: 14, marginBottom: 8 }}>Source URLs</h3>
+          {form.sourceUrls.map((s, i) => (
+            <div key={s.id} style={{ display: 'flex', gap: 8, marginBottom: 8, alignItems: 'center' }}>
+              <input value={s.label} onChange={(e) => updateSource(i, { label: e.target.value })} placeholder="Label, e.g. Official visa portal" style={{ flex: 1, padding: '8px 10px', borderRadius: 8, border: '1px solid #E2E8F0', fontSize: 13 }} />
+              <input value={s.url} onChange={(e) => updateSource(i, { url: e.target.value })} placeholder="https://…" style={{ flex: 2, padding: '8px 10px', borderRadius: 8, border: '1px solid #E2E8F0', fontSize: 13 }} />
+              <button type="button" onClick={() => removeSource(i)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#DC2626' }}><Trash2 size={16} /></button>
+            </div>
+          ))}
+          <button type="button" onClick={addSource} style={{ padding: '6px 12px', borderRadius: 8, border: '1px dashed #CBD5E1', background: 'transparent', color: '#475569', fontSize: 12, fontWeight: 700, cursor: 'pointer', marginBottom: 20 }}><Plus size={12} /> Add source</button>
+
+          <div style={{ display: 'flex', gap: 10 }}>
+            <button type="button" onClick={save} disabled={saving} className="primary-button" style={{ opacity: saving ? 0.7 : 1 }}><Save size={16} /> {saving ? 'Saving…' : 'Save'}</button>
+            <button type="button" onClick={() => setEditingCountry(null)} style={{ padding: '9px 18px', borderRadius: 10, border: '1px solid #E2E8F0', background: '#fff', color: '#475569', fontWeight: 700, fontSize: 13, cursor: 'pointer' }}>Cancel</button>
+          </div>
+        </article>
+      )}
+
+      {loading ? <Skeleton h={200} /> : countries.length === 0 ? (
+        <article className="panel">
+          <p style={{ color: '#94A3B8', textAlign: 'center', padding: 32 }}>No countries have an admin override yet — every country is currently using the built-in default dataset. Click "Add country" to add or correct one.</p>
+        </article>
+      ) : (
+        <div className="cards-list compact">
+          {countries.map((country) => {
+            const o = data.overrides[country];
+            return (
+              <div className="app-card" key={country}>
+                <Globe2 size={20} />
+                <div>
+                  <h3>{country}</h3>
+                  <p>{o.fees} · {o.processingTime} · {o.requirements.length} requirement{o.requirements.length === 1 ? '' : 's'}</p>
+                </div>
+                <span className={`status ${o.coverageStatus === 'supported' ? 'ready' : o.coverageStatus === 'partial' ? 'in_progress' : 'issues'}`}>{o.coverageStatus}</span>
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <button type="button" onClick={() => startEdit(country)} style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #E2E8F0', background: '#fff', cursor: 'pointer' }}><Pencil size={14} /></button>
+                  <button type="button" onClick={() => remove(country)} style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #E2E8F0', background: '#fff', cursor: 'pointer', color: '#DC2626' }}><Trash2 size={14} /></button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </section>
   );
 }
@@ -3894,7 +4156,7 @@ function PricingPage() {
       </div>
 
       <div className="page-title" style={{ marginTop: 40, marginBottom: 16 }}>
-        <div><p>Compare</p><h1 style={{ fontSize: 22 }}>Every feature, side by side</h1></div>
+        <div><p>Compare</p><h2 style={{ fontSize: 22 }}>Every feature, side by side</h2></div>
       </div>
       <article className="panel" style={{ overflowX: 'auto' }}>
         <table style={{ width: '100%', minWidth: 640, borderCollapse: 'collapse' }}>
@@ -3939,7 +4201,7 @@ function PricingPage() {
       </div>
 
       <div className="page-title" style={{ marginTop: 40, marginBottom: 16 }}>
-        <div><p>Billing</p><h1 style={{ fontSize: 22 }}>Pricing FAQ</h1></div>
+        <div><p>Billing</p><h2 style={{ fontSize: 22 }}>Pricing FAQ</h2></div>
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
         {[
@@ -4177,7 +4439,7 @@ function EcosystemPartners() {
       </div>
 
       <div className="page-title" style={{ marginTop: 36, marginBottom: 16 }}>
-        <div><p>Full picture</p><h1 style={{ fontSize: 22 }}>All categories at a glance</h1></div>
+        <div><p>Full picture</p><h2 style={{ fontSize: 22 }}>All categories at a glance</h2></div>
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
         {PARTNER_CATEGORIES.map(cat => {
@@ -4202,7 +4464,7 @@ function EcosystemPartners() {
       </div>
 
       <div className="page-title" style={{ marginTop: 36, marginBottom: 16 }}>
-        <div><p>Get involved</p><h1 style={{ fontSize: 22 }}>Are you a provider in one of these categories?</h1></div>
+        <div><p>Get involved</p><h2 style={{ fontSize: 22 }}>Are you a provider in one of these categories?</h2></div>
       </div>
       <article className="panel" style={{ display: 'flex', gap: 20, alignItems: 'center', flexWrap: 'wrap' }}>
         <div style={{ flex: 1, minWidth: 240 }}>
@@ -4215,7 +4477,7 @@ function EcosystemPartners() {
       </article>
 
       <div className="page-title" style={{ marginTop: 36, marginBottom: 16 }}>
-        <div><p>Frequently asked</p><h1 style={{ fontSize: 22 }}>About the partner program</h1></div>
+        <div><p>Frequently asked</p><h2 style={{ fontSize: 22 }}>About the partner program</h2></div>
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
         {[
@@ -4234,88 +4496,57 @@ function EcosystemPartners() {
   );
 }
 
-// ─── FEAT E: AI Compliance Database ──────────────────────────────────────────
-const COMPLIANCE_DB_ENTRIES = [
-  { country: 'France',        flag: '🇫🇷', status: 'live',     lastScraped: '2026-06-07 08:14', coverage: 98, sources: 12, nextRun: '6h' },
-  { country: 'United Kingdom',flag: '🇬🇧', status: 'live',     lastScraped: '2026-06-07 09:01', coverage: 96, sources: 10, nextRun: '4h' },
-  { country: 'United States', flag: '🇺🇸', status: 'live',     lastScraped: '2026-06-07 07:45', coverage: 99, sources: 18, nextRun: '8h' },
-  { country: 'Canada',        flag: '🇨🇦', status: 'live',     lastScraped: '2026-06-07 06:30', coverage: 97, sources: 11, nextRun: '10h' },
-  { country: 'Germany',       flag: '🇩🇪', status: 'live',     lastScraped: '2026-06-07 05:20', coverage: 95, sources: 9,  nextRun: '12h' },
-  { country: 'Australia',     flag: '🇦🇺', status: 'live',     lastScraped: '2026-06-06 22:00', coverage: 94, sources: 8,  nextRun: '2h' },
-  { country: 'UAE',           flag: '🇦🇪', status: 'live',     lastScraped: '2026-06-07 09:55', coverage: 100,sources: 7,  nextRun: '2h' },
-  { country: 'India',         flag: '🇮🇳', status: 'live',     lastScraped: '2026-06-07 04:10', coverage: 91, sources: 14, nextRun: '14h' },
-  { country: 'Japan',         flag: '🇯🇵', status: 'pending',  lastScraped: '2026-06-05 12:00', coverage: 72, sources: 5,  nextRun: '1h' },
-  { country: 'Brazil',        flag: '🇧🇷', status: 'pending',  lastScraped: '2026-06-04 18:30', coverage: 65, sources: 4,  nextRun: '30m' },
-  { country: 'Nigeria',       flag: '🇳🇬', status: 'error',    lastScraped: '2026-06-03 10:00', coverage: 40, sources: 2,  nextRun: 'retry' },
-  { country: 'Pakistan',      flag: '🇵🇰', status: 'scheduled',lastScraped: 'never',             coverage: 0,  sources: 0,  nextRun: '24h' },
-];
+// ─── FEAT E: Visa Requirements Knowledge Base status ─────────────────────────
+const KB_FLAGS: Record<string, string> = {
+  France: '🇫🇷', 'United Kingdom': '🇬🇧', 'United States': '🇺🇸', Canada: '🇨🇦', Germany: '🇩🇪',
+  Australia: '🇦🇺', UAE: '🇦🇪', 'United Arab Emirates': '🇦🇪', India: '🇮🇳', Japan: '🇯🇵',
+  Brazil: '🇧🇷', Nigeria: '🇳🇬', Pakistan: '🇵🇰', Singapore: '🇸🇬', Turkey: '🇹🇷', China: '🇨🇳'
+};
 
-const COMPLIANCE_STATUS_COLORS: Record<string, { bg: string; text: string }> = {
-  live:      { bg: '#D1FAE5', text: '#065F46' },
-  pending:   { bg: '#FEF3C7', text: '#92400E' },
-  error:     { bg: '#FEF2F2', text: '#991B1B' },
-  scheduled: { bg: '#EFF6FF', text: '#1E40AF' },
+const KB_STATUS_COLORS: Record<string, { bg: string; text: string }> = {
+  'admin-managed': { bg: '#D1FAE5', text: '#065F46' },
+  'built-in':       { bg: '#EFF6FF', text: '#1E40AF' },
 };
 
 function ComplianceDb() {
-  const [refreshKey, setRefreshKey] = useState(0);
-  const { data: complianceData, loading: complianceLoading } = useApi<{
-    countries: Array<{ country: string; status: string; coverage: number; lastScraped: string; sources: number }>;
+  const { data, loading, error } = useApi<{
+    countries: Array<{ country: string; status: 'admin-managed' | 'built-in'; requirementCount: number; sourceCount: number; lastUpdated: string | null }>;
     totalCountries: number;
-    liveCount: number;
+    overrideCount: number;
     updatedAt: string;
-  }>(`/compliance-db?_k=${refreshKey}`, {
-    countries: COMPLIANCE_DB_ENTRIES.map(e => ({ country: e.country, status: e.status, coverage: e.coverage, lastScraped: e.lastScraped, sources: e.sources })),
-    totalCountries: COMPLIANCE_DB_ENTRIES.length,
-    liveCount: COMPLIANCE_DB_ENTRIES.filter(e => e.status === 'live').length,
-    updatedAt: ''
-  });
-  // Merge API data with local extras (flag, nextRun) using fallback
-  const entries = complianceData.countries.map(c => {
-    const local = COMPLIANCE_DB_ENTRIES.find(e => e.country === c.country);
-    return { ...c, flag: local?.flag ?? '🌍', nextRun: local?.nextRun ?? '—' };
-  });
+  }>('/compliance-db', { countries: [], totalCountries: 0, overrideCount: 0, updatedAt: '' });
   const [statusFilter, setStatusFilter] = useState('all');
   const [query, setQuery] = useState('');
-  const [refreshing, setRefreshing] = useState<string | null>(null);
-  const filtered = entries.filter(e =>
+  const filtered = data.countries.filter(e =>
     (statusFilter === 'all' || e.status === statusFilter) &&
     (!query || e.country.toLowerCase().includes(query.toLowerCase()))
   );
-
-  function handleRefresh(country: string) {
-    setRefreshing(country);
-    setTimeout(() => {
-      setRefreshing(null);
-      setRefreshKey(k => k + 1);
-      showToast(`${country} scraper triggered — results in ~2 min.`, 'info');
-    }, 1200);
-  }
+  const totalRequirements = data.countries.reduce((a, e) => a + e.requirementCount, 0);
 
   return (
     <section className="page">
       <div className="page-title">
         <div>
           <p>Platform intelligence</p>
-          <h1>AI Compliance Database</h1>
-          <p style={{ margin: '4px 0 0', fontSize: 14, color: '#64748B' }}>Real-time scraper status for per-country visa requirement data.</p>
+          <h1>Visa Requirements Knowledge Base</h1>
+          <p style={{ margin: '4px 0 0', fontSize: 14, color: '#64748B' }}>Which countries have admin-reviewed requirement data on file, and which are still on the built-in defaults.</p>
         </div>
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          {['all','live','pending','error','scheduled'].map(s => (
-            <button key={s} onClick={() => setStatusFilter(s)} style={{ padding: '8px 14px', borderRadius: 8, border: 'none', cursor: 'pointer', fontWeight: 700, fontSize: 12, textTransform: 'capitalize', background: statusFilter === s ? '#0B1F4B' : '#F1F5F9', color: statusFilter === s ? '#fff' : '#475569' }}>{s === 'all' ? 'All' : s}</button>
-          ))}
-        </div>
+        <Link to="/admin/knowledge-base" className="primary-button" style={{ padding: '9px 16px', fontSize: 13 }}><BookOpen size={14} /> Manage knowledge base</Link>
       </div>
       <div className="filter-bar" style={{ marginBottom: 14 }}>
         <Search size={16} color="#94A3B8" />
         <input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search country…" style={{ border: 'none', outline: 'none', flex: 1, fontSize: 14, background: 'transparent' }} />
+        <div style={{ display: 'flex', gap: 8 }}>
+          {['all', 'admin-managed', 'built-in'].map(s => (
+            <button key={s} onClick={() => setStatusFilter(s)} style={{ padding: '6px 12px', borderRadius: 8, border: 'none', cursor: 'pointer', fontWeight: 700, fontSize: 12, textTransform: 'capitalize', background: statusFilter === s ? '#0B1F4B' : '#F1F5F9', color: statusFilter === s ? '#fff' : '#475569' }}>{s === 'all' ? 'All' : s.replace('-', ' ')}</button>
+          ))}
+        </div>
       </div>
       <div className="admin-grid" style={{ marginBottom: 20 }}>
         {[
-          ['Live scrapers', complianceLoading ? '…' : String(complianceData.liveCount || entries.filter(e => e.status === 'live').length)],
-          ['Avg coverage', complianceLoading ? '…' : `${Math.round(entries.reduce((a, e) => a + e.coverage, 0) / (entries.length || 1))}%`],
-          ['Errors', complianceLoading ? '…' : String(entries.filter(e => e.status === 'error').length)],
-          ['Countries', complianceLoading ? '…' : String(complianceData.totalCountries || entries.length)]
+          ['Countries covered', loading ? '…' : String(data.totalCountries)],
+          ['Admin-managed overrides', loading ? '…' : String(data.overrideCount)],
+          ['Total requirement items', loading ? '…' : String(totalRequirements)],
         ].map(([l, v]) => (
           <Metric key={String(l)} icon={Globe2} label={String(l)} value={String(v)} />
         ))}
@@ -4324,44 +4555,33 @@ function ComplianceDb() {
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
           <thead>
             <tr style={{ borderBottom: '2px solid #F1F5F9' }}>
-              {['Country','Status','Last scraped','Coverage','Sources','Next run',''].map(h => (
+              {['Country', 'Source', 'Requirements', 'Reference sources', 'Last updated'].map(h => (
                 <th key={h} style={{ padding: '12px 16px', textAlign: 'left', fontWeight: 700, color: '#64748B', fontSize: 12, whiteSpace: 'nowrap' }}>{h}</th>
               ))}
             </tr>
           </thead>
           <tbody>
-            {complianceLoading && entries.length === 0 && (
-              <tr><td colSpan={7} style={{ padding: 32, textAlign: 'center', color: '#94A3B8' }}>Loading compliance data…</td></tr>
+            {loading && (
+              <tr><td colSpan={5} style={{ padding: 32, textAlign: 'center', color: '#94A3B8' }}>Loading knowledge base…</td></tr>
             )}
-            {filtered.map((e, i) => {
-              const sc = COMPLIANCE_STATUS_COLORS[e.status as keyof typeof COMPLIANCE_STATUS_COLORS] ?? { bg: '#F1F5F9', text: '#64748B' };
+            {!loading && error && (
+              <tr><td colSpan={5} style={{ padding: 32, textAlign: 'center', color: '#EF4444' }}>Couldn't load the knowledge base. Try again shortly.</td></tr>
+            )}
+            {!loading && !error && filtered.map((e, i) => {
+              const sc = KB_STATUS_COLORS[e.status];
               return (
                 <tr key={e.country} style={{ borderBottom: '1px solid #F8FAFC', background: i % 2 === 0 ? '#fff' : '#FAFAFA' }}>
-                  <td style={{ padding: '10px 16px', fontWeight: 700, color: '#0F172A' }}>{e.flag} {e.country}</td>
-                  <td style={{ padding: '10px 16px' }}><span style={{ padding: '3px 10px', borderRadius: 20, background: sc.bg, color: sc.text, fontWeight: 700, fontSize: 11, textTransform: 'capitalize' }}>{e.status}</span></td>
-                  <td style={{ padding: '10px 16px', color: '#64748B', fontSize: 12, fontFamily: 'monospace' }}>{e.lastScraped}</td>
-                  <td style={{ padding: '10px 16px' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <div style={{ flex: 1, height: 6, background: '#E2E8F0', borderRadius: 3, overflow: 'hidden', minWidth: 60 }}>
-                        <div style={{ width: `${e.coverage}%`, height: '100%', background: e.coverage >= 90 ? '#10B981' : e.coverage >= 60 ? '#F59E0B' : '#EF4444', borderRadius: 3 }} />
-                      </div>
-                      <span style={{ fontSize: 12, fontWeight: 700, color: '#334155', minWidth: 32 }}>{e.coverage}%</span>
-                    </div>
-                  </td>
-                  <td style={{ padding: '10px 16px', color: '#64748B', fontSize: 12 }}>{e.sources}</td>
-                  <td style={{ padding: '10px 16px', color: '#64748B', fontSize: 12, fontFamily: 'monospace' }}>{e.nextRun}</td>
-                  <td style={{ padding: '10px 16px' }}>
-                    <button onClick={() => handleRefresh(e.country)} disabled={refreshing === e.country} style={{ padding: '5px 12px', borderRadius: 8, border: '1px solid #E2E8F0', background: '#fff', color: '#475569', cursor: 'pointer', fontSize: 11, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 5 }}>
-                      <RefreshCw size={11} className={refreshing === e.country ? 'spin' : ''} />
-                      {refreshing === e.country ? 'Running…' : 'Refresh'}
-                    </button>
-                  </td>
+                  <td style={{ padding: '10px 16px', fontWeight: 700, color: '#0F172A' }}>{KB_FLAGS[e.country] ?? '🌍'} {e.country}</td>
+                  <td style={{ padding: '10px 16px' }}><span style={{ padding: '3px 10px', borderRadius: 20, background: sc.bg, color: sc.text, fontWeight: 700, fontSize: 11, textTransform: 'capitalize' }}>{e.status.replace('-', ' ')}</span></td>
+                  <td style={{ padding: '10px 16px', color: '#334155', fontSize: 13, fontWeight: 700 }}>{e.requirementCount}</td>
+                  <td style={{ padding: '10px 16px', color: '#64748B', fontSize: 12 }}>{e.sourceCount}</td>
+                  <td style={{ padding: '10px 16px', color: '#64748B', fontSize: 12, fontFamily: 'monospace' }}>{e.lastUpdated ? new Date(e.lastUpdated).toLocaleString() : '—'}</td>
                 </tr>
               );
             })}
           </tbody>
         </table>
-        {filtered.length === 0 && <p style={{ color: '#94A3B8', textAlign: 'center', padding: 32 }}>No countries match filter</p>}
+        {!loading && !error && filtered.length === 0 && <p style={{ color: '#94A3B8', textAlign: 'center', padding: 32 }}>No countries match filter</p>}
       </article>
     </section>
   );

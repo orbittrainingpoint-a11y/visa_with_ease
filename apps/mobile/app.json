@@ -2,7 +2,7 @@
   "expo": {
     "name": "Visa With Ease",
     "slug": "visaiq",
-    "version": "0.1.0",
+    "version": "0.2.3",
     "orientation": "portrait",
     "scheme": "visaiq",
     "userInterfaceStyle": "automatic",
@@ -32,6 +32,13 @@
           "imageWidth": 200,
           "resizeMode": "contain",
           "backgroundColor": "#FFFFFF"
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/logo-icon.png",
+          "color": "#1A56DB"
         }
       ]
     ]

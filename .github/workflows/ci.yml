@@ -18,8 +18,22 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm -r typecheck
-      - run: pnpm --filter @visaiq/backend test
+      # test:all runs both backend.contract.test.ts AND mobile.contract.test.ts —
+      # `test` alone only ran the former, so a real regression in the mobile
+      # contract suite (an IDOR ownership-check fix breaking a stale test that
+      # used a fake, unowned applicationId) went undetected by CI entirely
+      # until it was caught by a manual local run.
+      - run: pnpm --filter @visaiq/backend test:all
       - run: pnpm --filter @visaiq/backend build
+      # Real Vitest unit coverage for web's pure logic (date math, CSV
+      # escaping, risk classification, notification colors) — web previously
+      # had zero tests of any kind beyond Playwright's page-level smoke checks.
+      - run: pnpm --filter @visaiq/web test
       - run: pnpm --filter @visaiq/web build
       - run: pnpm --filter @visaiq/web exec playwright install --with-deps chromium
-      - run: pnpm --filter @visaiq/web test:smoke
+      # Both projects (desktop + mobile viewport) and both spec files — the
+      # mobile-viewport project previously wasn't run in CI at all, so a real
+      # mobile-layout bug (the sidebar blocking the header) would have shipped
+      # silently; and phase4-smoke.spec.ts wasn't run either.
+      - run: pnpm --filter @visaiq/web test:smoke -- --project=desktop-chromium --project=mobile-pixel7
+      - run: pnpm --filter @visaiq/web exec playwright test tests/phase4-smoke.spec.ts

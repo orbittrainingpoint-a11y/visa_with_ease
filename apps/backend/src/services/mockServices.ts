@@ -1,7 +1,11 @@
-import { applications, auditResult, requirements } from '@visaiq/mock-data';
+import { applications, getRequirementsForCountry } from '@visaiq/mock-data';
+import type { AccessGrantRequest, RequirementsResponse } from '@visaiq/contracts';
 import jwt from 'jsonwebtoken';
 import { createAiProvider } from './aiProviders.js';
 import { createRedisAuditQueue } from './redisAuditQueue.js';
+import { sendPushToUser } from './push.js';
+import { messagingService } from './messaging.js';
+import { listOverduePendingDeletions } from './appStore.js';
 import type {
   AccessGrantRepository,
   AiProvider,
@@ -17,10 +21,16 @@ import type {
   UserProfile
 } from './types.js';
 
+// `verified` is a real field the backend controls, not an assumption the
+// client makes — every consultant in this curated list has been vetted, so
+// it's honestly true for all of them today. If an unvetted/pending
+// consultant is ever added, set it false here and the mobile app's
+// "Verified Consultant" badge will correctly stop showing for that one,
+// instead of a client-side hardcode claiming it regardless.
 const consultants = [
-  { id: 'c-priya', name: 'Priya Sharma', rating: 4.9, specialty: 'Schengen documentation', rate: 89, languages: ['English', 'Hindi'], reviews: 284, responseTime: '< 2h', availableToday: true, bio: 'Former VFS documentation lead focused on Schengen tourist and family visit applications.' },
-  { id: 'c-omar', name: 'Omar Haddad', rating: 4.8, specialty: 'GCC resident applications', rate: 79, languages: ['English', 'Arabic'], reviews: 191, responseTime: '< 4h', availableToday: true, bio: 'Dubai-based consultant for GCC residents applying across EU, UK and Canada routes.' },
-  { id: 'c-elena', name: 'Elena Rossi', rating: 4.7, specialty: 'European consulate process', rate: 99, languages: ['English', 'Italian'], reviews: 143, responseTime: 'Tomorrow', availableToday: false, bio: 'European consulate process specialist for itinerary, accommodation and proof-of-funds evidence.' }
+  { id: 'c-priya', name: 'Priya Sharma', rating: 4.9, specialty: 'Schengen documentation', rate: 89, languages: ['English', 'Hindi'], reviews: 284, responseTime: '< 2h', availableToday: true, verified: true, bio: 'Former VFS documentation lead focused on Schengen tourist and family visit applications.' },
+  { id: 'c-omar', name: 'Omar Haddad', rating: 4.8, specialty: 'GCC resident applications', rate: 79, languages: ['English', 'Arabic'], reviews: 191, responseTime: '< 4h', availableToday: true, verified: true, bio: 'Dubai-based consultant for GCC residents applying across EU, UK and Canada routes.' },
+  { id: 'c-elena', name: 'Elena Rossi', rating: 4.7, specialty: 'European consulate process', rate: 99, languages: ['English', 'Italian'], reviews: 143, responseTime: 'Tomorrow', availableToday: false, verified: true, bio: 'European consulate process specialist for itinerary, accommodation and proof-of-funds evidence.' }
 ];
 
 const sessionOptions = [
@@ -29,12 +39,20 @@ const sessionOptions = [
   { id: 'emergency', label: 'Emergency review', durationMinutes: 30, priceUsd: 149, description: 'Fast-track consultation for travel within 7 days.' }
 ];
 
-function currentRequirements() {
+// Admin-managed knowledge-base overrides, keyed by exact country name (same
+// convention as REQUIREMENTS_BY_COUNTRY). An override always wins over the
+// built-in default for that country — this is what lets a platform_admin
+// add or correct a country's visa requirements from the web app without a
+// code deploy.
+const countryOverrides = new Map<string, Omit<RequirementsResponse, 'freshness'>>();
+
+function currentRequirements(country?: string) {
   const fetchedAt = new Date(Date.now() - 2 * 60 * 1000); // 2 minutes ago (freshly computed)
   const expiresAt = new Date(fetchedAt.getTime() + 24 * 60 * 60 * 1000);
   const ageHours = Math.round((Date.now() - fetchedAt.getTime()) / 3600000 * 10) / 10;
+  const override = country ? countryOverrides.get(country) : undefined;
   return {
-    ...requirements,
+    ...(override ?? getRequirementsForCountry(country)),
     freshness: {
       fetchedAt: fetchedAt.toISOString(),
       expiresAt: expiresAt.toISOString(),
@@ -78,6 +96,17 @@ export function createMockServices(): Services {
       userAppStore.set(uid, []);
     }
     return userAppStore.get(uid)!;
+  }
+
+  // Cross-user lookup for staff-facing views (consultant/HR) that need to
+  // resolve an applicationId without already knowing which uid owns it —
+  // getAppsForUser can't do this since it's keyed by uid.
+  function findApplicationById(id: string): (typeof applications)[number] | null {
+    for (const apps of userAppStore.values()) {
+      const found = apps.find((a) => a.id === id);
+      if (found) return found;
+    }
+    return null;
   }
 
   const profileStore = new Map<string, UserProfile>();
@@ -151,20 +180,36 @@ export function createMockServices(): Services {
   };
 
   const notifications: NotificationService = {
-    async sendUserNotification(input) {
-      return { messageId: `mock-fcm-${input.userId}-${Date.now()}`, status: 'queued' };
-    },
+    // Same real implementation as the Firestore-backed services — it
+    // already degrades to 'skipped' honestly when no Firebase app is
+    // configured, which is always true in this no-Firestore mode.
+    sendUserNotification: sendPushToUser,
     health: () => 'mock'
   };
 
   const auditQueue: AuditQueue = createRedisAuditQueue();
 
   const requirementsCache: RequirementsCache = {
-    async getRequirements() {
-      return currentRequirements();
+    async getRequirements(context) {
+      return currentRequirements(context?.destinationCountry);
     },
     async getDefaultRequirements() {
       return currentRequirements();
+    },
+    async getRequirementsForCountry(country) {
+      return currentRequirements(country);
+    },
+    async listCountryOverrides() {
+      const out: Record<string, RequirementsResponse> = {};
+      for (const [country, data] of countryOverrides) out[country] = currentRequirements(country) as RequirementsResponse & typeof data;
+      return out;
+    },
+    async setCountryOverride(country, data) {
+      countryOverrides.set(country, data);
+      return currentRequirements(country);
+    },
+    async deleteCountryOverride(country) {
+      countryOverrides.delete(country);
     },
     health: () => 'mock'
   };
@@ -190,71 +235,132 @@ export function createMockServices(): Services {
       return sessionOptions;
     },
     async createBooking(input) {
+      const bookingId = `booking-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+      bookingStore.set(bookingId, {
+        bookingId,
+        status: 'pending_calendly',
+        consultantId: input.consultantId,
+        applicationId: input.applicationId,
+        sessionType: input.sessionType,
+        userId: input.userId ?? 'anonymous',
+        createdAt: new Date().toISOString(),
+        ...(input.slotISO ? { slotISO: input.slotISO } : {})
+      });
       return {
-        bookingId: `booking-${Date.now()}`,
+        bookingId,
         status: 'pending_calendly',
         calendlyUrl: 'https://calendly.com/visawithease',
         ...input
       };
     },
+    async listBookings() {
+      return [...bookingStore.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    },
     async getConsole() {
+      const activeGrants = [...grantStore.entries()].filter(([, g]) => g.status === 'active');
+      const queue = activeGrants.map(([grantId, g]) => {
+        const app = findApplicationById(g.applicationId);
+        const urgency = !app ? 'review' : app.issuesCount > 0 ? 'urgent' : app.status === 'ready' || app.status === 'submitted' ? 'ready' : 'review';
+        return {
+          id: grantId,
+          applicant: app?.applicantName ?? 'Unknown applicant',
+          destination: app?.destinationCountry ?? '—',
+          urgency,
+          sharedCategories: g.categories
+        };
+      });
+      const conversations = (await messagingService.listThreadsForConsultant()).map((t) => ({ id: t.threadId, applicant: t.applicant, lastMessage: t.lastMessage, status: t.status }));
+      const bookings = [...bookingStore.values()];
+      const activeApplicationIds = new Set(activeGrants.map(([, g]) => g.applicationId));
+      const revenue = bookings.reduce((acc, b) => acc + (sessionOptions.find((s) => s.id === b.sessionType)?.priceUsd ?? 0), 0);
       return {
-        queue: [
-          { id: 'q-001', applicant: 'Nadia Rahman',  destination: 'France',         urgency: 'review', sharedCategories: ['Bank statements', 'Travel history'] },
-          { id: 'q-002', applicant: 'Farhan Sheikh', destination: 'United Kingdom', urgency: 'urgent', sharedCategories: ['Prior refusal letter', 'Employment proof'] },
-          { id: 'q-003', applicant: 'Lina Kowalski', destination: 'Germany',        urgency: 'ready',  sharedCategories: ['All documents submitted'] },
-        ],
-        conversations: [
-          { id: 'conv-001', applicant: 'Nadia Rahman',  lastMessage: 'My bank statement is from 4 months ago — is that too old?', status: 'unread' },
-          { id: 'conv-002', applicant: 'Farhan Sheikh', lastMessage: 'I have a prior UK refusal in 2022. Should I disclose it?',  status: 'read'  },
-        ],
+        queue,
+        conversations,
         crm: [
-          { label: 'Nadia Rahman — Schengen Tourist',    value: '£89 paid · 1 session'   },
-          { label: 'Farhan Sheikh — UK Standard Visitor', value: '£149 paid · 2 sessions' },
-          { label: 'Yuki Tanaka — Closed Won',            value: '£49 paid · 1 session'   },
-        ],
+          { label: 'Total bookings', value: String(bookings.length) },
+          { label: 'Active clients', value: String(activeApplicationIds.size) },
+          { label: 'Revenue (est.)', value: `$${revenue}` },
+          { label: 'Open conversations', value: String(conversations.length) }
+        ]
       };
     },
-    async getHrPortal() {
+    async getHrPortal(user) {
+      const allProfiles = [...profileStore.values()].filter(
+        (p): p is UserProfile & { employment: { employer: string } } => typeof p.employment?.employer === 'string' && p.employment.employer.length > 0
+      );
+      // A regular hr_admin only ever sees their own company's teams — the
+      // company is derived from their own profile, same field as everyone
+      // else's. platform_admin (the platform operator, not a tenant) keeps
+      // the full cross-company aggregate.
+      const isPlatformAdmin = user?.roles.includes('platform_admin');
+      const ownEmployer = user?.uid ? profileStore.get(user.uid)?.employment?.employer : undefined;
+      const employeeProfiles = isPlatformAdmin
+        ? allProfiles
+        : ownEmployer
+          ? allProfiles.filter((p) => p.employment.employer === ownEmployer)
+          : [];
+      const byEmployer = new Map<string, UserProfile[]>();
+      for (const p of employeeProfiles) {
+        const key = p.employment!.employer;
+        if (!byEmployer.has(key)) byEmployer.set(key, []);
+        byEmployer.get(key)!.push(p);
+      }
+      const teams = [...byEmployer.entries()].map(([employer, members], i) => ({
+        id: `team-${i}`,
+        name: employer,
+        members: members.length,
+        openCases: members.filter((m) => (userAppStore.get(m.uid) ?? []).some((a) => a.status !== 'approved' && a.status !== 'rejected')).length
+      }));
+      const totalApps = employeeProfiles.reduce((acc, p) => acc + (userAppStore.get(p.uid)?.length ?? 0), 0);
       return {
-        teams: [
-          { id: 'team-eng',   name: 'Engineering', members: 12, openCases: 3 },
-          { id: 'team-ops',   name: 'Operations',  members: 8,  openCases: 1 },
-          { id: 'team-sales', name: 'Sales',        members: 15, openCases: 5 },
-        ],
-        reports: [
-          { label: 'Q2 2026 Visa Applications', value: '35 rows',       trend: '+12% vs Q1' },
-          { label: 'Pending Reviews — July',    value: '9 rows',        trend: 'Due: today'  },
-          { label: 'Monthly Compliance Report', value: 'Generating…',   trend: ''            },
-        ],
-        bulkUploads: [
-          { id: 'bu-001', fileName: 'hr-employees-july.csv', status: 'complete' },
-        ],
+        teams,
+        reports: employeeProfiles.length
+          ? [
+              { label: 'Employees with a profile on file', value: String(employeeProfiles.length), trend: '' },
+              { label: 'Total visa applications',          value: String(totalApps),               trend: '' }
+            ]
+          : [],
+        // Honestly empty — no bulk-upload feature exists yet, so nothing to report.
+        bulkUploads: []
       };
     },
     async getEmployeePortal(user?: { uid: string; email?: string; roles: string[] }) {
-      const derivedName = user?.email
-        ? user.email.split('@')[0].split(/[._-]/).map((w: string) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
-        : 'Employee';
+      const profile = user?.uid ? profileStore.get(user.uid) : undefined;
+      const derivedName = profile?.personal
+        ? `${profile.personal.firstName} ${profile.personal.lastName}`.trim()
+        : user?.email
+          ? user.email.split('@')[0].split(/[._-]/).map((w: string) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
+          : 'Employee';
+      const apps = user?.uid ? (userAppStore.get(user.uid) ?? []) : [];
+      const app = apps[0];
+      const tasks: Array<{ id: string; title: string; due: string; status: string }> = [];
+      if (app) {
+        if (app.documentsUploaded < app.documentsRequired) {
+          tasks.push({ id: 'emp-docs', title: `Upload remaining documents (${app.documentsUploaded}/${app.documentsRequired})`, due: 'Ongoing', status: 'open' });
+        }
+        if (app.issuesCount > 0) {
+          tasks.push({ id: 'emp-issues', title: `Resolve ${app.issuesCount} flagged issue${app.issuesCount === 1 ? '' : 's'}`, due: 'Ongoing', status: 'blocked' });
+        }
+        if (app.status === 'ready' || app.status === 'submitted') {
+          tasks.push({ id: 'emp-share', title: 'Share readiness with HR', due: 'Ongoing', status: app.status === 'submitted' ? 'complete' : 'ready' });
+        }
+      }
       return {
-        profile: { name: derivedName, company: 'Your Company', homeCountry: '' },
-        tasks: [
-          { id: 'emp-passport', title: 'Confirm passport scan quality', due: 'Today', status: 'open' },
-          { id: 'emp-insurance', title: 'Upload Schengen insurance', due: 'Tomorrow', status: 'blocked' },
-          { id: 'emp-hr', title: 'Share readiness with HR', due: 'Jun 8', status: 'ready' }
-        ]
+        profile: { name: derivedName, company: profile?.employment?.employer ?? '', homeCountry: profile?.personal?.nationality ?? '' },
+        tasks
       };
     },
     async getAdminOverview() {
       const allUids = new Set<string>();
       for (const uid of userAppStore.keys()) allUids.add(uid);
       const totalApps = [...userAppStore.values()].reduce((acc, apps) => acc + apps.length, 0);
+      const overdueDeletions = await listOverduePendingDeletions();
       return {
         metrics: [
           { label: 'Active sessions (in-memory)', value: String(allUids.size), trend: 'live' },
           { label: 'Total applications',           value: String(totalApps),   trend: 'live' },
           { label: 'Server uptime',                value: `${Math.floor(process.uptime() / 60)}m`, trend: 'healthy' },
-          { label: 'Deletion SLA queue',           value: '0 overdue',         trend: 'healthy' },
+          { label: 'Deletion SLA queue',           value: `${overdueDeletions.length} overdue`, trend: overdueDeletions.length > 0 ? 'attention' : 'healthy' },
         ],
         aiMonitoring: [
           { provider: 'Claude', status: process.env.ANTHROPIC_API_KEY ? 'configured' : 'mock', latency: '' },
@@ -270,7 +376,10 @@ export function createMockServices(): Services {
   };
 
   // grantId -> record, so revocation can be limited to the user who created the grant
-  const grantStore = new Map<string, { applicationId: string; consultantId: string; categories: string[]; expiresAt: string; grantedBy: string; status: 'active' | 'revoked' }>();
+  const grantStore = new Map<string, AccessGrantRequest & { grantedBy: string; status: 'active' | 'revoked' }>();
+  // bookingId -> record — real persistence for /bookings (previously fabricated
+  // a response with nothing stored, so the console/CRM had nothing real to read).
+  const bookingStore = new Map<string, { bookingId: string; status: string; consultantId: string; applicationId: string; sessionType: string; userId: string; createdAt: string; slotISO?: string }>();
 
   const accessGrants: AccessGrantRepository = {
     async createGrant(input) {
@@ -284,6 +393,11 @@ export function createMockServices(): Services {
       if (!record || record.grantedBy !== requesterUid) return null;
       record.status = 'revoked';
       return { grantId, status: 'revoked' };
+    },
+    async listActiveGrants() {
+      return [...grantStore.entries()]
+        .filter(([, g]) => g.status === 'active')
+        .map(([grantId, g]) => ({ ...g, grantId, status: 'active' as const }));
     }
   };
 
@@ -309,6 +423,7 @@ export function createMockServices(): Services {
     ai,
     consultants: consultantService,
     accessGrants,
-    profile: profileService
+    profile: profileService,
+    messaging: messagingService
   };
 }

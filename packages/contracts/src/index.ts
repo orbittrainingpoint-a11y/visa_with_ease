@@ -51,6 +51,11 @@ export const requirementsResponseSchema = z.object({
   freshness: z.object({ fetchedAt: z.string(), expiresAt: z.string(), ageHours: z.number() })
 });
 
+// What a platform_admin submits from the web app's knowledge-base editor —
+// everything in a RequirementsResponse except freshness, which the server
+// always computes itself rather than trusting a client-supplied timestamp.
+export const requirementsOverrideSchema = requirementsResponseSchema.omit({ freshness: true });
+
 export const applicationSchema = z.object({
   id: z.string(),
   refCode: z.string(),
@@ -77,7 +82,19 @@ export const chatResponseSchema = z.object({
 
 export const auditRequestSchema = z.object({
   applicationId: z.string().min(1),
-  documentId: z.string().min(1)
+  documentId: z.string().min(1),
+  documentType: z.string().max(120).optional(),
+  // Real on-device OCR output (Google ML Kit) for the captured/picked image,
+  // when one is available. Absent for file types OCR can't run on (e.g. PDFs)
+  // or when on-device text recognition failed — the audit treats that as a
+  // real "couldn't verify automatically" signal rather than faking a result.
+  extractedText: z.string().max(20000).optional(),
+  // The actual captured/picked file, base64-encoded, so the backend can run
+  // real multimodal AI analysis (Gemini) instead of relying on plain OCR
+  // text alone. Optional — when absent, or when no AI provider is
+  // configured, the server falls back to the extractedText-based heuristic.
+  imageBase64: z.string().max(15_000_000).optional(),
+  mimeType: z.string().max(60).optional()
 });
 
 export const chatRequestSchema = z.object({
@@ -117,6 +134,54 @@ export const accessGrantRequestSchema = z.object({
   expiresAt: z.string().datetime()
 });
 
+// Every field optional at every level — a PUT /profile call sends whichever
+// section the user just edited, not the whole profile. Shape matches what
+// the mobile/web clients actually send (apps/mobile/src/api.ts's
+// UserProfile), not apps/backend/src/services/types.ts's older UserProfile
+// interface, which drifted out of sync with real traffic (e.g. its
+// travelHistory is a bare array; real clients send { trips, hasRejection }).
+export const userProfilePatchSchema = z.object({
+  personal: z.object({
+    firstName: z.string().max(200).optional(),
+    lastName: z.string().max(200).optional(),
+    nationality: z.string().max(200).optional(),
+    dateOfBirth: z.string().max(40).optional(),
+    phone: z.string().max(40).optional(),
+    gender: z.string().max(40).optional()
+  }).strict().optional(),
+  passport: z.object({
+    passportNumber: z.string().max(50).optional(),
+    issueDate: z.string().max(40).optional(),
+    expiryDate: z.string().max(40).optional(),
+    issuingCountry: z.string().max(200).optional()
+  }).strict().optional(),
+  employment: z.object({
+    employer: z.string().max(300).optional(),
+    jobTitle: z.string().max(300).optional(),
+    annualIncomeUsd: z.union([z.string(), z.number()]).optional(),
+    resumeUploaded: z.boolean().optional(),
+    resumeFileName: z.string().max(300).optional()
+  }).strict().optional(),
+  financials: z.object({
+    statements: z.array(z.object({ label: z.string().max(200), score: z.number() })).max(100).optional()
+  }).strict().optional(),
+  travelHistory: z.object({
+    trips: z.array(z.object({ country: z.string().max(200), years: z.string().max(40), status: z.string().max(60) })).max(200).optional(),
+    hasRejection: z.boolean().optional()
+  }).strict().optional(),
+  contacts: z.object({
+    emergencyName: z.string().max(200).optional(),
+    emergencyPhone: z.string().max(40).optional(),
+    emergencyRelation: z.string().max(100).optional()
+  }).strict().optional(),
+  notificationPrefs: z.object({
+    audit: z.boolean().optional(),
+    requirements: z.boolean().optional(),
+    booking: z.boolean().optional(),
+    message: z.boolean().optional()
+  }).strict().optional()
+}).strict();
+
 export const standardErrorSchema = z.object({
   error: z.object({
     code: z.string(),
@@ -131,6 +196,7 @@ export type Finding = z.infer<typeof findingSchema>;
 export type AuditResult = z.infer<typeof auditResultSchema>;
 export type Requirement = z.infer<typeof requirementSchema>;
 export type RequirementsResponse = z.infer<typeof requirementsResponseSchema>;
+export type RequirementsOverride = z.infer<typeof requirementsOverrideSchema>;
 export type VisaApplication = z.infer<typeof applicationSchema>;
 export type ChatResponse = z.infer<typeof chatResponseSchema>;
 export type AuthSessionRequest = z.infer<typeof authSessionRequestSchema>;
@@ -139,4 +205,5 @@ export type AuditRequest = z.infer<typeof auditRequestSchema>;
 export type ChatRequest = z.infer<typeof chatRequestSchema>;
 export type BookingRequest = z.infer<typeof bookingRequestSchema>;
 export type AccessGrantRequest = z.infer<typeof accessGrantRequestSchema>;
+export type UserProfilePatch = z.infer<typeof userProfilePatchSchema>;
 export type StandardError = z.infer<typeof standardErrorSchema>;

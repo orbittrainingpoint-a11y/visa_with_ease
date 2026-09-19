@@ -17,6 +17,10 @@ export interface UserRecord {
   roles: string[];
   status?: 'active' | 'suspended';
   createdAt?: string;
+  /** Marks a record that was never a real signup (the built-in demo login
+   *  account, canned audit-log entries below) so admin views can show it's
+   *  not real user activity instead of it being indistinguishable. */
+  source?: 'seed';
 }
 
 export function hashPassword(password: string): string {
@@ -43,7 +47,8 @@ function demoUser(): UserRecord {
     passwordHash: hashPassword('demo1234'),
     roles: ['consumer'],
     status: 'active',
-    createdAt: new Date(Date.now() - 30 * 86400000).toISOString()
+    createdAt: new Date(Date.now() - 30 * 86400000).toISOString(),
+    source: 'seed'
   };
 }
 
@@ -53,10 +58,13 @@ const memOtps = new Map<string, { code: string; expiresAt: number }>();
 const memTwoFactor = new Set<string>();
 const memReadNotifications = new Map<string, Set<string>>();
 const memWebhooks = new Map<string, { url: string; events: string[]; createdAt: string }>();
-const memAuditLog: Array<{ id: string; actor: string; action: string; resource: string; at: string; ip: string }> = [
-  { id: 'al-001', actor: 'admin@demo.visawithease.app', action: 'LOGIN', resource: 'auth', at: new Date(Date.now() - 120000).toISOString(), ip: '127.0.0.1' },
-  { id: 'al-002', actor: 'admin@demo.visawithease.app', action: 'VIEW_USERS', resource: '/admin/users', at: new Date(Date.now() - 90000).toISOString(), ip: '127.0.0.1' },
-  { id: 'al-003', actor: 'hr@demo.visawithease.app', action: 'VIEW_HR', resource: '/hr', at: new Date(Date.now() - 3600000).toISOString(), ip: '10.0.0.1' }
+// These 3 rows exist purely to demo the audit-log UI in a fresh in-memory
+// environment with no real activity yet — `source: 'seed'` marks them so
+// GET /admin/audit-log doesn't present them as real activity that occurred.
+const memAuditLog: Array<{ id: string; actor: string; action: string; resource: string; at: string; ip: string; source?: 'seed' }> = [
+  { id: 'al-001', actor: 'admin@demo.visawithease.app', action: 'LOGIN', resource: 'auth', at: new Date(Date.now() - 120000).toISOString(), ip: '127.0.0.1', source: 'seed' },
+  { id: 'al-002', actor: 'admin@demo.visawithease.app', action: 'VIEW_USERS', resource: '/admin/users', at: new Date(Date.now() - 90000).toISOString(), ip: '127.0.0.1', source: 'seed' },
+  { id: 'al-003', actor: 'hr@demo.visawithease.app', action: 'VIEW_HR', resource: '/hr', at: new Date(Date.now() - 3600000).toISOString(), ip: '10.0.0.1', source: 'seed' }
 ];
 
 export async function getUserByEmail(email: string): Promise<UserRecord | null> {
@@ -266,11 +274,11 @@ export async function appendAuditLog(entry: { actor: string; action: string; res
   await db.collection('auditLog').doc(record.id).set(record);
 }
 
-export async function listAuditLog(): Promise<Array<{ id: string; actor: string; action: string; resource: string; at: string; ip: string }>> {
+export async function listAuditLog(): Promise<Array<{ id: string; actor: string; action: string; resource: string; at: string; ip: string; source?: 'seed' }>> {
   const db = getDb();
   if (!db) return memAuditLog.slice().reverse();
   const snap = await db.collection('auditLog').orderBy('at', 'desc').limit(200).get();
-  return snap.docs.map((doc) => doc.data() as { id: string; actor: string; action: string; resource: string; at: string; ip: string });
+  return snap.docs.map((doc) => doc.data() as { id: string; actor: string; action: string; resource: string; at: string; ip: string; source?: 'seed' });
 }
 
 // Which application a given audit documentId belongs to — recorded when an
@@ -307,4 +315,252 @@ export async function getAuditOwnerApplication(documentId: string): Promise<stri
   if (!db) return memAuditOwners.get(documentId) ?? null;
   const doc = await db.collection('auditOwners').doc(documentId).get();
   return doc.exists ? ((doc.data()?.applicationId as string) ?? null) : null;
+}
+
+/** Every documentId ever claimed for this application — lets /documents show
+ *  the real set of uploads instead of a fabricated count-based list. */
+export async function listAuditOwnerDocumentIds(applicationId: string): Promise<string[]> {
+  const db = getDb();
+  if (!db) {
+    return [...memAuditOwners.entries()].filter(([, appId]) => appId === applicationId).map(([docId]) => docId);
+  }
+  const snap = await db.collection('auditOwners').where('applicationId', '==', applicationId).get();
+  return snap.docs.map(d => d.id);
+}
+
+// Which documentIds actually have their original file persisted in Storage
+// (as opposed to just an AI-computed result) — separate from auditOwners
+// since a document can be audited (via imageBase64 in the request) without
+// Storage being configured/enabled on this project at all.
+const memDocumentFiles = new Map<string, string>();
+
+export async function saveDocumentFilePath(documentId: string, storagePath: string): Promise<void> {
+  const db = getDb();
+  if (!db) {
+    memDocumentFiles.set(documentId, storagePath);
+    return;
+  }
+  await db.collection('documentFiles').doc(documentId).set({ storagePath });
+}
+
+export async function getDocumentFilePath(documentId: string): Promise<string | null> {
+  const db = getDb();
+  if (!db) return memDocumentFiles.get(documentId) ?? null;
+  const doc = await db.collection('documentFiles').doc(documentId).get();
+  return doc.exists ? ((doc.data()?.storagePath as string) ?? null) : null;
+}
+
+// Real push notifications need a real device token to send to — this is
+// where the mobile app's token (registered after the user grants
+// notification permission) lives. Keyed by the token itself (not uid) so a
+// user with multiple devices gets a push on all of them, and so the same
+// physical device re-registering just overwrites its own prior entry.
+const memDeviceTokens = new Map<string, { uid: string; platform: string }>();
+
+export async function saveDeviceToken(uid: string, token: string, platform: string): Promise<void> {
+  const db = getDb();
+  if (!db) {
+    memDeviceTokens.set(token, { uid, platform });
+    return;
+  }
+  await db.collection('deviceTokens').doc(token).set({ uid, platform, updatedAt: new Date().toISOString() });
+}
+
+export async function getDeviceTokensForUser(uid: string): Promise<string[]> {
+  const db = getDb();
+  if (!db) {
+    return [...memDeviceTokens.entries()].filter(([, v]) => v.uid === uid).map(([token]) => token);
+  }
+  const snap = await db.collection('deviceTokens').where('uid', '==', uid).get();
+  return snap.docs.map(d => d.id);
+}
+
+/** Called when FCM reports a token as invalid/unregistered — stale tokens
+ *  (app uninstalled, permission revoked) must not accumulate forever. */
+export async function removeDeviceToken(token: string): Promise<void> {
+  const db = getDb();
+  if (!db) {
+    memDeviceTokens.delete(token);
+    return;
+  }
+  await db.collection('deviceTokens').doc(token).delete();
+}
+
+// Real consultant↔client messages. threadId = `${consultantId}__${clientUid}`
+// so a thread's identity is derivable without a separate "create thread"
+// step. Flat storage (no separate threads collection) — thread summaries are
+// computed by grouping messages, same tradeoff as auditOwners above.
+export interface StoredMessage {
+  id: string;
+  threadId: string;
+  consultantId: string;
+  clientUid: string;
+  clientName: string;
+  senderRole: 'client' | 'consultant';
+  text: string;
+  createdAt: string;
+}
+
+const memMessages: StoredMessage[] = [];
+
+export async function saveMessage(message: StoredMessage): Promise<void> {
+  const db = getDb();
+  if (!db) {
+    memMessages.push(message);
+    return;
+  }
+  await db.collection('messages').doc(message.id).set(message);
+}
+
+export async function listMessagesForThread(threadId: string): Promise<StoredMessage[]> {
+  const db = getDb();
+  if (!db) {
+    return memMessages.filter((m) => m.threadId === threadId).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  }
+  const snap = await db.collection('messages').where('threadId', '==', threadId).orderBy('createdAt', 'asc').get();
+  return snap.docs.map((d) => d.data() as StoredMessage);
+}
+
+/** Every message on file, oldest first — callers group by threadId
+ *  themselves to build per-thread summaries (platform-wide; see
+ *  listActiveGrants for why there's no per-consultant scoping yet). */
+export async function listAllMessages(): Promise<StoredMessage[]> {
+  const db = getDb();
+  if (!db) {
+    return memMessages.slice().sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  }
+  const snap = await db.collection('messages').orderBy('createdAt', 'asc').get();
+  return snap.docs.map((d) => d.data() as StoredMessage);
+}
+
+// Real persistence for account-deletion requests. This does NOT purge any
+// data by itself — there is no scheduled job in this codebase to actually
+// erase records once scheduledFor passes, that's a separate infra piece
+// (a real cron/scheduled task on the server). What this DOES make real: the
+// record actually exists (unlike before, when "scheduled" meant nothing was
+// written anywhere), it can be checked, and it's genuinely cancelled if the
+// user logs back in before scheduledFor — matching what /auth/delete-account
+// tells the user.
+export interface AccountDeletionRecord {
+  uid: string;
+  requestedAt: string;
+  scheduledFor: string;
+  status: 'pending' | 'cancelled';
+}
+
+const memDeletionRequests = new Map<string, AccountDeletionRecord>();
+
+export async function scheduleAccountDeletion(uid: string, scheduledFor: string): Promise<AccountDeletionRecord> {
+  const record: AccountDeletionRecord = { uid, requestedAt: new Date().toISOString(), scheduledFor, status: 'pending' };
+  const db = getDb();
+  if (!db) {
+    memDeletionRequests.set(uid, record);
+    return record;
+  }
+  await db.collection('accountDeletions').doc(uid).set(record);
+  return record;
+}
+
+export async function getAccountDeletionStatus(uid: string): Promise<AccountDeletionRecord | null> {
+  const db = getDb();
+  if (!db) return memDeletionRequests.get(uid) ?? null;
+  const doc = await db.collection('accountDeletions').doc(uid).get();
+  return doc.exists ? (doc.data() as AccountDeletionRecord) : null;
+}
+
+/** Called on successful login — makes "cancel by logging in" literally true. */
+export async function cancelAccountDeletion(uid: string): Promise<void> {
+  const db = getDb();
+  if (!db) {
+    const existing = memDeletionRequests.get(uid);
+    if (existing && existing.status === 'pending') memDeletionRequests.set(uid, { ...existing, status: 'cancelled' });
+    return;
+  }
+  const doc = await db.collection('accountDeletions').doc(uid).get();
+  if (doc.exists && (doc.data() as AccountDeletionRecord).status === 'pending') {
+    await doc.ref.set({ status: 'cancelled' }, { merge: true });
+  }
+}
+
+/** Real count for the admin "Deletion SLA queue" metric — pending requests
+ *  whose scheduledFor date has already passed with nothing having purged
+ *  them (there's no purge job yet, so this number can only ever grow until
+ *  one exists — that's an honest reflection of the current gap, not a bug). */
+export async function listOverduePendingDeletions(): Promise<AccountDeletionRecord[]> {
+  const db = getDb();
+  const nowIso = new Date().toISOString();
+  if (!db) {
+    return [...memDeletionRequests.values()].filter((r) => r.status === 'pending' && r.scheduledFor < nowIso);
+  }
+  const snap = await db.collection('accountDeletions').where('status', '==', 'pending').where('scheduledFor', '<', nowIso).get();
+  return snap.docs.map((d) => d.data() as AccountDeletionRecord);
+}
+
+// Real referral codes and claims. A code is deterministic per uid (so it
+// never changes across requests) but the code -> owner mapping is persisted
+// the first time it's generated, since the encoding (uppercased, truncated
+// to 8 chars) is lossy and can't be reversed back to the original uid.
+const memReferralCodeByUid = new Map<string, string>();
+const memReferralCodeOwner = new Map<string, string>();
+export interface ReferralClaim {
+  code: string;
+  referrerUid: string;
+  claimedByUid: string;
+  claimedByEmail: string;
+  claimedAt: string;
+}
+const memReferralClaims = new Map<string, ReferralClaim>(); // keyed by claimedByUid — one claim per user, ever
+
+function computeReferralCode(uid: string): string {
+  return `REF-${uid.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8)}`;
+}
+
+export async function getOrCreateReferralCode(uid: string): Promise<string> {
+  const db = getDb();
+  if (!db) {
+    let code = memReferralCodeByUid.get(uid);
+    if (!code) {
+      code = computeReferralCode(uid);
+      memReferralCodeByUid.set(uid, code);
+      memReferralCodeOwner.set(code, uid);
+    }
+    return code;
+  }
+  const doc = await db.collection('referralCodesByUid').doc(uid).get();
+  if (doc.exists) return doc.data()?.code as string;
+  const code = computeReferralCode(uid);
+  await db.collection('referralCodesByUid').doc(uid).set({ code });
+  await db.collection('referralCodes').doc(code).set({ ownerUid: uid });
+  return code;
+}
+
+export async function getReferralCodeOwner(code: string): Promise<string | null> {
+  const db = getDb();
+  if (!db) return memReferralCodeOwner.get(code) ?? null;
+  const doc = await db.collection('referralCodes').doc(code).get();
+  return doc.exists ? ((doc.data()?.ownerUid as string) ?? null) : null;
+}
+
+/** null when this user has never claimed a code — one claim per user, ever. */
+export async function getReferralClaimForUser(uid: string): Promise<ReferralClaim | null> {
+  const db = getDb();
+  if (!db) return memReferralClaims.get(uid) ?? null;
+  const doc = await db.collection('referralClaims').doc(uid).get();
+  return doc.exists ? (doc.data() as ReferralClaim) : null;
+}
+
+export async function recordReferralClaim(claim: ReferralClaim): Promise<void> {
+  const db = getDb();
+  if (!db) {
+    memReferralClaims.set(claim.claimedByUid, claim);
+    return;
+  }
+  await db.collection('referralClaims').doc(claim.claimedByUid).set(claim);
+}
+
+export async function listReferralClaimsForReferrer(referrerUid: string): Promise<ReferralClaim[]> {
+  const db = getDb();
+  if (!db) return [...memReferralClaims.values()].filter((c) => c.referrerUid === referrerUid);
+  const snap = await db.collection('referralClaims').where('referrerUid', '==', referrerUid).get();
+  return snap.docs.map((d) => d.data() as ReferralClaim);
 }

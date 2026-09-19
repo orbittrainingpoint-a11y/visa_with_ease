@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import cors from 'cors';
 import express from 'express';
 import { OAuth2Client } from 'google-auth-library';
@@ -11,6 +11,8 @@ import {
   auditRequestSchema,
   bookingRequestSchema,
   chatRequestSchema,
+  requirementsOverrideSchema,
+  userProfilePatchSchema,
   visaContextSchema
 } from '@visaiq/contracts';
 import { attachAuth, requireAuth, requireRole } from './auth.js';
@@ -25,24 +27,38 @@ import {
   disable2FA,
   enable2FA,
   getAuditOwnerApplication,
+  getOrCreateReferralCode,
   getOtp,
+  getReferralClaimForUser,
+  getReferralCodeOwner,
   getResetToken,
   getUserByEmail,
   has2FA,
   hashPassword,
+  getDocumentFilePath,
   isNotificationRead,
   listAuditLog,
+  listAuditOwnerDocumentIds,
+  listReferralClaimsForReferrer,
   listUsers,
+  recordReferralClaim,
+  saveDeviceToken,
+  saveDocumentFilePath,
   listWebhooksForUser,
   markNotificationRead,
   setOtp,
   setResetToken,
   setUserStatus,
   updateUserPassword,
-  verifyPassword
+  verifyPassword,
+  scheduleAccountDeletion,
+  getAccountDeletionStatus,
+  cancelAccountDeletion,
+  listOverduePendingDeletions
 } from './services/appStore.js';
 import { isEmailConfigured, send2faCodeEmail, sendPasswordResetEmail, sendVerificationEmail } from './services/email.js';
 import { isFirestoreConfigured } from './services/firestore.js';
+import { getSignedReadUrl, saveDocumentImage } from './services/storage.js';
 import { createServices, providerHealth } from './services/index.js';
 import type { Services } from './services/types.js';
 import { validateBody, validateVisaContextBody } from './validation.js';
@@ -61,18 +77,68 @@ function signToken(payload: { uid: string; email: string; roles: string[] }, exp
 // and the audit log all live in ./services/appStore.js now — real Firestore
 // when configured, the same in-memory behavior as before otherwise.
 
+// RATE_LIMIT_DISABLED=true bypasses rate limiting for test environments —
+// fail-closed like ENABLE_DEMO_LOGIN/ENABLE_DEV_AUTH_BYPASS: NODE_ENV
+// === 'production' always wins regardless of the flag, so a leftover test
+// env var can't silently strip brute-force protection off a live deployment.
+// Warn loudly at startup too, since this stays silent otherwise.
+function isRateLimitDisabled(): boolean {
+  if (process.env.NODE_ENV === 'production') return false;
+  return process.env.RATE_LIMIT_DISABLED === 'true';
+}
+if (process.env.RATE_LIMIT_DISABLED === 'true' && process.env.NODE_ENV !== 'production') {
+  console.warn('[security] RATE_LIMIT_DISABLED=true — auth/audit rate limiting is OFF. This must never be set on a real deployment.');
+}
+
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
   max: 20,
   standardHeaders: true,
   legacyHeaders: false,
-  // RATE_LIMIT_DISABLED=true bypasses the limiter in test environments
-  skip: () => process.env.RATE_LIMIT_DISABLED === 'true',
+  skip: () => isRateLimitDisabled(),
   message: { error: { code: 'RATE_LIMITED', message: 'Too many requests, please try again later' } }
+});
+
+// Each /audit call can trigger a real, billed Gemini vision request — a
+// higher ceiling than auth (people legitimately upload several documents
+// per application) but still bounded so a runaway client can't rack up
+// unbounded AI spend.
+const auditLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 40,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: () => isRateLimitDisabled(),
+  message: { error: { code: 'RATE_LIMITED', message: 'Too many document scans, please try again later' } }
+});
+
+// /chat had NO rate limit at all until this was added — every message
+// triggers a real, billed Claude/Gemini call once AI_MOCK=false, so an
+// authenticated user (or a leaked/scripted token) could otherwise hammer it
+// as fast as the network allows with no cap on the resulting AI spend. 60
+// per 15 minutes covers a genuinely active back-and-forth conversation
+// (~4/min sustained) while bounding a scripted flood.
+const chatLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: () => isRateLimitDisabled(),
+  message: { error: { code: 'RATE_LIMITED', message: 'Too many messages, please slow down and try again shortly' } }
 });
 
 export function createApp(services: Services = createServices()) {
   const app = express();
+
+  // Deployed behind exactly one reverse proxy hop (the VPS's own nginx/Caddy
+  // terminating TLS — see DEPLOY.md), so trust exactly one hop of
+  // X-Forwarded-For. Without this, req.ip resolves to the proxy's own address
+  // for every request: authLimiter/auditLimiter's per-IP caps become
+  // effectively shared across all users (one bad actor can rate-limit
+  // everyone else out of login), and every audit-log IP column is useless for
+  // investigating abuse. `true` (trust every hop) would be worse — it'd let a
+  // client spoof its own X-Forwarded-For and bypass rate limiting entirely.
+  app.set('trust proxy', 1);
 
   app.use(traceMiddleware);
   app.use(helmet());
@@ -80,7 +146,9 @@ export function createApp(services: Services = createServices()) {
   // Outside production, fall back to allowing any origin so local dev never silently
   // breaks login/API calls just because CORS_ORIGINS isn't set in .env.
   app.use(cors({ origin: allowedOrigins?.length ? allowedOrigins : process.env.NODE_ENV !== 'production' }));
-  app.use(express.json({ limit: '2mb' }));
+  // 15mb accommodates a base64-encoded phone photo or PDF page sent to
+  // /audit for real Gemini vision analysis (base64 inflates size ~33%).
+  app.use(express.json({ limit: '15mb' }));
   app.use((req, _res, next) => {
     console.info(`${req.method} ${req.path}`);
     next();
@@ -93,7 +161,11 @@ export function createApp(services: Services = createServices()) {
       res.json({
         status: 'ok',
         uptime: process.uptime(),
-        redis: services.auditQueue.health(),
+        // Named for what it actually is — there is no Redis/BullMQ anywhere
+        // in this project; the audit queue is Firestore-backed (or in-memory
+        // in mock mode). The old "redis" key name was a leftover from an
+        // earlier design and never matched reality.
+        auditQueue: services.auditQueue.health(),
         firestore: isFirestoreConfigured() ? 'configured' : 'mock',
         storage: services.storage.health(),
         fcm: services.notifications.health(),
@@ -116,6 +188,9 @@ export function createApp(services: Services = createServices()) {
     const expiresAt = new Date(Date.now() + (remember ? 7 : 1) * 24 * 60 * 60 * 1000).toISOString();
     const token = signToken({ uid: record.uid, email: record.email, roles: record.roles }, expiresIn);
     await appendAuditLog({ actor: email, action: 'LOGIN', resource: 'auth', ip: req.ip ?? '?' });
+    // Makes /auth/delete-account's "you have 30 days to cancel by logging in"
+    // literally true instead of just a string with nothing behind it.
+    await cancelAccountDeletion(record.uid);
     res.status(201).json({ token, user: { uid: record.uid, email: record.email, name: record.name, roles: record.roles }, expiresAt });
   });
 
@@ -135,26 +210,36 @@ export function createApp(services: Services = createServices()) {
       return res.status(409).json({ error: { code: 'EMAIL_TAKEN', message: 'An account with that email already exists' } });
     }
     const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
-    const uid = `user-${Buffer.from(email).toString('base64url').slice(0, 12)}`;
+    // A hash, not a truncated base64 encoding: base64url(email).slice(0,12)
+    // only covers the email's first ~9 bytes, so two different emails
+    // sharing a 9+ character prefix (e.g. "alice.k@x.com" / "alice.m@x.com")
+    // would silently collide onto the same uid and merge those accounts'
+    // data. SHA-256 output is uniform regardless of input similarity.
+    const uid = `user-${createHash('sha256').update(email.toLowerCase()).digest('base64url').slice(0, 16)}`;
     const roles = ['consumer'];
     await createUser({ uid, email, name, passwordHash: hashPassword(password), roles });
     const token = signToken({ uid, email, roles }, '7d');
     res.status(201).json({ token, user: { uid, email, name, roles }, expiresAt });
   });
 
-  // Google Sign-In — verifies idToken from the mobile app
+  // Google Sign-In — verifies idToken from the web app and/or the mobile app.
+  // These can be two different OAuth web clients (e.g. the mobile app's
+  // native Google Sign-In must use a Web client from the SAME Firebase
+  // project its Android app is registered under, which may not be the
+  // project apps/web's browser flow was originally set up against) — accept
+  // either as a valid audience rather than forcing both platforms onto one.
   app.post('/auth/google', authLimiter, async (req, res) => {
     const { idToken } = req.body ?? {};
     if (!idToken || typeof idToken !== 'string') {
       return res.status(400).json({ error: { code: 'INVALID_BODY', message: 'idToken is required' } });
     }
-    const webClientId = process.env.GOOGLE_WEB_CLIENT_ID;
-    if (!webClientId) {
+    const webClientIds = [process.env.GOOGLE_WEB_CLIENT_ID, process.env.GOOGLE_WEB_CLIENT_ID_MOBILE].filter((id): id is string => !!id);
+    if (webClientIds.length === 0) {
       return res.status(503).json({ error: { code: 'NOT_CONFIGURED', message: 'Google Sign-In is not configured on this server' } });
     }
     try {
-      const client = new OAuth2Client(webClientId);
-      const ticket = await client.verifyIdToken({ idToken, audience: webClientId });
+      const client = new OAuth2Client();
+      const ticket = await client.verifyIdToken({ idToken, audience: webClientIds });
       const payload = ticket.getPayload();
       if (!payload?.email) {
         return res.status(401).json({ error: { code: 'INVALID_TOKEN', message: 'Could not verify Google token' } });
@@ -165,11 +250,24 @@ export function createApp(services: Services = createServices()) {
       const roles = ['consumer'];
       const token = signToken({ uid, email, roles }, '7d');
       const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+      await cancelAccountDeletion(uid);
       return res.status(201).json({ token, user: { uid, email, name, roles }, expiresAt });
     } catch {
       return res.status(401).json({ error: { code: 'INVALID_TOKEN', message: 'Google token verification failed' } });
     }
   });
+
+  // Dev-only auth conveniences (returning a live OTP/reset-token/verification
+  // code directly in the response instead of actually emailing it) must never
+  // key off AI_MOCK — AI_MOCK only controls which AI provider answers
+  // chat/audit calls, and `.env.production.example` documents leaving it
+  // `true` until a real AI key is added, which would otherwise leak a real
+  // password-reset URL (full account takeover) or 2FA/verification code to
+  // anyone who asks. This needs its own explicit, fail-closed opt-in, same
+  // pattern as isDemoLoginEnabled below.
+  function isDevAuthBypassEnabled(): boolean {
+    return process.env.ENABLE_DEV_AUTH_BYPASS === 'true';
+  }
 
   app.post('/auth/forgot-password', authLimiter, async (req, res, next) => {
     try {
@@ -187,7 +285,7 @@ export function createApp(services: Services = createServices()) {
         const resetUrl = `${process.env.FRONTEND_URL ?? 'http://localhost:5174'}/reset-password?token=${token}`;
         if (isEmailConfigured()) {
           await sendPasswordResetEmail(email, resetUrl);
-        } else if (process.env.AI_MOCK === 'true' || process.env.NODE_ENV === 'development') {
+        } else if (isDevAuthBypassEnabled()) {
           return res.json({ ok: true, message: 'If an account with that email exists, a reset link has been sent.', devResetUrl: resetUrl });
         }
       }
@@ -229,7 +327,7 @@ export function createApp(services: Services = createServices()) {
       // No SMTP configured — fall back to returning the code directly so the
       // UI can still display it in dev/mock mode. There is no real mail
       // transport in this branch.
-      if (process.env.AI_MOCK === 'true' || process.env.NODE_ENV === 'development') {
+      if (isDevAuthBypassEnabled()) {
         return res.json({ ok: true, devCode: code });
       }
       res.json({ ok: true });
@@ -244,7 +342,7 @@ export function createApp(services: Services = createServices()) {
     const entry = await getOtp(email);
     if (!entry || Date.now() > entry.expiresAt) {
       // In dev mode: accept any 6-digit code for demo purposes
-      if (process.env.NODE_ENV === 'development' || process.env.AI_MOCK === 'true') {
+      if (isDevAuthBypassEnabled()) {
         return res.json({ ok: true, verified: true });
       }
       return res.status(400).json({ error: { code: 'INVALID_OTP', message: 'Invalid or expired verification code' } });
@@ -277,7 +375,7 @@ export function createApp(services: Services = createServices()) {
       // No SMTP configured — fall back to returning the code directly so the
       // UI can still display it in dev/mock mode. There is no real mail
       // transport in this branch.
-      if (process.env.AI_MOCK === 'true' || process.env.NODE_ENV === 'development') {
+      if (isDevAuthBypassEnabled()) {
         return res.json({ ok: true, devCode: code });
       }
       res.json({ ok: true });
@@ -412,7 +510,7 @@ export function createApp(services: Services = createServices()) {
     }
   });
 
-  app.post('/audit', requireAuth, validateBody(auditRequestSchema), async (req, res, next) => {
+  app.post('/audit', requireAuth, auditLimiter, validateBody(auditRequestSchema), async (req, res, next) => {
     try {
       const { applicationId, documentId } = req.body as { applicationId: string; documentId: string };
       if (!SAFE_ID_RE.test(applicationId) || !SAFE_ID_RE.test(documentId)) {
@@ -425,7 +523,41 @@ export function createApp(services: Services = createServices()) {
       if (!(await claimAuditOwner(documentId, applicationId))) {
         return res.status(409).json({ error: { code: 'CONFLICT', message: 'This document ID is already associated with a different application' } });
       }
-      res.status(202).json(await services.auditQueue.enqueueAudit(req.body));
+      // Best-effort — persists the original file so it can be viewed again
+      // later (see GET /documents), separate from the AI's computed result.
+      // Never blocks or fails the audit itself: Storage may not be enabled
+      // on this project yet, and that must not break scanning.
+      const { imageBase64, mimeType } = req.body as { imageBase64?: string; mimeType?: string };
+      if (imageBase64 && mimeType) {
+        const storagePath = await saveDocumentImage(applicationId, documentId, imageBase64, mimeType);
+        if (storagePath) await saveDocumentFilePath(documentId, storagePath);
+      }
+      const auditResponse = await services.auditQueue.enqueueAudit(req.body);
+      res.status(202).json(auditResponse);
+      // Real trigger for a real push — fires after the response is already
+      // sent so a slow/unreachable device doesn't add latency to the audit
+      // itself. Best-effort: a failure here must never surface as an audit
+      // failure to the user, since the scan itself already succeeded.
+      const { score, status, documentType } = auditResponse.result;
+      void services.notifications.sendUserNotification({
+        userId: req.user!.uid,
+        title: `${documentType} audit complete`,
+        body: status === 'excellent' ? `Score ${score}/100 — looks good.` : `Score ${score}/100 — needs a look before you submit.`,
+        data: { documentId, applicationId, type: 'audit' }
+      }).catch((err) => console.warn('[push] audit-complete notification failed:', (err as Error).message));
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  app.post('/device-tokens', requireAuth, async (req, res, next) => {
+    try {
+      const { token, platform } = req.body as { token?: string; platform?: string };
+      if (!token || typeof token !== 'string' || token.length > 4096) {
+        return res.status(400).json({ error: { code: 'INVALID_BODY', message: 'A valid token is required' } });
+      }
+      await saveDeviceToken(req.user!.uid, token, typeof platform === 'string' ? platform : 'unknown');
+      res.status(201).json({ ok: true });
     } catch (err) {
       next(err);
     }
@@ -457,15 +589,61 @@ export function createApp(services: Services = createServices()) {
     }
   });
 
-  app.get('/requirements', async (_req, res, next) => {
+  app.get('/requirements', async (req, res, next) => {
     try {
-      res.json(await services.requirements.getDefaultRequirements());
+      const country = typeof req.query.country === 'string' ? req.query.country : undefined;
+      res.json(country
+        ? await services.requirements.getRequirementsForCountry(country)
+        : await services.requirements.getDefaultRequirements());
     } catch (err) {
       next(err);
     }
   });
 
-  app.post('/chat', requireAuth, validateBody(chatRequestSchema), async (req, res, next) => {
+  // ── Knowledge base (admin-managed visa requirements) ──────────────────────
+  // Lets a platform_admin add or correct a country's visa requirements from
+  // the web app's dashboard — takes effect immediately for both the mobile
+  // and web apps (GET /requirements above already checks these overrides
+  // first), with no code deploy needed.
+  const COUNTRY_NAME_RE = /^[A-Za-z][A-Za-z '.\-]{0,79}$/;
+
+  app.get('/admin/knowledge-base', requireAuth, requireRole('platform_admin'), async (_req, res, next) => {
+    try {
+      res.json({ overrides: await services.requirements.listCountryOverrides() });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  app.put('/admin/knowledge-base/:country', requireAuth, requireRole('platform_admin'), validateBody(requirementsOverrideSchema), async (req, res, next) => {
+    try {
+      const country = decodeURIComponent(req.params.country as string);
+      if (!COUNTRY_NAME_RE.test(country)) {
+        return res.status(400).json({ error: { code: 'INVALID_PARAM', message: 'Invalid country name' } });
+      }
+      const result = await services.requirements.setCountryOverride(country, req.body);
+      await appendAuditLog({ actor: req.user!.email ?? req.user!.uid, action: 'UPDATE_KNOWLEDGE_BASE', resource: country, ip: req.ip ?? '?' });
+      res.json({ country, requirements: result });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  app.delete('/admin/knowledge-base/:country', requireAuth, requireRole('platform_admin'), async (req, res, next) => {
+    try {
+      const country = decodeURIComponent(req.params.country as string);
+      if (!COUNTRY_NAME_RE.test(country)) {
+        return res.status(400).json({ error: { code: 'INVALID_PARAM', message: 'Invalid country name' } });
+      }
+      await services.requirements.deleteCountryOverride(country);
+      await appendAuditLog({ actor: req.user!.email ?? req.user!.uid, action: 'DELETE_KNOWLEDGE_BASE_OVERRIDE', resource: country, ip: req.ip ?? '?' });
+      res.json({ country, deleted: true });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  app.post('/chat', requireAuth, chatLimiter, validateBody(chatRequestSchema), async (req, res, next) => {
     try {
       // Ground the assistant's answer in the caller's own application data (the
       // "given service" data source) when applicationId refers to an application
@@ -514,6 +692,13 @@ export function createApp(services: Services = createServices()) {
 
   app.post('/bookings', requireAuth, validateBody(bookingRequestSchema), async (req, res, next) => {
     try {
+      // Ownership check: getApplication(id, userId) returns null for an id
+      // that exists but belongs to someone else, same as a genuinely unknown
+      // id — without this, any signed-in user could create a booking (and
+      // pollute the real CRM revenue figures) against an application they
+      // don't own, just by guessing/enumerating its id.
+      const owned = await services.applications.getApplication(req.body.applicationId, req.user!.uid);
+      if (!owned) throw notFound('Application not found');
       const booking = await services.consultants.createBooking({ ...req.body, userId: req.user!.uid });
       res.status(201).json(booking);
     } catch (err) {
@@ -521,15 +706,40 @@ export function createApp(services: Services = createServices()) {
     }
   });
 
+  // Real, fixed slot menu — matches apps/mobile/App.tsx's SLOTS_AM/SLOTS_PM
+  // exactly (label format included: "9:00 AM", no leading zero). There's no
+  // real per-consultant calendar system (Calendly is only referenced as a
+  // placeholder URL), so the available TIMES are still a fixed list — what's
+  // now real is which of those times are already booked.
+  const ALL_BOOKING_SLOTS = ['9:00 AM', '9:30 AM', '10:00 AM', '10:30 AM', '11:00 AM', '11:30 AM', '2:00 PM', '2:30 PM', '3:00 PM', '3:30 PM', '4:00 PM', '4:30 PM'];
+  // All booking slot times are quoted in GST (UTC+4, no DST) — matching the
+  // "All times in GST" label already shown in the mobile booking screen.
+  const GST_OFFSET_MS = 4 * 60 * 60 * 1000;
+  function gstDateKeyAndLabel(slotISO: string): { dateKey: string; label: string } | null {
+    const shifted = new Date(new Date(slotISO).getTime() + GST_OFFSET_MS);
+    const dateKey = `${shifted.getUTCFullYear()}-${String(shifted.getUTCMonth() + 1).padStart(2, '0')}-${String(shifted.getUTCDate()).padStart(2, '0')}`;
+    const hour24 = shifted.getUTCHours();
+    const minute = shifted.getUTCMinutes();
+    const h12 = ((hour24 + 11) % 12) + 1;
+    const label = `${h12}:${String(minute).padStart(2, '0')} ${hour24 < 12 ? 'AM' : 'PM'}`;
+    return ALL_BOOKING_SLOTS.includes(label) ? { dateKey, label } : null;
+  }
+
   app.get('/booking/slots/:consultantId', async (req, res, next) => {
     try {
       const { consultantId } = req.params;
-      // Generate realistic time slots for today and the next 7 days
-      const allSlots = ['09:00 AM', '10:00 AM', '11:00 AM', '01:00 PM', '02:00 PM', '03:00 PM', '04:00 PM'];
-      // Deterministically mark some as taken based on consultantId hash
-      const hash = consultantId.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0);
-      const takenSlots = allSlots.filter((_, i) => (hash + i) % 3 === 0).slice(0, 2);
-      res.json({ consultantId, slots: allSlots, takenSlots });
+      // date is a GST-local YYYY-MM-DD string for the day being browsed;
+      // defaults to "today" (GST) when the caller doesn't pass one.
+      const requestedDate = typeof req.query.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(req.query.date)
+        ? req.query.date
+        : gstDateKeyAndLabel(new Date().toISOString())?.dateKey ?? new Date().toISOString().slice(0, 10);
+      const bookings = await services.consultants.listBookings();
+      const takenSlots = bookings
+        .filter((b) => b.consultantId === consultantId && b.slotISO)
+        .map((b) => gstDateKeyAndLabel(b.slotISO!))
+        .filter((parsed): parsed is { dateKey: string; label: string } => !!parsed && parsed.dateKey === requestedDate)
+        .map((parsed) => parsed.label);
+      res.json({ consultantId, date: requestedDate, slots: ALL_BOOKING_SLOTS, takenSlots });
     } catch (err) {
       next(err);
     }
@@ -543,9 +753,9 @@ export function createApp(services: Services = createServices()) {
     }
   });
 
-  app.get('/hr', requireAuth, requireRole('hr_admin', 'platform_admin'), async (_req, res, next) => {
+  app.get('/hr', requireAuth, requireRole('hr_admin', 'platform_admin'), async (req, res, next) => {
     try {
-      res.json(await services.consultants.getHrPortal());
+      res.json(await services.consultants.getHrPortal(req.user!));
     } catch (err) {
       next(err);
     }
@@ -559,20 +769,111 @@ export function createApp(services: Services = createServices()) {
     }
   });
 
+  // Real consultant<->client messaging. A client starts a thread by naming a
+  // consultantId; a consultant/platform_admin replies into an existing
+  // thread by its threadId (`${consultantId}__${clientUid}`) — there's no
+  // per-consultant login identity yet (see getConsole), so any staff role
+  // can reply into any thread, same scope as the console itself.
+  app.post('/messages', requireAuth, async (req, res, next) => {
+    try {
+      const { text } = req.body ?? {};
+      if (!text || typeof text !== 'string' || !text.trim()) {
+        return res.status(400).json({ error: { code: 'INVALID_BODY', message: 'text is required' } });
+      }
+      const isStaff = req.user!.roles.includes('consultant') || req.user!.roles.includes('platform_admin');
+      let consultantId: string;
+      let clientUid: string;
+      let clientName: string;
+      let senderRole: 'client' | 'consultant';
+      if (isStaff && typeof req.body?.threadId === 'string') {
+        // Match against the known consultant-id whitelist rather than
+        // splitting on "__" — a clientUid can itself legitimately contain an
+        // underscore (uids are derived from base64url-encoded emails), so a
+        // naive split could misparse the boundary.
+        const threadId: string = req.body.threadId;
+        const consultantsList = await services.consultants.listConsultants();
+        const matched = consultantsList.find((c) => threadId.startsWith(`${c.id}__`));
+        if (!matched) {
+          return res.status(400).json({ error: { code: 'INVALID_BODY', message: 'Invalid threadId' } });
+        }
+        consultantId = matched.id;
+        clientUid = threadId.slice(matched.id.length + 2);
+        if (!clientUid) {
+          return res.status(400).json({ error: { code: 'INVALID_BODY', message: 'Invalid threadId' } });
+        }
+        senderRole = 'consultant';
+        const clientProfile = await services.profile.getProfile(clientUid);
+        clientName = clientProfile.personal ? `${clientProfile.personal.firstName} ${clientProfile.personal.lastName}`.trim() : clientUid;
+      } else {
+        const { consultantId: bodyConsultantId } = req.body ?? {};
+        if (!bodyConsultantId || typeof bodyConsultantId !== 'string') {
+          return res.status(400).json({ error: { code: 'INVALID_BODY', message: 'consultantId is required' } });
+        }
+        const consultant = await services.consultants.getConsultant(bodyConsultantId);
+        if (!consultant) throw notFound('Consultant not found');
+        consultantId = bodyConsultantId;
+        clientUid = req.user!.uid;
+        senderRole = 'client';
+        const profile = await services.profile.getProfile(clientUid);
+        clientName = profile.personal ? `${profile.personal.firstName} ${profile.personal.lastName}`.trim() : (req.user!.email ?? clientUid);
+      }
+      const message = await services.messaging.sendMessage({
+        consultantId,
+        clientUid,
+        clientName: clientName || (req.user!.email ?? clientUid),
+        senderRole,
+        text: text.trim()
+      });
+      res.status(201).json({ message });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // A client's own conversations with consultants — without this, a client
+  // could send a message (POST /messages) but had no way to ever discover it
+  // got a reply, since listThreadsForConsultant only serves the staff side.
+  app.get('/my-conversations', requireAuth, async (req, res, next) => {
+    try {
+      const threads = await services.messaging.listThreadsForUser(req.user!.uid);
+      const enriched = await Promise.all(threads.map(async (t) => {
+        const consultant = await services.consultants.getConsultant(t.consultantId);
+        return { ...t, consultantName: consultant?.name ?? t.consultantId };
+      }));
+      res.json({ threads: enriched });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  app.get('/messages', requireAuth, async (req, res, next) => {
+    try {
+      const threadId = typeof req.query.threadId === 'string' ? req.query.threadId : null;
+      if (!threadId) {
+        return res.status(400).json({ error: { code: 'INVALID_PARAM', message: 'threadId query param is required' } });
+      }
+      const isStaff = req.user!.roles.includes('consultant') || req.user!.roles.includes('platform_admin');
+      // Exact-suffix check, not a "__" split — see the POST /messages comment
+      // for why splitting on the delimiter is unsafe here.
+      if (!isStaff && !threadId.endsWith(`__${req.user!.uid}`)) {
+        return res.status(403).json({ error: { code: 'FORBIDDEN', message: 'Not your conversation' } });
+      }
+      const messages = await services.messaging.listMessages(threadId);
+      res.json({ messages });
+    } catch (err) {
+      next(err);
+    }
+  });
+
   app.get('/profile', requireAuth, async (req, res, next) => {
     try {
       res.json({ profile: await services.profile.getProfile(req.user!.uid) });
     } catch (err) { next(err); }
   });
 
-  app.put('/profile', requireAuth, async (req, res, next) => {
+  app.put('/profile', requireAuth, validateBody(userProfilePatchSchema), async (req, res, next) => {
     try {
-      const allowed = ['personal', 'passport', 'employment', 'financials', 'travelHistory', 'contacts', 'notificationPrefs'] as const;
-      const patch: Record<string, unknown> = {};
-      for (const key of allowed) {
-        if (req.body?.[key] !== undefined) patch[key] = req.body[key];
-      }
-      res.json({ profile: await services.profile.updateProfile(req.user!.uid, patch) });
+      res.json({ profile: await services.profile.updateProfile(req.user!.uid, req.body) });
     } catch (err) { next(err); }
   });
 
@@ -599,7 +900,11 @@ export function createApp(services: Services = createServices()) {
       res.json({
         users: users.map((u) => ({
           uid: u.uid, email: u.email, name: u.name, roles: u.roles,
-          status: u.status ?? 'active', createdAt: u.createdAt ?? new Date().toISOString()
+          status: u.status ?? 'active', createdAt: u.createdAt ?? new Date().toISOString(),
+          // 'seed' marks the built-in demo login account, not a real signup —
+          // absent entirely for every real user, so existing callers that
+          // ignore this field see no change.
+          ...(u.source === 'seed' ? { source: 'seed' as const } : {})
         })),
         total: users.length,
       });
@@ -643,8 +948,45 @@ export function createApp(services: Services = createServices()) {
     }
   });
 
+  // The consumer-facing counterpart to POST/DELETE below — without this, a
+  // user had no way to see or manage what they'd shared: the mobile app's
+  // profile screen claimed "View and revoke consultant access from your
+  // profile" next to a plain, unclickable info row with no screen behind it
+  // at all. Scoped to grants THIS user created (listActiveGrants() itself is
+  // platform-wide, for the staff-facing console — filtering by grantedBy
+  // here is what keeps this endpoint from leaking every user's grants).
+  app.get('/access-grants', requireAuth, async (req, res, next) => {
+    try {
+      const all = await services.accessGrants.listActiveGrants();
+      const mine = all.filter((g) => g.grantedBy === req.user!.uid);
+      const enriched = await Promise.all(mine.map(async (g) => {
+        const consultant = await services.consultants.getConsultant(g.consultantId);
+        const application = await services.applications.getApplication(g.applicationId, req.user!.uid);
+        return {
+          grantId: g.grantId,
+          consultantId: g.consultantId,
+          consultantName: consultant?.name ?? g.consultantId,
+          applicationId: g.applicationId,
+          destinationCountry: application?.destinationCountry ?? null,
+          categories: g.categories,
+          expiresAt: g.expiresAt
+        };
+      }));
+      res.json({ grants: enriched });
+    } catch (err) {
+      next(err);
+    }
+  });
+
   app.post('/access-grants', requireAuth, validateBody(accessGrantRequestSchema), async (req, res, next) => {
     try {
+      // Same ownership check as /bookings above — without it, any signed-in
+      // user could grant a consultant access (including documents,
+      // audit_findings, ai_messages, contact) to an application they don't
+      // own, just by guessing/enumerating its id, and that grant would
+      // surface the real owner's data in the consultant console.
+      const owned = await services.applications.getApplication(req.body.applicationId, req.user!.uid);
+      if (!owned) throw notFound('Application not found');
       const grant = await services.accessGrants.createGrant({ ...req.body, grantedBy: req.user!.uid });
       res.status(201).json(grant);
     } catch (err) {
@@ -665,37 +1007,47 @@ export function createApp(services: Services = createServices()) {
   });
 
   // Unlock report — requires payment validation (Stripe integration pending)
+  // No payment processor is wired up yet (no Stripe key anywhere in this
+  // codebase) — this used to accept any non-"invalid" string as a valid
+  // payment and unlock the report for free, which is a real free-unlock bug,
+  // not a dev convenience (nothing gated it to non-production). Fails closed
+  // until a real STRIPE_SECRET_KEY is configured, matching the "coming soon"
+  // messaging already shown in both mobile and web (neither currently calls
+  // this endpoint at all — the mobile paywall UI was removed, web shows a
+  // "coming soon" toast instead of calling it).
   app.post('/reports/:docId/unlock', requireAuth, async (req, res, next) => {
     try {
+      if (!process.env.STRIPE_SECRET_KEY) {
+        return res.status(501).json({ error: { code: 'NOT_IMPLEMENTED', message: 'Payment processing is not yet configured on this server.' } });
+      }
       const { paymentToken } = req.body ?? {};
       if (!paymentToken || typeof paymentToken !== 'string') {
         return res.status(402).json({ error: { code: 'PAYMENT_REQUIRED', message: 'A valid payment token is required to unlock this report' } });
       }
-      // Stripe validation placeholder — replace with real Stripe charge in production
-      // For now accept any non-empty token to unblock dev/demo flows
-      if (paymentToken === 'invalid') {
-        return res.status(402).json({ error: { code: 'PAYMENT_FAILED', message: 'Payment token rejected' } });
-      }
-      res.status(200).json({
-        docId: req.params.docId,
-        unlocked: true,
-        unlockedAt: new Date().toISOString(),
-        message: 'Full report access granted',
-      });
+      // TODO: verify paymentToken as a real Stripe PaymentIntent/charge here
+      // once STRIPE_SECRET_KEY is set — no client can reach this branch yet.
+      return res.status(501).json({ error: { code: 'NOT_IMPLEMENTED', message: 'Payment processing is not yet configured on this server.' } });
     } catch (err) {
       next(err);
     }
   });
 
-  // Usage stats for API portal — current billing period
-  app.get('/usage', requireAuth, async (_req, res, next) => {
+  // Usage stats for API portal — current billing period. auditsRun is real
+  // (derived from the same owner-verified audit trail /documents uses);
+  // apiCalls/avgLatencyMs/errorRate/webhookDeliveries stay honestly at 0 —
+  // there's no request-metering or webhook-delivery-tracking system yet, so
+  // reporting anything else would be fabricated.
+  app.get('/usage', requireAuth, async (req, res, next) => {
     try {
       const now = new Date();
       const period = now.toLocaleString('en-US', { month: 'long', year: 'numeric' });
+      const apps = await services.applications.listApplications(req.user!.uid);
+      const documentIds = (await Promise.all(apps.map((a) => listAuditOwnerDocumentIds(a.id)))).flat();
+      const auditResults = await services.auditQueue.getAuditResultsByIds(documentIds);
       res.json({
         period,
         apiCalls: { used: 0, limit: 5000 },
-        auditsRun: 0,
+        auditsRun: auditResults.length,
         avgLatencyMs: 0,
         errorRate: 0,
         webhookDeliveries: 0,
@@ -706,28 +1058,31 @@ export function createApp(services: Services = createServices()) {
     }
   });
 
-  // Compliance database status — reflects actual supported country count
+  // Requirements knowledge-base status — real coverage, not a fabricated
+  // "scraper" fiction. 'admin-managed' = a platform_admin has reviewed and
+  // set this country's data via /admin/knowledge-base; 'built-in' = still on
+  // the shipped default dataset. requirementCount/sourceCount are real counts
+  // of the actual requirement/source-URL entries on file for that country.
   app.get('/compliance-db', requireAuth, async (_req, res, next) => {
     try {
-      const countries = [
-        { country: 'France',         status: 'live',    coverage: 98, lastScraped: new Date().toISOString(),                        sources: 12 },
-        { country: 'United Kingdom', status: 'live',    coverage: 96, lastScraped: new Date().toISOString(),                        sources: 10 },
-        { country: 'United States',  status: 'live',    coverage: 99, lastScraped: new Date().toISOString(),                        sources: 18 },
-        { country: 'UAE',            status: 'live',    coverage: 100,lastScraped: new Date().toISOString(),                        sources: 7  },
-        { country: 'Canada',         status: 'live',    coverage: 95, lastScraped: new Date().toISOString(),                        sources: 9  },
-        { country: 'Australia',      status: 'live',    coverage: 94, lastScraped: new Date().toISOString(),                        sources: 8  },
-        { country: 'Japan',          status: 'pending', coverage: 72, lastScraped: new Date(Date.now() - 172800000).toISOString(), sources: 5  },
-        { country: 'Germany',        status: 'live',    coverage: 93, lastScraped: new Date().toISOString(),                        sources: 8  },
-        { country: 'Singapore',      status: 'live',    coverage: 91, lastScraped: new Date().toISOString(),                        sources: 6  },
-        { country: 'India',          status: 'live',    coverage: 88, lastScraped: new Date().toISOString(),                        sources: 7  },
-        { country: 'Turkey',         status: 'pending', coverage: 65, lastScraped: new Date(Date.now() - 86400000).toISOString(),  sources: 4  },
-        { country: 'Nigeria',        status: 'error',   coverage: 40, lastScraped: new Date(Date.now() - 432000000).toISOString(), sources: 2  },
-      ];
-      const liveCount = countries.filter(c => c.status === 'live').length;
+      const { REQUIREMENTS_BY_COUNTRY } = await import('@visaiq/mock-data');
+      const overrides = await services.requirements.listCountryOverrides();
+      const countryNames = new Set([...Object.keys(REQUIREMENTS_BY_COUNTRY), ...Object.keys(overrides)]);
+      const countries = [...countryNames].sort().map((country) => {
+        const isOverride = country in overrides;
+        const data = isOverride ? overrides[country] : REQUIREMENTS_BY_COUNTRY[country];
+        return {
+          country,
+          status: isOverride ? 'admin-managed' as const : 'built-in' as const,
+          requirementCount: data.requirements.length,
+          sourceCount: data.sourceUrls.length,
+          lastUpdated: isOverride ? data.freshness.fetchedAt : null,
+        };
+      });
       res.json({
         countries,
         totalCountries: countries.length,
-        liveCount,
+        overrideCount: Object.keys(overrides).length,
         updatedAt: new Date().toISOString(),
       });
     } catch (err) {
@@ -738,16 +1093,16 @@ export function createApp(services: Services = createServices()) {
   app.get('/embassies', async (_req, res, next) => {
     try {
       const embassies = [
-        { id: 'france',         country: 'France',          city: 'Dubai',       name: 'Consulate General of France',          address: 'Al Bateen Area, W50 St, Abu Dhabi',     phone: '+971 2 613 0000', hours: 'Mon–Fri 08:30–12:30', website: 'ae.ambafrance.org',              appointment: 'https://visas-algerie.gouv.fr' },
+        { id: 'france',         country: 'France',          city: 'Dubai',       name: 'Consulate General of France',          address: 'Al Bateen Area, W50 St, Abu Dhabi',     phone: '+971 2 613 0000', hours: 'Mon–Fri 08:30–12:30', website: 'ae.ambafrance.org',              appointment: 'https://ae.ambafrance.org' },
         { id: 'uk',             country: 'United Kingdom',  city: 'Dubai',       name: 'British Embassy Dubai',                address: 'Al Seef Rd, Bur Dubai, Dubai',           phone: '+971 4 309 4444', hours: 'Mon–Fri 08:00–16:00', website: 'www.gov.uk/world/uae',           appointment: 'https://www.vfsglobal.co.uk' },
         { id: 'us',             country: 'United States',   city: 'Abu Dhabi',   name: 'U.S. Embassy Abu Dhabi',               address: 'Embassies District, Abu Dhabi',          phone: '+971 2 414 2200', hours: 'Mon–Fri 08:00–16:30', website: 'ae.usembassy.gov',               appointment: 'https://ais.usvisa-info.com' },
         { id: 'canada',         country: 'Canada',          city: 'Dubai',       name: 'Embassy of Canada',                    address: 'Bank St, Abu Dhabi',                     phone: '+971 2 694 0300', hours: 'Mon–Fri 07:30–15:00', website: 'www.canada.ca/en/immigration',    appointment: 'https://ircc.canada.ca' },
         { id: 'germany',        country: 'Germany',         city: 'Abu Dhabi',   name: 'German Embassy Abu Dhabi',             address: 'Sheikh Khalifa St, Abu Dhabi',           phone: '+971 2 644 6693', hours: 'Mon–Fri 09:00–12:00', website: 'abu-dhabi.diplo.de',             appointment: 'https://videx.diplo.de' },
-        { id: 'france_dubai',   country: 'France',          city: 'Dubai',       name: 'Consulate General of France in Dubai', address: 'Al Habtoor City, Sheikh Zayed Rd',       phone: '+971 4 408 4900', hours: 'Mon–Fri 08:30–12:30', website: 'ae.ambafrance.org',              appointment: 'https://visas-algerie.gouv.fr' },
+        { id: 'france_dubai',   country: 'France',          city: 'Dubai',       name: 'Consulate General of France in Dubai', address: 'Al Habtoor City, Sheikh Zayed Rd',       phone: '+971 4 408 4900', hours: 'Mon–Fri 08:30–12:30', website: 'ae.ambafrance.org',              appointment: 'https://ae.ambafrance.org' },
         { id: 'italy',          country: 'Italy',           city: 'Abu Dhabi',   name: 'Embassy of Italy',                     address: 'Khalid Bin Al Waleed, Abu Dhabi',        phone: '+971 2 443 5622', hours: 'Mon–Fri 09:00–12:30', website: 'ambAbuDhabi.esteri.it',          appointment: 'https://prenotami.esteri.it' },
         { id: 'netherlands',    country: 'Netherlands',     city: 'Abu Dhabi',   name: 'Embassy of the Netherlands',           address: 'Diplomatic Area, Abu Dhabi',             phone: '+971 2 632 1920', hours: 'Mon–Fri 09:00–12:00', website: 'www.dutchembassy.ae',            appointment: 'https://www.vfsglobal.com' },
         { id: 'australia',      country: 'Australia',       city: 'Abu Dhabi',   name: 'Australian Embassy',                   address: 'Al Muhairy Centre, Abu Dhabi',           phone: '+971 2 401 7500', hours: 'Mon–Fri 08:30–12:30', website: 'uae.embassy.gov.au',             appointment: 'https://online.vfsglobal.com' },
-        { id: 'india',          country: 'India',           city: 'Dubai',       name: 'Consulate General of India',           address: 'Oud Metha Rd, Bur Dubai',                phone: '+971 4 397 1333', hours: 'Mon–Fri 09:00–12:00', website: 'cgidubai.gov.in',                appointment: 'https://indiavisa.com' },
+        { id: 'india',          country: 'India',           city: 'Dubai',       name: 'Consulate General of India',           address: 'Oud Metha Rd, Bur Dubai',                phone: '+971 4 397 1333', hours: 'Mon–Fri 09:00–12:00', website: 'cgidubai.gov.in',                appointment: 'https://cgidubai.gov.in' },
         { id: 'japan',          country: 'Japan',           city: 'Abu Dhabi',   name: 'Embassy of Japan',                     address: 'Bainunah St, Abu Dhabi',                 phone: '+971 2 443 5696', hours: 'Mon–Fri 09:00–12:00', website: 'www.ae.emb-japan.go.jp',         appointment: 'https://www.vfsglobal.com' },
         { id: 'singapore',      country: 'Singapore',       city: 'Abu Dhabi',   name: 'Embassy of Singapore',                 address: 'Abu Dhabi Mall Tower A',                 phone: '+971 2 657 0444', hours: 'Mon–Fri 09:00–13:00', website: 'www.mfa.gov.sg/abudhabi',         appointment: 'https://www.vfsglobal.com' },
       ];
@@ -853,13 +1208,16 @@ export function createApp(services: Services = createServices()) {
       res.json({
         categories: ['flights', 'housing', 'corporate', 'insurance'],
         partners: [
-          { id: 'p-emirates', category: 'flights',   name: 'Emirates',    discount: '8% off bookings',        commissionPct: 4 },
-          { id: 'p-airbnb',   category: 'housing',   name: 'Airbnb',      discount: '10% off first stay',     commissionPct: 6 },
-          { id: 'p-deel',     category: 'corporate', name: 'Deel',        discount: '1 month free on annual', commissionPct: 8 },
-          { id: 'p-axa',      category: 'insurance', name: 'AXA Travel',  discount: 'AED 80 single-trip',     commissionPct: 5 },
-          { id: 'p-flydubai', category: 'flights',   name: 'flydubai',    discount: 'AED 50 off first booking',commissionPct: 3 },
-          { id: 'p-remote',   category: 'corporate', name: 'Remote.com',  discount: 'Waived onboarding fee',  commissionPct: 7 },
-          { id: 'p-rsa',      category: 'insurance', name: 'RSA Insurance',discount: '12% off annual plan',   commissionPct: 5 },
+          { id: 'p-emirates', category: 'flights',   name: 'Emirates',     tagline: 'World-class connectivity from Dubai',        discount: '8% off bookings',         commissionPct: 4, url: 'https://www.emirates.com' },
+          { id: 'p-airindia', category: 'flights',   name: 'Air India',    tagline: 'Direct routes India ↔ Schengen',             discount: '5% off + priority check-in', commissionPct: 4, url: 'https://www.airindia.com' },
+          { id: 'p-flydubai', category: 'flights',   name: 'flydubai',     tagline: 'Budget-friendly regional routes',            discount: 'AED 50 off first booking', commissionPct: 3, url: 'https://www.flydubai.com' },
+          { id: 'p-airbnb',   category: 'housing',   name: 'Airbnb',       tagline: 'Verified stays with host ratings',           discount: '10% off first stay',      commissionPct: 6, url: 'https://www.airbnb.com' },
+          { id: 'p-booking',  category: 'housing',   name: 'Booking.com',  tagline: 'Cancellation-friendly hotel bookings',       discount: 'Genius Level 2 unlocked', commissionPct: 6, url: 'https://www.booking.com' },
+          { id: 'p-deel',     category: 'corporate', name: 'Deel',         tagline: 'International payroll and HR',               discount: '1 month free on annual plan', commissionPct: 8, url: 'https://www.deel.com' },
+          { id: 'p-remote',   category: 'corporate', name: 'Remote.com',   tagline: 'Employer of record worldwide',               discount: 'Waived onboarding fee',   commissionPct: 7, url: 'https://remote.com' },
+          { id: 'p-axa',      category: 'insurance', name: 'AXA Travel',   tagline: 'Schengen-compliant medical coverage',        discount: 'AED 80 single-trip policy', commissionPct: 5, url: 'https://www.axa-travel-insurance.com' },
+          { id: 'p-rsa',      category: 'insurance', name: 'RSA Insurance',tagline: 'UAE-issued travel insurance certificates',   discount: '12% off annual plan',     commissionPct: 5, url: 'https://www.rsauae.com' },
+          { id: 'p-oman',     category: 'insurance', name: 'Oman Insurance',tagline: 'Instant certificate for embassy submission', discount: 'Same-day issuance',      commissionPct: 5, url: 'https://www.omaninsurance.ae' },
         ],
       });
     } catch (err) {
@@ -874,13 +1232,20 @@ export function createApp(services: Services = createServices()) {
       const apps = await services.applications.listApplications(uid);
       const notifications: Array<{ id: string; title: string; body: string; time: string; type: string; read: boolean }> = [];
 
+      // VisaApplication carries no timestamp field at all (not createdAt, not
+      // an "issues last found at" marker) — these two notifications reflect a
+      // persistent CURRENT condition recomputed fresh on every request, not a
+      // one-time event with a real moment to measure elapsed time from. This
+      // used to show a fixed "Just now"/"1h ago" regardless of how long the
+      // condition had actually existed (could be weeks) — 'Ongoing' is
+      // honest about that instead of implying a precision that isn't there.
       apps.forEach((app, i) => {
         if (app.issuesCount > 0) {
           notifications.push({
             id: `warn-${app.id}`,
             title: `${app.issuesCount} issue${app.issuesCount !== 1 ? 's' : ''} on ${app.destinationCountry} application`,
             body: `Resolve issues to improve your readiness score (currently ${app.readinessScore}/100).`,
-            time: 'Just now',
+            time: 'Ongoing',
             type: 'warning',
             read: i > 0,
           });
@@ -890,7 +1255,7 @@ export function createApp(services: Services = createServices()) {
             id: `docs-${app.id}`,
             title: `${app.documentsRequired - app.documentsUploaded} document${app.documentsRequired - app.documentsUploaded !== 1 ? 's' : ''} still needed`,
             body: `${app.destinationCountry} ${app.visaType} — upload remaining documents to continue.`,
-            time: '1h ago',
+            time: 'Ongoing',
             type: 'audit',
             read: true,
           });
@@ -931,7 +1296,10 @@ export function createApp(services: Services = createServices()) {
     }
   });
 
-  // Documents — per-user document list (seeded from application state)
+  // Documents — the real per-application checklist, cross-referenced against
+  // actually-claimed documentIds and their actually-stored audit results.
+  // Nothing here is derived from a count or a random/deterministic filler —
+  // a template only shows as done when a real AuditResult exists for it.
   app.get('/documents', requireAuth, async (req, res, next) => {
     try {
       const uid = req.user!.uid;
@@ -940,37 +1308,74 @@ export function createApp(services: Services = createServices()) {
       const relevantApp = applicationId ? apps.find(a => a.id === applicationId) : apps[0];
 
       const DOCUMENT_TEMPLATES = [
-        { id: 'passport',   title: 'Passport bio page',           type: 'Passport',   icon: 'id-card-outline',          required: true  },
-        { id: 'bank',       title: 'Bank statement (3 months)',   type: 'Finance',    icon: 'cash-outline',             required: true  },
-        { id: 'employment', title: 'Employment letter',           type: 'Employment', icon: 'briefcase-outline',        required: true  },
-        { id: 'insurance',  title: 'Travel medical insurance',    type: 'Insurance',  icon: 'shield-checkmark-outline', required: true  },
-        { id: 'itinerary',  title: 'Flight & hotel reservation',  type: 'Itinerary',  icon: 'airplane-outline',         required: true  },
-        { id: 'photo',      title: 'Biometric photo',             type: 'Photo',      icon: 'camera-outline',           required: true  },
+        { id: 'passport',   title: 'Passport bio page',           type: 'passport',   icon: 'id-card-outline',          required: true  },
+        { id: 'bank',       title: 'Bank statement (3 months)',   type: 'bank',       icon: 'cash-outline',             required: true  },
+        { id: 'employment', title: 'Employment letter',           type: 'employment', icon: 'briefcase-outline',        required: true  },
+        { id: 'insurance',  title: 'Travel medical insurance',    type: 'insurance',  icon: 'shield-checkmark-outline', required: true  },
+        { id: 'itinerary',  title: 'Flight & hotel reservation',  type: 'itinerary',  icon: 'airplane-outline',         required: true  },
+        { id: 'photo',      title: 'Biometric photo',             type: 'photo',      icon: 'camera-outline',           required: true  },
       ];
+      const STATUS_LABEL: Record<string, string> = { excellent: 'Passed all checks', attention_needed: 'Needs attention', issues_to_fix: 'Issues found' };
+      const STATUS_COLOR: Record<string, string> = { excellent: '#10B981', attention_needed: '#F59E0B', issues_to_fix: '#DC2626' };
 
-      // Deterministic scores per document type — no Math.random()
-      const AUDIT_SCORES: Record<string, number> = {
-        passport: 96, bank: 88, employment: 91, insurance: 85, itinerary: 93, photo: 90
-      };
+      let documents: any[] = DOCUMENT_TEMPLATES.map(tmpl => ({
+        id: `${relevantApp?.id ?? 'doc'}-${tmpl.id}`,
+        title: tmpl.title,
+        type: tmpl.type,
+        icon: tmpl.icon,
+        status: 'Missing',
+        statusColor: '#DC2626',
+        score: 0,
+        issue: tmpl.required ? 'Required — not yet uploaded' : 'Optional',
+        retention: 'Not uploaded',
+        uploadedAt: null as string | null,
+      }));
 
-      const uploaded = relevantApp?.documentsUploaded ?? 0;
-      const documents = DOCUMENT_TEMPLATES.map((tmpl, i) => {
-        const isUploaded = i < uploaded;
-        const isAudited = i < Math.max(0, uploaded - 1);
-        const appId = relevantApp?.id ?? 'doc';
-        return {
-          id: `${appId}-${tmpl.id}`,
-          title: tmpl.title,
-          type: tmpl.type,
-          icon: tmpl.icon,
-          status: isAudited ? 'Audited' : isUploaded ? 'Queued' : 'Missing',
-          statusColor: isAudited ? '#10B981' : isUploaded ? '#F59E0B' : '#DC2626',
-          score: isAudited ? (AUDIT_SCORES[tmpl.id] ?? 90) : 0,
-          issue: isAudited ? 'Passed all checks' : isUploaded ? 'Waiting for AI audit' : (tmpl.required ? 'Required — not yet uploaded' : 'Optional'),
-          retention: isUploaded ? `Deletes in ${68 + i}h` : 'Not uploaded',
-          uploadedAt: isUploaded ? new Date(Date.now() - i * 3600000).toISOString().split('T')[0] : null,
-        };
-      });
+      if (relevantApp) {
+        const documentIds = await listAuditOwnerDocumentIds(relevantApp.id);
+        const results = await services.auditQueue.getAuditResultsByIds(documentIds);
+        // Most recent result wins if the same type was uploaded more than once.
+        const byType = new Map<string, typeof results[number]>();
+        for (const r of results) {
+          const key = (r.documentType || 'other').toLowerCase();
+          const existing = byType.get(key);
+          if (!existing || r.generatedAt > existing.generatedAt) byType.set(key, r);
+        }
+        // A real signed URL to the original file — only present when Storage
+        // is actually enabled on this project AND that specific document's
+        // bytes were successfully persisted at audit time. Absent otherwise,
+        // never a placeholder link.
+        async function withFileUrl(real: typeof results[number]) {
+          const storagePath = await getDocumentFilePath(real.documentId);
+          const fileUrl = storagePath ? await getSignedReadUrl(storagePath) : null;
+          return {
+            status: 'Audited',
+            statusColor: STATUS_COLOR[real.status] ?? '#10B981',
+            score: real.score,
+            issue: STATUS_LABEL[real.status] ?? 'Audited',
+            retention: fileUrl ? 'Original file stored with your account' : 'Result stored with your account — original file is not retained',
+            uploadedAt: real.generatedAt,
+            fileUrl: fileUrl ?? undefined,
+          };
+        }
+        documents = await Promise.all(documents.map(async doc => {
+          const real = byType.get(doc.type);
+          if (!real) return doc;
+          byType.delete(doc.type);
+          return { ...doc, id: real.documentId, ...(await withFileUrl(real)) };
+        }));
+        // Any real audit whose type didn't match one of the 6 known templates
+        // (e.g. 'other') still gets shown — a real upload is never dropped.
+        for (const [, real] of byType) {
+          documents.push({
+            id: real.documentId,
+            title: real.documentType || 'Document',
+            type: real.documentType || 'other',
+            icon: 'document-outline',
+            ...(await withFileUrl(real)),
+          });
+        }
+      }
 
       res.json({ documents });
     } catch (err) {
@@ -994,7 +1399,18 @@ export function createApp(services: Services = createServices()) {
       if (rateCache && now < rateCacheExpiry) {
         return res.json({ ...rateCache, base: 'USD' });
       }
-      const fxRes = await fetch('https://api.frankfurter.app/latest?base=USD');
+      // Frankfurter has no SLA and this route has no other guard against a
+      // slow/unreachable upstream — without a timeout, one stuck outbound
+      // call here hangs the whole request (and ties up the connection)
+      // instead of falling back to the cache/static rates below.
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 5000);
+      let fxRes: Response;
+      try {
+        fxRes = await fetch('https://api.frankfurter.app/latest?base=USD', { signal: controller.signal });
+      } finally {
+        clearTimeout(timeout);
+      }
       if (!fxRes.ok) throw new Error(`Frankfurter returned ${fxRes.status}`);
       const fxData = await fxRes.json() as { rates: Record<string, number>; date: string };
       const rates: Record<string, number> = { ...STATIC_RATES, ...fxData.rates, USD: 1.000 };
@@ -1012,12 +1428,17 @@ export function createApp(services: Services = createServices()) {
   app.get('/referrals', requireAuth, async (req, res, next) => {
     try {
       const uid = req.user!.uid;
-      const referralCode = `REF-${uid.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8)}`;
+      const referralCode = await getOrCreateReferralCode(uid);
+      const claims = await listReferralClaimsForReferrer(uid);
+      const REWARD_USD = 10;
       res.json({
         referralCode,
-        referralLink: `https://visawithease.app/r/${referralCode}`,
-        stats: { pending: 0, converted: 0, totalEarned: 0 },
-        history: [],
+        referralLink: `${process.env.FRONTEND_URL ?? 'http://localhost:5174'}/join?ref=${referralCode}`,
+        stats: { pending: 0, converted: claims.length, totalEarned: claims.length * REWARD_USD },
+        history: claims
+          .slice()
+          .sort((a, b) => b.claimedAt.localeCompare(a.claimedAt))
+          .map((c) => ({ name: c.claimedByEmail, status: 'Signed up', date: c.claimedAt, credit: `+$${REWARD_USD}` })),
       });
     } catch (err) {
       next(err);
@@ -1030,6 +1451,26 @@ export function createApp(services: Services = createServices()) {
       if (!code || typeof code !== 'string') {
         return res.status(400).json({ error: { code: 'INVALID_BODY', message: 'Referral code is required' } });
       }
+      const uid = req.user!.uid;
+      const normalized = code.trim().toUpperCase();
+      const referrerUid = await getReferralCodeOwner(normalized);
+      if (!referrerUid) {
+        return res.status(404).json({ error: { code: 'INVALID_CODE', message: 'That referral code was not found' } });
+      }
+      if (referrerUid === uid) {
+        return res.status(400).json({ error: { code: 'SELF_REFERRAL', message: "You can't claim your own referral code" } });
+      }
+      const existingClaim = await getReferralClaimForUser(uid);
+      if (existingClaim) {
+        return res.status(409).json({ error: { code: 'ALREADY_CLAIMED', message: 'You have already claimed a referral code' } });
+      }
+      await recordReferralClaim({
+        code: normalized,
+        referrerUid,
+        claimedByUid: uid,
+        claimedByEmail: req.user!.email ?? uid,
+        claimedAt: new Date().toISOString()
+      });
       res.json({ ok: true, message: 'Referral code applied. Reward will be credited on your first paid subscription.' });
     } catch (err) {
       next(err);
@@ -1059,11 +1500,28 @@ export function createApp(services: Services = createServices()) {
     }
   });
 
+  // Real persistence — this used to reply with a "scheduled" message and
+  // write nothing anywhere, so nothing was ever actually scheduled or
+  // cancellable. A record now genuinely exists and genuinely un-schedules
+  // itself if the user logs back in (see cancelAccountDeletion calls in
+  // /auth/session and /auth/google below). There is still no scheduled job
+  // that purges data once scheduledFor passes — that needs real
+  // infrastructure on the server this app deploys to, not just an API route.
   app.post('/auth/delete-account', requireAuth, async (req, res, next) => {
     try {
-      // In production: queue account deletion (GDPR 30-day window)
-      // For now: acknowledge and return success
-      res.json({ ok: true, scheduledFor: new Date(Date.now() + 30 * 86400000).toISOString(), message: 'Account deletion scheduled. You have 30 days to cancel by logging in.' });
+      const scheduledFor = new Date(Date.now() + 30 * 86400000).toISOString();
+      const record = await scheduleAccountDeletion(req.user!.uid, scheduledFor);
+      await appendAuditLog({ actor: req.user!.email ?? req.user!.uid, action: 'REQUEST_ACCOUNT_DELETION', resource: req.user!.uid, ip: req.ip ?? '?' });
+      res.json({ ok: true, scheduledFor: record.scheduledFor, message: 'Account deletion scheduled. You have 30 days to cancel by logging in.' });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  app.get('/auth/delete-account/status', requireAuth, async (req, res, next) => {
+    try {
+      const record = await getAccountDeletionStatus(req.user!.uid);
+      res.json({ pending: record?.status === 'pending', record: record ?? null });
     } catch (err) {
       next(err);
     }

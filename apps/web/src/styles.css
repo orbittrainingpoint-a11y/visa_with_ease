@@ -450,6 +450,16 @@ main {
   color: #334155;
 }
 
+.mobile-nav-toggle {
+  display: none;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+
+.sidebar-backdrop {
+  display: none;
+}
+
 .avatar,
 .consultant-avatar {
   display: grid;
@@ -491,6 +501,16 @@ main {
   color: #0f172a;
   font-family: 'Plus Jakarta Sans', Inter, sans-serif;
   font-size: 30px;
+  line-height: 1.15;
+}
+
+/* Section headings inside .page-title that aren't the page's single real h1
+   (a page must have exactly one) — same look, correct semantics/font-size
+   set inline per usage since it varies (20-24px) unlike the real h1's fixed 30px. */
+.page-title h2 {
+  margin: 0;
+  color: #0f172a;
+  font-family: 'Plus Jakarta Sans', Inter, sans-serif;
   line-height: 1.15;
 }
 
@@ -1629,9 +1649,40 @@ main {
     grid-template-columns: 1fr;
   }
 
+  /* Off-canvas drawer instead of sitting inline above page content — the old
+     always-inline sidebar forced a scroll past ~20 nav links to reach
+     anything below it, and its static-flow box height intercepted clicks on
+     the header underneath it (real bug caught by the mobile Playwright
+     smoke test: clicking the notification bell timed out with
+     "<aside class='sidebar'> intercepts pointer events"). */
   .sidebar {
-    position: static;
-    height: auto;
+    position: fixed;
+    top: 0;
+    left: 0;
+    height: 100vh;
+    width: 280px;
+    max-width: 82vw;
+    z-index: 60;
+    overflow-y: auto;
+    transform: translateX(-100%);
+    transition: transform 0.25s ease;
+    box-shadow: 4px 0 24px rgba(15, 23, 42, 0.18);
+  }
+
+  .sidebar.open {
+    transform: translateX(0);
+  }
+
+  .sidebar-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(15, 23, 42, 0.45);
+    z-index: 55;
+  }
+
+  .mobile-nav-toggle {
+    display: grid;
   }
 
   .sidebar nav,

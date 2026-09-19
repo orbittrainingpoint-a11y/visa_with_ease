@@ -102,8 +102,9 @@ export interface ApiRequirementsResponse {
   sourceUrls: { id: string; label: string; url: string }[];
   freshness: { fetchedAt: string; expiresAt: string; ageHours: number };
 }
-export function fetchRequirements() {
-  return request<ApiRequirementsResponse>('GET', '/requirements');
+export function fetchRequirements(destinationCountry?: string) {
+  const qs = destinationCountry ? `?country=${encodeURIComponent(destinationCountry)}` : '';
+  return request<ApiRequirementsResponse>('GET', `/requirements${qs}`);
 }
 
 // ── Consultants ───────────────────────────────────────────────────────────────
@@ -117,6 +118,7 @@ export interface ApiConsultant {
   reviews: number;
   responseTime: string;
   availableToday: boolean;
+  verified: boolean;
   bio?: string;
 }
 export interface ApiSessionOption {
@@ -163,6 +165,21 @@ export function createAccessGrant(body: {
 }) {
   return request<{ grantId: string; status: string }>('POST', '/access-grants', body);
 }
+export interface ApiAccessGrant {
+  grantId: string;
+  consultantId: string;
+  consultantName: string;
+  applicationId: string;
+  destinationCountry: string | null;
+  categories: string[];
+  expiresAt: string;
+}
+export function fetchMyAccessGrants() {
+  return request<{ grants: ApiAccessGrant[] }>('GET', '/access-grants');
+}
+export function revokeAccessGrant(grantId: string) {
+  return request<{ grantId: string; status: string }>('DELETE', `/access-grants/${encodeURIComponent(grantId)}`);
+}
 
 // ── Chat ──────────────────────────────────────────────────────────────────────
 export interface ChatReply {
@@ -186,7 +203,7 @@ export interface ApiAuditResult {
 export function createUploadSlot(body: { applicationId: string; documentId: string }) {
   return request<{ uploadUrl: string; expiresAt: string }>('POST', '/upload-slots', body);
 }
-export function enqueueAudit(body: { applicationId: string; documentId: string }) {
+export function enqueueAudit(body: { applicationId: string; documentId: string; documentType?: string; extractedText?: string; imageBase64?: string; mimeType?: string }) {
   return request<{ jobId: string; status: string; result: ApiAuditResult }>('POST', '/audit', body);
 }
 export function fetchAuditResult(docId: string) {
@@ -224,6 +241,10 @@ export interface ApiDocument {
   issue: string;
   retention: string;
   uploadedAt: string | null;
+  /** Short-lived signed URL to the original file — only present when
+   *  Storage is enabled server-side and this specific document's bytes were
+   *  actually persisted. Absent otherwise; never a placeholder link. */
+  fileUrl?: string;
 }
 export function fetchDocuments(applicationId?: string) {
   const qs = applicationId ? `?applicationId=${encodeURIComponent(applicationId)}` : '';
@@ -231,8 +252,17 @@ export function fetchDocuments(applicationId?: string) {
 }
 
 // ── Partners / misc ───────────────────────────────────────────────────────────
+export interface ApiPartner {
+  id: string;
+  category: string;
+  name: string;
+  tagline?: string;
+  discount: string;
+  commissionPct: number;
+  url?: string;
+}
 export function fetchPartners() {
-  return request<{ categories: string[]; partners: { id: string; category: string; name: string; discount: string; commissionPct: number }[] }>('GET', '/partners');
+  return request<{ categories: string[]; partners: ApiPartner[] }>('GET', '/partners');
 }
 export function fetchHealth() {
   return request<{ status: string; aiMock: boolean }>('GET', '/health');
@@ -241,6 +271,46 @@ export function fetchHealth() {
 // ── Exchange rates ─────────────────────────────────────────────────────────────
 export function fetchExchangeRates() {
   return request<{ rates: Record<string, number>; base: string; updatedAt: string }>('GET', '/exchange-rates');
+}
+
+// ── Push notifications ───────────────────────────────────────────────────────
+export function registerDeviceToken(token: string, platform: string) {
+  return request<{ ok: boolean }>('POST', '/device-tokens', { token, platform });
+}
+
+// ── Consultant messaging ──────────────────────────────────────────────────────
+export interface ApiMessage {
+  id: string;
+  threadId: string;
+  consultantId: string;
+  clientUid: string;
+  clientName: string;
+  senderRole: 'client' | 'consultant';
+  text: string;
+  createdAt: string;
+}
+/** A client starts/continues a thread by naming consultantId; a consultant
+ *  replies into an existing thread by its threadId. Exactly one of the two
+ *  must be provided — matches POST /messages' two entry paths. */
+export function sendMessage(body: { consultantId?: string; threadId?: string; text: string }) {
+  return request<{ message: ApiMessage }>('POST', '/messages', body);
+}
+export function fetchMessages(threadId: string) {
+  return request<{ messages: ApiMessage[] }>('GET', `/messages?threadId=${encodeURIComponent(threadId)}`);
+}
+export interface ApiConversationThread {
+  threadId: string;
+  consultantId: string;
+  consultantName: string;
+  lastMessage: string;
+  createdAt: string;
+  status: string;
+}
+/** The signed-in client's own conversations with consultants — without this
+ *  there was no way to ever discover a consultant's reply after sending a
+ *  message from a consultant's profile screen. */
+export function fetchMyConversations() {
+  return request<{ threads: ApiConversationThread[] }>('GET', '/my-conversations');
 }
 
 // ── Profile ───────────────────────────────────────────────────────────────────
@@ -292,8 +362,9 @@ export function deleteAccount() {
 }
 
 // ── Booking slots ──────────────────────────────────────────────────────────────
-export function fetchBookingSlots(consultantId: string) {
-  return request<{ slots: string[]; takenSlots: string[] }>('GET', `/booking/slots/${encodeURIComponent(consultantId)}`);
+export function fetchBookingSlots(consultantId: string, date?: string) {
+  const qs = date ? `?date=${encodeURIComponent(date)}` : '';
+  return request<{ slots: string[]; takenSlots: string[]; date: string }>('GET', `/booking/slots/${encodeURIComponent(consultantId)}${qs}`);
 }
 
 // ── Visa waiver ────────────────────────────────────────────────────────────────

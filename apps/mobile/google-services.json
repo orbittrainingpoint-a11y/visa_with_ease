@@ -1,0 +1,39 @@
+{
+  "project_info": {
+    "project_number": "1047967568696",
+    "project_id": "visa-with-ease",
+    "storage_bucket": "visa-with-ease.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1047967568696:android:e13389779b8b1731a2e7cd",
+        "android_client_info": {
+          "package_name": "app.visaiq.mobile"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "1047967568696-9n47vv1rta5tf87vpmg8ts06lu2kaqvk.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDdFhNRYe02haLdOuaItTMsaYQTHwEZ62A"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "1047967568696-9n47vv1rta5tf87vpmg8ts06lu2kaqvk.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

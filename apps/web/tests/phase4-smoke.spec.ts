@@ -6,7 +6,13 @@ const routes = [
   ['/consultants', 'Pre-filtered for France'],
   ['/consultant-console', 'Case queue, conversations and CRM'],
   ['/hr', 'HR dashboard and employee visa readiness'],
-  ['/employee', 'Your Company'],
+  // 'Your Company' was a hardcoded fallback removed this session — the
+  // employee portal now shows a real name derived from the signed-in user
+  // (their profile name if set, else their email's local-part), with the
+  // real employer only appended when one is actually on file. The
+  // platform_admin demo persona (admin@demo.visawithease.app) has no
+  // profile, so this derives to "Admin" with no company suffix.
+  ['/employee', 'Admin'],
   ['/admin', 'Operations overview']
 ];
 

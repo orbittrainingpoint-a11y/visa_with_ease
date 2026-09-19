@@ -32,16 +32,10 @@ const FORCE_LOCAL = new Set([
 // Also force React/RN to always resolve from this project's node_modules
 // to prevent the "multiple copies of React" invalid-hook-call error.
 const ASSET_URIS_PATCH = path.resolve(projectRoot, 'patches/AssetUris.js');
-const GOOGLE_SIGNIN_MOCK = path.resolve(projectRoot, 'patches/googleSigninMock.js');
 const LOCAL_NM = path.resolve(projectRoot, 'node_modules');
 
 const originalResolveRequest = config.resolver.resolveRequest;
 config.resolver.resolveRequest = (context, moduleName, platform) => {
-  // Mock Google Sign-In when native module is not linked in the installed APK
-  if (moduleName === '@react-native-google-signin/google-signin') {
-    return { filePath: GOOGLE_SIGNIN_MOCK, type: 'sourceFile' };
-  }
-
   // Redirect AssetUris to our patched version (bypasses stale transform cache)
   if (
     moduleName.endsWith('AssetUris') ||

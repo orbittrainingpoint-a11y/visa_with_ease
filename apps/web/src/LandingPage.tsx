@@ -390,7 +390,7 @@ function Footer({ nav }: { nav: (p: string) => void }) {
         </div>
         {Object.entries(groups).map(([cat, links]) => (
           <div key={cat} className="footer-col">
-            <h4 className="footer-head">{cat}</h4>
+            <h3 className="footer-head">{cat}</h3>
             <ul>
               {links.map(([, path, label]) => (
                 <li key={path}><button className="footer-lnk" onClick={() => nav(path)}>{label}</button></li>
@@ -516,7 +516,7 @@ function ShowcaseCarousel() {
             {SLIDES.map((s, i) => (
               <div key={s.src} className={`sc-cap-item${i === idx ? ' active' : ''}`} onClick={() => go(i)}>
                 <span className="sc-cap-n">{s.step}</span>
-                <div><h4>{s.label}</h4>{i === idx && <p>{s.caption}</p>}</div>
+                <div><h3>{s.label}</h3>{i === idx && <p>{s.caption}</p>}</div>
               </div>
             ))}
           </div>
@@ -698,21 +698,23 @@ export default function LandingPage({ onNavigate }: { onNavigate: (path: string)
   return (
     <div className="lp">
       <TopNav nav={onNavigate} />
-      <Hero onStart={() => onNavigate('/app')} />
-      <StatsBar />
-      <FeatureGrid />
-      <HowItWorks />
-      <ShowcaseCarousel />
-      <MobileAppPromo />
-      <DestinationsGrid />
-      <ComparisonTable />
-      <Testimonials onNavigate={onNavigate} />
-      <PricingStrip nav={onNavigate} />
-      <TeamsBanner nav={onNavigate} />
-      <ComplianceBadges />
-      <BlogPreview nav={onNavigate} />
-      <FAQSection />
-      <DownloadCTA onStart={() => onNavigate('/app')} />
+      <main>
+        <Hero onStart={() => onNavigate('/app')} />
+        <StatsBar />
+        <FeatureGrid />
+        <HowItWorks />
+        <ShowcaseCarousel />
+        <MobileAppPromo />
+        <DestinationsGrid />
+        <ComparisonTable />
+        <Testimonials onNavigate={onNavigate} />
+        <PricingStrip nav={onNavigate} />
+        <TeamsBanner nav={onNavigate} />
+        <ComplianceBadges />
+        <BlogPreview nav={onNavigate} />
+        <FAQSection />
+        <DownloadCTA onStart={() => onNavigate('/app')} />
+      </main>
       <Footer nav={onNavigate} />
     </div>
   );

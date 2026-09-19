@@ -7,6 +7,11 @@ export interface SettingsPreferences {
   emailDigest: boolean;
   tripReminders: boolean;
   biometricEnabled: boolean;
+  // Carried forward from onboarding/first application so the user is never
+  // asked for these again — nationality and country of residence rarely
+  // change, unlike a per-application destination country.
+  nationality: string;
+  residenceCountry: string;
 }
 
 export const DEFAULT_PREFERENCES: SettingsPreferences = {
@@ -14,6 +19,8 @@ export const DEFAULT_PREFERENCES: SettingsPreferences = {
   emailDigest: true,
   tripReminders: true,
   biometricEnabled: false,
+  nationality: '',
+  residenceCountry: '',
 };
 
 export async function loadPreferences(): Promise<SettingsPreferences> {

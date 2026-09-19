@@ -11,6 +11,7 @@ process.env.RATE_LIMIT_DISABLED = 'true';
 process.env.JWT_SECRET = 'contract-test-secret-do-not-use-in-production';
 process.env.FIRESTORE_DISABLED = 'true';
 process.env.ENABLE_DEMO_LOGIN = 'true';
+process.env.ENABLE_DEV_AUTH_BYPASS = 'true';
 
 import assert from 'node:assert/strict';
 import type { AddressInfo } from 'node:net';
@@ -285,9 +286,18 @@ test('Mobile: session options — returns options with recommended flag', async 
 
 test('Mobile: create booking — returns calendly URL', async () => {
   const token = await getToken('consumer');
+  // A booking's applicationId must be one the caller actually owns (a real
+  // ownership check was added this session to close an IDOR — this used to
+  // pass a fake, never-created id, which now correctly 404s instead).
+  const create = await api('POST', '/applications', {
+    destinationCountry: 'France',
+    visaType: 'Tourist',
+    intendedFrom: '2026-09-01'
+  }, token);
+  assert.equal(create.status, 201);
   const r = await api('POST', '/bookings', {
     consultantId: 'c-priya',
-    applicationId: 'app-test',
+    applicationId: create.body.application.id,
     sessionType: 'deep-dive'
   }, token);
   assert.equal(r.status, 201);

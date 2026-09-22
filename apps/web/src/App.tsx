@@ -5,12 +5,15 @@ import {
   Bell,
   Bot,
   BookOpen,
+  Briefcase,
   Building2,
   CalendarClock,
+  Camera,
   CheckCircle2,
   ChevronRight,
   CircleDollarSign,
   Code2,
+  CreditCard,
   Copy,
   ExternalLink,
   FileText,
@@ -1411,9 +1414,24 @@ function Onboarding() {
   );
 }
 
+// Matches the backend's DOCUMENT_TEMPLATES exactly (apps/backend/src/app.ts)
+// and the mobile app's own DOCUMENT_TYPE_OPTIONS — sent as documentType so an
+// upload fills the correct requirement slot instead of landing as a generic,
+// unidentifiable "Document" the checklist can't match to anything.
+const DOCUMENT_TYPE_OPTIONS: { id: string; label: string; icon: typeof Upload }[] = [
+  { id: 'passport',   label: 'Passport bio page',          icon: CreditCard },
+  { id: 'bank',       label: 'Bank statement',              icon: CircleDollarSign },
+  { id: 'employment', label: 'Employment / student letter', icon: Briefcase },
+  { id: 'insurance',  label: 'Travel medical insurance',    icon: ShieldCheck },
+  { id: 'itinerary',  label: 'Flight & hotel reservation',  icon: PlaneTakeoff },
+  { id: 'photo',      label: 'Biometric photo',             icon: Camera },
+  { id: 'other',      label: 'Other supporting document',   icon: FileText },
+];
+
 function UploadFlow() {
   const navigate = useNavigate();
   const location = useLocation();
+  const [docType, setDocType] = useState<string | null>(null);
   const [file, setFile] = useState<File | null>(null);
   const [status, setStatus] = useState<'idle' | 'slot' | 'uploading' | 'audit' | 'done' | 'error'>('idle');
   const { data: applicationData } = useApi<{ applications: VisaApplication[] }>('/applications', { applications: [] });
@@ -1441,23 +1459,31 @@ function UploadFlow() {
       setMessage('Create an application first, then come back here to upload documents.');
       return;
     }
+    if (!docType) {
+      setStatus('error');
+      setMessage('Choose what type of document this is first.');
+      return;
+    }
     if (!file) {
       setStatus('error');
       setMessage('Select a document first.');
       return;
     }
-    const documentId = `doc-${file.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 32) || 'upload'}`;
+    // One documentId per (application, type) — matches the backend's own
+    // template id convention, so re-uploading the same type overwrites its
+    // slot instead of adding an unmatched duplicate entry.
+    const documentId = `${active.id}-${docType}`;
     setReportId(documentId);
     try {
       setStatus('slot');
       setMessage('Creating encrypted upload slot...');
-      const slot = await postJson<{ uploadUrl: string; expiresAt: string }>('/upload-slots', { applicationId: active.id, documentId });
+      const slot = await postJson<{ uploadUrl: string; expiresAt: string }>('/upload-slots', { applicationId: active.id, documentId, documentType: docType });
       setStatus('uploading');
       setMessage(`Upload slot ready. Handoff expires ${formatDateTime(slot.expiresAt)}.`);
       await new Promise((resolve) => setTimeout(resolve, 450));
       setStatus('audit');
       setMessage('Queuing AI audit with the uploaded document reference...');
-      await postJson('/audit', { applicationId: active.id, documentId });
+      await postJson('/audit', { applicationId: active.id, documentId, documentType: docType });
       setStatus('done');
       setMessage('Audit completed. Opening the live report now.');
       setTimeout(() => navigate(`/audit/${documentId}`), 550);
@@ -1487,11 +1513,38 @@ function UploadFlow() {
     );
   }
 
+  if (!docType) {
+    return (
+      <section className="page">
+        <div className="page-title">
+          <div>
+            <p>Document upload</p>
+            <h1>What are you uploading?</h1>
+          </div>
+        </div>
+        <article className="panel">
+          <h2>Choose the document type</h2>
+          <p style={{ color: '#64748B', fontSize: 13, marginTop: -8, marginBottom: 16 }}>Pick the document type so the AI audit checks the right things and it fills the correct slot in your checklist.</p>
+          <div className="quick-grid">
+            {DOCUMENT_TYPE_OPTIONS.map((opt) => (
+              <button key={opt.id} type="button" onClick={() => setDocType(opt.id)}>
+                <opt.icon size={20} />
+                {opt.label}
+              </button>
+            ))}
+          </div>
+        </article>
+      </section>
+    );
+  }
+
+  const selectedType = DOCUMENT_TYPE_OPTIONS.find((opt) => opt.id === docType);
+
   return (
     <section className="page">
       <div className="page-title">
         <div>
-          <p>Document upload</p>
+          <p>Document upload · {selectedType?.label}</p>
           <h1>Upload and audit progress</h1>
         </div>
         <Link className="primary-button" to={`/audit/${reportId}`}>View latest report</Link>
@@ -1513,6 +1566,9 @@ function UploadFlow() {
           />
           <button className="primary-button" type="button" onClick={runUpload} disabled={status === 'slot' || status === 'uploading' || status === 'audit'}>
             {status === 'slot' || status === 'uploading' || status === 'audit' ? 'Working...' : 'Upload and audit'}
+          </button>
+          <button className="secondary-link" type="button" style={{ marginTop: 8 }} onClick={() => { setDocType(null); setFile(null); setStatus('idle'); }}>
+            Change document type
           </button>
           <div className={`action-status ${status === 'error' ? 'error' : ''}`}>{message}</div>
         </article>

@@ -704,7 +704,8 @@ main {
   gap: 12px;
 }
 
-.quick-grid a {
+.quick-grid a,
+.quick-grid button {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -714,6 +715,14 @@ main {
   color: #1547c0;
   padding: 18px;
   font-weight: 700;
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.quick-grid button:hover {
+  background: #dbeafe;
 }
 
 .activity-row,

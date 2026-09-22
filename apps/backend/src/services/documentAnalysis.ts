@@ -1,5 +1,6 @@
 import type { AuditRequest, AuditResult, Finding } from '@visaiq/contracts';
 import { analyzeDocumentWithGemini } from './geminiVision.js';
+import { resolveIcaoCountryCode } from './countryCodes.js';
 
 // Two real analysis paths, in priority order:
 //  1. Gemini multimodal — the model actually looks at the captured image/PDF
@@ -67,6 +68,7 @@ function mrzCheckDigit(field: string): number {
 interface MrzVerification {
   allValid: boolean;
   failedFields: string[];
+  nationalityCode: string;
 }
 
 // TD3 (passport) line 2 is exactly 44 chars:
@@ -78,6 +80,7 @@ function verifyPassportMrz(text: string): MrzVerification | null {
     const line = raw.length === 44 ? raw : raw.length > 44 ? raw.slice(0, 44) : raw.padEnd(44, '<');
     const passportNumber = line.slice(0, 9);
     const passportCheck = line[9];
+    const nationalityCode = line.slice(10, 13);
     const dob = line.slice(13, 19);
     const dobCheck = line[19];
     const expiry = line.slice(21, 27);
@@ -100,7 +103,7 @@ function verifyPassportMrz(text: string): MrzVerification | null {
     const composite = passportNumber + passportCheck + dob + dobCheck + expiry + expiryCheck + personalNumber + personalCheck;
     if (String(mrzCheckDigit(composite)) !== finalCheck) failedFields.push('composite check digit');
 
-    return { allValid: failedFields.length === 0, failedFields };
+    return { allValid: failedFields.length === 0, failedFields, nationalityCode };
   }
   return null; // no line shaped like real MRZ data — say nothing, rather than guess
 }
@@ -161,6 +164,16 @@ function analyzeDocumentHeuristic(input: AuditRequest): AuditResult {
         } else {
           findings.push({ id: 'mrz-checksum-mismatch', severity: 'red_flag', title: 'MRZ check digit mismatch', description: `The machine-readable zone's built-in check digit${mrzCheck.failedFields.length !== 1 ? 's' : ''} for ${mrzCheck.failedFields.join(', ')} did not match the printed value. This can happen from an OCR misread on a low-quality scan, but it is also the standard way passport readers detect an altered document — a consultant should review the physical passport before relying on this scan.`, confidence: 90 });
           score -= 25;
+        }
+        // Cross-check the MRZ's declared nationality against the real
+        // ICAO/ISO 3166-1 country-code table — informational only (never
+        // affects score), since a code we can't resolve isn't necessarily
+        // wrong (some travel-document categories use non-ISO codes).
+        const countryName = resolveIcaoCountryCode(mrzCheck.nationalityCode);
+        if (countryName) {
+          findings.push({ id: 'mrz-nationality', severity: 'info', title: `Issuing/nationality code: ${countryName}`, description: `The machine-readable zone declares nationality code "${mrzCheck.nationalityCode}", which matches ${countryName} in the ICAO/ISO 3166-1 reference list.`, confidence: 90 });
+        } else {
+          findings.push({ id: 'mrz-nationality-unresolved', severity: 'info', title: 'Nationality code not in reference list', description: `The machine-readable zone's nationality code "${mrzCheck.nationalityCode}" was not found in our ICAO/ISO 3166-1 reference list. This may still be valid — some travel-document categories (stateless, refugee, international organization) use codes outside the standard country list — but it's worth a manual check if the code looks like a typo or OCR misread.`, confidence: 40 });
         }
       }
     } else if (PASSPORT_KEYWORDS.test(text)) {

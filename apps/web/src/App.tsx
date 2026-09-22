@@ -1625,18 +1625,18 @@ function Requirements() {
         </div>
       </div>
       {/* Fee display */}
-      <div style={{ display: 'flex', gap: 12, marginBottom: 16 }}>
-        <article className="panel" style={{ flex: 1, padding: '14px 18px' }}>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, marginBottom: 16 }}>
+        <article className="panel" style={{ flex: '1 1 140px', padding: '14px 18px' }}>
           <div style={{ fontSize: 12, color: '#64748B', fontWeight: 600 }}>Visa fee</div>
           <div style={{ fontSize: 28, fontWeight: 900, color: '#0F172A', margin: '4px 0 2px' }}>€{feeEUR}</div>
           <div style={{ fontSize: 13, color: '#94A3B8' }}>≈ {symbol}{localFee} {feeCurrency}</div>
         </article>
-        <article className="panel" style={{ flex: 1, padding: '14px 18px' }}>
+        <article className="panel" style={{ flex: '1 1 140px', padding: '14px 18px' }}>
           <div style={{ fontSize: 12, color: '#64748B', fontWeight: 600 }}>Processing time</div>
           <div style={{ fontSize: 22, fontWeight: 900, color: '#0F172A', margin: '4px 0 2px' }}>{requirements.processingTime}</div>
           <div style={{ fontSize: 13, color: '#94A3B8' }}>from appointment date</div>
         </article>
-        <article className="panel" style={{ flex: 1, padding: '14px 18px' }}>
+        <article className="panel" style={{ flex: '1 1 140px', padding: '14px 18px' }}>
           <div style={{ fontSize: 12, color: '#64748B', fontWeight: 600 }}>Coverage</div>
           <div style={{ fontSize: 22, fontWeight: 900, color: '#10B981', margin: '4px 0 2px' }}>{requirements.coverageStatus}</div>
           <div style={{ fontSize: 13, color: '#94A3B8' }}>official source backed</div>

@@ -268,26 +268,33 @@ function Testimonials({ onNavigate }: { onNavigate: (p: string) => void }) {
         <div style={{ textAlign: 'center', marginTop: '2rem' }}>
           <button className="btn-primary btn-lg" onClick={() => onNavigate('/app')}>Request early access</button>
         </div>
-        <div style={{ marginTop: '2.5rem', textAlign: 'center' }}>
-          <p style={{ color: '#94a3b8', fontSize: '0.75rem', fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: '0.75rem' }}>Try a demo account</p>
-          <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'center', flexWrap: 'wrap' }}>
-            {[
-              { persona: 'consumer',       label: 'Consumer',    desc: 'Apply for a visa',        icon: User },
-              { persona: 'consultant',     label: 'Consultant',  desc: 'Review client cases',      icon: Users },
-              { persona: 'hr_admin',       label: 'HR Admin',    desc: 'Manage team relocation',   icon: Building2 },
-              { persona: 'platform_admin', label: 'Platform',    desc: 'System overview',          icon: ShieldCheck },
-            ].map(({ persona, label, desc, icon: Icon }) => (
-              <button key={persona} className="btn-outline demo-persona-btn"
-                onClick={() => onNavigate(`/app?demo=${persona}`)}>
-                <Icon size={18} />
-                <span>
-                  <b>{label}</b>
-                  <small>{desc}</small>
-                </span>
-              </button>
-            ))}
+        {/* Demo persona login only ever works when the backend has
+            ENABLE_DEMO_LOGIN=true, which every real deployment (see
+            DEPLOY.md) explicitly disables — showing this to real visitors
+            just gives them a button that fails with "Demo login failed
+            (403)". import.meta.env.DEV keeps it for local dev/QA only. */}
+        {import.meta.env.DEV && (
+          <div style={{ marginTop: '2.5rem', textAlign: 'center' }}>
+            <p style={{ color: '#94a3b8', fontSize: '0.75rem', fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: '0.75rem' }}>Try a demo account (dev only)</p>
+            <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'center', flexWrap: 'wrap' }}>
+              {[
+                { persona: 'consumer',       label: 'Consumer',    desc: 'Apply for a visa',        icon: User },
+                { persona: 'consultant',     label: 'Consultant',  desc: 'Review client cases',      icon: Users },
+                { persona: 'hr_admin',       label: 'HR Admin',    desc: 'Manage team relocation',   icon: Building2 },
+                { persona: 'platform_admin', label: 'Platform',    desc: 'System overview',          icon: ShieldCheck },
+              ].map(({ persona, label, desc, icon: Icon }) => (
+                <button key={persona} className="btn-outline demo-persona-btn"
+                  onClick={() => onNavigate(`/app?demo=${persona}`)}>
+                  <Icon size={18} />
+                  <span>
+                    <b>{label}</b>
+                    <small>{desc}</small>
+                  </span>
+                </button>
+              ))}
+            </div>
           </div>
-        </div>
+        )}
       </div>
     </section>
   );

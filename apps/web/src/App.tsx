@@ -331,8 +331,11 @@ const DEMO_PERSONAS = [
 function AuthPage({ onSession }: { onSession: (session: AuthSessionResponse | null) => void }) {
   const navigate = useNavigate();
   const location = useLocation();
-  const [email, setEmail] = useState('sarah.mathew@example.com');
-  const [password, setPassword] = useState('demo1234');
+  // Pre-filling a real seeded account's actual credentials on a public login
+  // form isn't a dev convenience worth keeping in production — anyone who
+  // opens the page can sign in as that account without typing anything.
+  const [email, setEmail] = useState(import.meta.env.DEV ? 'sarah.mathew@example.com' : '');
+  const [password, setPassword] = useState(import.meta.env.DEV ? 'demo1234' : '');
   const [remember, setRemember] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);

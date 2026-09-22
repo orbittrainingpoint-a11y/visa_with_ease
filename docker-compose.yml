@@ -3,6 +3,11 @@ services:
     build:
       context: .
       dockerfile: apps/backend/Dockerfile
+      # Build-time RUN steps (corepack/pnpm install) need real DNS resolution.
+      # Some hosts block outbound DNS from Docker's isolated bridge network
+      # even though the host itself resolves fine — host networking during
+      # the build sidesteps that without touching the host's firewall/DNS.
+      network: host
     restart: unless-stopped
     env_file:
       - apps/backend/.env.production
@@ -19,6 +24,7 @@ services:
     build:
       context: .
       dockerfile: apps/web/Dockerfile
+      network: host
       args:
         # Baked into the JS bundle at build time — must be the PUBLIC URL
         # your browser will reach the backend at (through your reverse proxy),

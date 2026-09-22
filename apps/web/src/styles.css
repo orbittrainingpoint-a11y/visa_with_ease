@@ -1718,4 +1718,94 @@ main {
     align-items: stretch;
     flex-direction: column;
   }
+
+  /* The topbar's fixed-size children (hamburger, search, notif icon, logout,
+     avatar) added up to just wider than a phone screen, clipping the avatar
+     off the right edge on every logged-in page (real bug caught visually —
+     the search box's placeholder text forced it wide even though it's a
+     flex item, since buttons don't shrink their text below its natural
+     width by default). Collapsing search to icon-only removes the long text
+     as a width driver instead of fighting flex-shrink edge cases. */
+  .topbar {
+    padding: 0 14px;
+    gap: 8px;
+  }
+
+  .search {
+    width: 40px;
+    min-width: 40px;
+    padding: 0;
+    justify-content: center;
+    flex: 0 0 auto;
+  }
+
+  .search span {
+    display: none;
+  }
+
+  .logout-button {
+    padding: 9px 10px;
+    font-size: 13px;
+  }
+
+  .icon-button,
+  .avatar,
+  .logout-button,
+  .mobile-nav-toggle {
+    flex-shrink: 0;
+  }
+
+  /* .hero-actions is pinned to the card's bottom edge via a fixed 28px
+     offset (works on desktop, where the card is always tall enough) — on a
+     narrow screen the heading wraps to more lines, pushing the score ring
+     down far enough that the fixed-position links land on top of it
+     instead of below it (real bug, seen overlapping "Complete checklist").
+     Flowing normally after the score ring sidesteps the fixed-offset math
+     entirely regardless of how many lines the heading wraps to. */
+  .hero-actions {
+    position: static;
+    margin-top: 20px;
+    flex-wrap: wrap;
+  }
+
+  .readiness-hero {
+    padding-bottom: 28px;
+  }
+
+  /* Systematic fix, not a one-off: this codebase has 20+ places using an
+     inline style="grid-template-columns: 1fr 340px" (or similar fixed-width
+     second column) instead of a class the earlier grid-collapse rule above
+     can target — invisible to that rule since inline styles win the
+     cascade. Each one reserves its fixed-width column regardless of
+     viewport, so on a phone the content pushes past the screen edge (found
+     concretely on /referrals: a 1fr 340px split overflowing to 690px on a
+     390px screen). !important is deliberate here — the one legitimate use
+     of it is a global responsive override beating an inline style, and
+     stacking to one column is always a safe fallback even for grids that
+     happened to already fit. */
+  [style*="grid-template-columns"] {
+    grid-template-columns: 1fr !important;
+  }
+
+  /* Four tabs (Overview/Documents/Requirements/Chat) at their normal padding
+     don't fit a phone width — let the bar scroll horizontally instead of
+     overflowing the page itself, the standard mobile tab-bar pattern. */
+  .detail-tabs {
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .detail-tabs a {
+    flex-shrink: 0;
+  }
+
+  /* .page-title (heading + an action button, or a currency switcher, or
+     both) has no flex-wrap and is used at the top of nearly every page —
+     whenever the right-hand content is more than a couple buttons wide, it
+     pushes past a phone screen instead of dropping to its own line (found
+     concretely on /requirements: fee-currency buttons forced off-screen). */
+  .page-title {
+    flex-wrap: wrap;
+  }
 }

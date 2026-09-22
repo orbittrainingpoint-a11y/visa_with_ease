@@ -1731,8 +1731,15 @@ main {
     gap: 8px;
   }
 
+  /* !important is required here: the button also carries an inline
+     style="width:100%;max-width:340px" (React), which always wins over a
+     plain class rule regardless of media query — without it, this rule's
+     own flex-shrink:0 (from the shorthand) actually made things worse by
+     locking the button at its full 340px instead of letting default flex
+     shrink apply at all. */
   .search {
-    width: 40px;
+    width: 40px !important;
+    max-width: 40px !important;
     min-width: 40px;
     padding: 0;
     justify-content: center;

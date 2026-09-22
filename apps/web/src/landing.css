@@ -211,8 +211,12 @@
     var(--bg0);
 }
 
-/* Dot grid */
-.hero-grid {
+/* Dot grid — named lp- (landing-page) prefixed to avoid colliding with the
+   logged-in dashboard's unrelated .hero-grid layout class (both stylesheets
+   ship in the same global CSS bundle, so a shared name silently clobbers
+   whichever rule loses the cascade — this one used to be plain .hero-grid
+   and broke the dashboard's hero layout for every logged-in user). */
+.lp-hero-dotgrid {
   position: absolute;
   inset: 0;
   background-image: radial-gradient(rgba(26,86,219,0.14) 1px, transparent 1px);
@@ -771,8 +775,11 @@
    column on mobile so nothing looks lopsided on a phone.
    ═══════════════════════════════════════════════════════════════════ */
 
-.eyebrow { display: inline-flex; align-items: center; gap: 8px; font-size: 12.5px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--blue); background: rgba(26,86,219,0.08); padding: 7px 14px 7px 10px; border-radius: 999px; margin-bottom: 1.25rem; }
-.eyebrow .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); }
+/* lp- prefixed — a plain-text .eyebrow already exists in styles.css for the
+   logged-in dashboard; sharing the name let this pill-badge styling clobber
+   it there (same global-CSS-bundle collision as .hero-grid above). */
+.lp-eyebrow { display: inline-flex; align-items: center; gap: 8px; font-size: 12.5px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--blue); background: rgba(26,86,219,0.08); padding: 7px 14px 7px 10px; border-radius: 999px; margin-bottom: 1.25rem; }
+.lp-eyebrow .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); }
 
 /* How it works */
 .how-steps { padding: 6rem 2rem; background: var(--bg0); }

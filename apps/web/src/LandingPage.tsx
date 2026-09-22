@@ -53,7 +53,7 @@ function Hero({ onStart }: { onStart: () => void }) {
 
   return (
     <section className="hero" ref={heroRef} onMouseMove={handlePointerMove}>
-      <div className="hero-grid" aria-hidden />
+      <div className="lp-hero-dotgrid" aria-hidden />
       <div className="hero-spotlight" aria-hidden />
       <div className="hero-blob hero-blob-1" aria-hidden />
       <div className="hero-blob hero-blob-2" aria-hidden />
@@ -556,7 +556,7 @@ function MobileAppPromo() {
     <section className="app-promo-section">
       <div className="app-promo">
         <div>
-          <div className="eyebrow"><span className="dot" />Mobile app</div>
+          <div className="lp-eyebrow"><span className="dot" />Mobile app</div>
           <h2 className="lp-h2">Take your audit<br /><span className="c-gold">with you.</span></h2>
           <p className="sec-sub" style={{ margin: '0.75rem 0 1.5rem', textAlign: 'left', maxWidth: '420px' }}>
             Scan a document with your camera, get a push notification the moment your score updates, and check your checklist offline — the full product, in your pocket.

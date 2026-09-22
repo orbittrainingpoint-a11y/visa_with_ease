@@ -1413,10 +1413,16 @@ function Onboarding() {
 
 function UploadFlow() {
   const navigate = useNavigate();
+  const location = useLocation();
   const [file, setFile] = useState<File | null>(null);
   const [status, setStatus] = useState<'idle' | 'slot' | 'uploading' | 'audit' | 'done' | 'error'>('idle');
   const { data: applicationData } = useApi<{ applications: VisaApplication[] }>('/applications', { applications: [] });
-  const active = applicationData.applications[0];
+  // Reached from an application's own "Upload document" link (which passes
+  // its id via router state) — targets that application specifically instead
+  // of always defaulting to the first one, so accounts with more than one
+  // application upload to the right place.
+  const requestedApplicationId = (location.state as { applicationId?: string } | null)?.applicationId;
+  const active = applicationData.applications.find((a) => a.id === requestedApplicationId) ?? applicationData.applications[0];
   // The "no application yet" case renders its own early-return UI below, so
   // this only ever needs the normal idle message.
   const [message, setMessage] = useState('Choose a PDF or image to create an upload slot.');
@@ -1617,6 +1623,9 @@ function ApplicationDetail() {
   const docId = `${id}-passport`;
   const { data: audit } = useApi<AuditResult>(`/audit/${docId}`, fallbackAuditResult);
   const { data: reqs } = useApi<RequirementsResponse>('/requirements', fallbackRequirements);
+  const { data: documentsData } = useApi<{ documents: Array<{ id: string; title: string; status: string; issue: string }> }>(
+    `/documents?applicationId=${encodeURIComponent(id)}`, { documents: [] }
+  );
   const application = appData.application;
   const missingRequirements = reqs.requirements.filter((item) => !item.satisfied);
   const missingCount = missingRequirements.length;
@@ -1675,6 +1684,24 @@ function ApplicationDetail() {
         </article>
 
         <article className="panel" id="documents">
+          <div className="two-actions" style={{ marginBottom: 4 }}>
+            <h2 style={{ margin: 0 }}>Documents</h2>
+            <Link className="primary-link" to="/upload" state={{ applicationId: id }}>Upload document</Link>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 0, marginBottom: 20 }}>
+            {documentsData.documents.map((d, i) => (
+              <div key={d.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 0', borderTop: i > 0 ? '1px solid #F8FAFC' : 'none' }}>
+                <div style={{ width: 32, height: 32, borderRadius: 8, background: d.status === 'Audited' ? '#D1FAE5' : d.status === 'Queued' ? '#FEF3C7' : '#FEF2F2', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  {d.status === 'Audited' ? <CheckCircle2 size={16} color="#10B981" /> : <AlertTriangle size={16} color={d.status === 'Queued' ? '#F59E0B' : '#DC2626'} />}
+                </div>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: '#0F172A' }}>{d.title}</div>
+                  <div style={{ fontSize: 12, color: '#64748B' }}>{d.issue}</div>
+                </div>
+                <span style={{ padding: '3px 10px', borderRadius: 20, background: d.status === 'Audited' ? '#D1FAE5' : d.status === 'Queued' ? '#FEF3C7' : '#FEF2F2', color: d.status === 'Audited' ? '#065F46' : d.status === 'Queued' ? '#92400E' : '#991B1B', fontSize: 12, fontWeight: 700 }}>{d.status}</span>
+              </div>
+            ))}
+          </div>
           <h2>Latest document audit</h2>
           <div className="audit-score-row">
             <Score value={audit.score} />

@@ -1,8 +1,10 @@
 # Deploying to your VPS
 
-Two containers: `backend` (Node/Express, published on host port **3011** → container port 3001) and `web` (static build served by nginx, published on host port **8081** → container port 80). Neither terminates TLS — put your own reverse proxy (nginx, Caddy, whatever's already on the VPS) in front, pointed at a real domain.
+Two containers: `backend` (Node/Express, listens on host port **3011**) and `web` (static build served by nginx, listens on host port **8081**). Neither terminates TLS — put your own reverse proxy (nginx, Caddy, whatever's already on the VPS) in front, pointed at a real domain.
 
-Host ports 3011/8081 aren't the app's real ports — they're just what's free on this particular VPS after checking `docker ps` / `ss -tlnp`. If you deploy to a different machine, check for conflicts first and adjust the `ports:` lines in `docker-compose.yml`.
+Both run with `network_mode: host` instead of Docker's normal isolated bridge network + published ports. This isn't a style choice — on at least one VPS this project deployed to, Docker's bridge network silently couldn't resolve **any** external hostname at build time *or* runtime (confirmed via `docker compose exec backend node -e "require('dns').resolve4(...)"` timing out for `firestore.googleapis.com`, `smtp.gmail.com`, `generativelanguage.googleapis.com`, `oauth2.googleapis.com`), even though the host itself resolved everything fine and had zero relevant `iptables`/`ufw` rules. The backend degrades silently in that state — it falls back to in-memory storage, heuristic-only document analysis, no outbound email, and Google Sign-In verification failing — with no obvious crash to alert you, so this is very easy to miss. Host networking sidesteps the whole class of problem. If you deploy somewhere that doesn't have this issue, you can switch back to published `ports:` mappings, but there's no real cost to leaving host networking on either way.
+
+Host ports 3011/8081 aren't the app's real ports — they're just what's free on this particular VPS after checking `docker ps` / `ss -tlnp`. Because of `network_mode: host`, these are the **literal** ports the processes bind to (`PORT` in `apps/backend/.env.production`, `listen` in `apps/web/nginx.conf`) — there's no separate host:container mapping to adjust. If you deploy to a different machine, check for port conflicts first and change those two places instead of `docker-compose.yml`.
 
 ## One-time setup on the VPS
 
@@ -25,6 +27,13 @@ docker compose up -d
 
 Backend health check: `curl http://127.0.0.1:3011/health` should return `{"status":"ok"}`.
 Web: `curl -I http://127.0.0.1:8081` should return `200` with real app HTML (not some other site's).
+
+`{"status":"ok"}` only means the process is up, not that it can actually reach Firestore/Gemini/SMTP/Google — check for a silent DNS failure too:
+```
+docker compose logs backend --tail 100 | grep -i firestore
+docker compose exec backend node -e "require('dns').resolve4('firestore.googleapis.com',(e,a)=>console.log(e?e.message:a))"
+```
+If that logs a DNS error (`ETIMEOUT`, `ESERVFAIL`, `EAI_AGAIN`) instead of an IP address, see the `network_mode: host` note above.
 
 ## Reverse proxy (path-based — one domain, no extra DNS record needed)
 

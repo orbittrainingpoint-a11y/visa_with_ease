@@ -9,12 +9,16 @@ services:
       # the build sidesteps that without touching the host's firewall/DNS.
       network: host
     restart: unless-stopped
+    # Some VPS hosts block outbound DNS from Docker's isolated bridge network
+    # entirely (both build-time AND runtime) even though the host itself
+    # resolves fine — without this, Firestore/Gemini/SMTP/Google token
+    # verification all silently fail to resolve and the app degrades to
+    # in-memory storage with no visible error. Host networking sidesteps it.
+    # Means PORT in .env.production IS the literal host port — no more
+    # separate host:container port mapping (see .env.production.example).
+    network_mode: host
     env_file:
       - apps/backend/.env.production
-    ports:
-      # Host:container — 3011 on the host (3001 was already taken by another
-      # service on this VPS). Container still listens on 3001 internally.
-      - "3011:3001"
     volumes:
       # Only needed if using a Firebase service-account JSON file instead of
       # Application Default Credentials — see apps/backend/.env.production.example.
@@ -39,9 +43,9 @@ services:
         VITE_API_BASE_URL: ${VITE_API_BASE_URL}
         VITE_GOOGLE_WEB_CLIENT_ID: ${VITE_GOOGLE_WEB_CLIENT_ID}
     restart: unless-stopped
-    ports:
-      # 8080 was already taken by another service on this VPS.
-      - "8081:80"
+    # Same reason as backend's network_mode: host above — see that comment.
+    # nginx.conf listens on 8081 directly now, not the usual 80.
+    network_mode: host
     depends_on:
       - backend
     deploy:
@@ -55,3 +59,6 @@ services:
 # Nothing here terminates TLS or owns a domain — put your own nginx/Caddy
 # reverse proxy in front of ports 3011 (backend) and 8081 (web), pointed at
 # your real domain, and let it handle Let's Encrypt certificates. See DEPLOY.md.
+#
+# Both services use network_mode: host instead of published ports/an internal
+# Docker network — see the comment on backend's network_mode line for why.

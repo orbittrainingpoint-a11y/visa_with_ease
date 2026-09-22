@@ -19,6 +19,13 @@ services:
       # Only needed if using a Firebase service-account JSON file instead of
       # Application Default Credentials — see apps/backend/.env.production.example.
       - ./apps/backend/firebase-service-account.json:/app/firebase-service-account.json:ro
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+        reservations:
+          memory: 128M
 
   web:
     build:
@@ -37,6 +44,13 @@ services:
       - "8081:80"
     depends_on:
       - backend
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+        reservations:
+          memory: 32M
 
 # Nothing here terminates TLS or owns a domain — put your own nginx/Caddy
 # reverse proxy in front of ports 3011 (backend) and 8081 (web), pointed at

@@ -24,7 +24,6 @@ export async function analyzeDocument(input: AuditRequest): Promise<AuditResult>
 }
 
 const DATE_RE = /\b(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{2,4})\b/g;
-const MRZ_LINE_RE = /[A-Z0-9<]{20,44}/;
 const PASSPORT_KEYWORDS = /PASSPORT|REPUBLIC|NATIONALITY|SURNAME|GIVEN NAME|DATE OF BIRTH|PLACE OF BIRTH|AUTHORITY/i;
 const BANK_KEYWORDS = /BALANCE|STATEMENT|ACCOUNT|TRANSACTION|DEPOSIT|WITHDRAWAL|SORT CODE|IBAN|SWIFT/i;
 const LETTER_KEYWORDS = /DEAR|SINCERELY|EMPLOYER|SALARY|EMPLOYMENT|TO WHOM IT MAY CONCERN/i;
@@ -148,33 +147,36 @@ function analyzeDocumentHeuristic(input: AuditRequest): AuditResult {
   // Document-type-specific keyword and structure checks.
   const type = docType.toLowerCase();
   if (type.includes('passport')) {
-    if (MRZ_LINE_RE.test(text.replace(/\s/g, ''))) {
+    // Real authenticity check, not a loose shape-match: this recomputes the
+    // MRZ's own ICAO check digits from the OCR'd text and requires the date
+    // fields to be plausible 6-digit numbers in the right position — now
+    // the ONLY signal that gates "MRZ detected" below, after a real bug
+    // found in production: the previous loose regex (any 20-44-character
+    // run of A-Z0-9<) matched incidental OCR noise in a photo that wasn't
+    // a document at all (confirmed: a photo of a laptop wallpaper scored
+    // 55/100 with "MRZ detected, 75% confidence"). Tying the "detected"
+    // claim to this same strict parser eliminates that false-positive path
+    // instead of just tightening the regex further.
+    const mrzCheck = verifyPassportMrz(text);
+    if (mrzCheck) {
       findings.push({ id: 'mrz-detected', severity: 'pass', title: 'Machine-readable zone detected', description: 'A passport-style machine-readable line pattern was found in the scan, consistent with a passport photo page.', confidence: 75 });
       score += 25;
-      // Real authenticity check, not another shape-match: recompute the
-      // MRZ's own ICAO check digits and see if they agree with what's
-      // printed. This can only run when the OCR captured full, distinct
-      // lines — a mismatch here is a genuine tamper/typo/OCR-error signal,
-      // not a fabricated confidence number.
-      const mrzCheck = verifyPassportMrz(text);
-      if (mrzCheck) {
-        if (mrzCheck.allValid) {
-          findings.push({ id: 'mrz-checksum-valid', severity: 'pass', title: 'MRZ check digits verified', description: 'The machine-readable zone\'s built-in check digits (passport number, date of birth, expiry date, and the composite check) all match — this is the same validation passport readers perform and is strong evidence the data was not altered after issuance.', confidence: 97 });
-          score += 20;
-        } else {
-          findings.push({ id: 'mrz-checksum-mismatch', severity: 'red_flag', title: 'MRZ check digit mismatch', description: `The machine-readable zone's built-in check digit${mrzCheck.failedFields.length !== 1 ? 's' : ''} for ${mrzCheck.failedFields.join(', ')} did not match the printed value. This can happen from an OCR misread on a low-quality scan, but it is also the standard way passport readers detect an altered document — a consultant should review the physical passport before relying on this scan.`, confidence: 90 });
-          score -= 25;
-        }
-        // Cross-check the MRZ's declared nationality against the real
-        // ICAO/ISO 3166-1 country-code table — informational only (never
-        // affects score), since a code we can't resolve isn't necessarily
-        // wrong (some travel-document categories use non-ISO codes).
-        const countryName = resolveIcaoCountryCode(mrzCheck.nationalityCode);
-        if (countryName) {
-          findings.push({ id: 'mrz-nationality', severity: 'info', title: `Issuing/nationality code: ${countryName}`, description: `The machine-readable zone declares nationality code "${mrzCheck.nationalityCode}", which matches ${countryName} in the ICAO/ISO 3166-1 reference list.`, confidence: 90 });
-        } else {
-          findings.push({ id: 'mrz-nationality-unresolved', severity: 'info', title: 'Nationality code not in reference list', description: `The machine-readable zone's nationality code "${mrzCheck.nationalityCode}" was not found in our ICAO/ISO 3166-1 reference list. This may still be valid — some travel-document categories (stateless, refugee, international organization) use codes outside the standard country list — but it's worth a manual check if the code looks like a typo or OCR misread.`, confidence: 40 });
-        }
+      if (mrzCheck.allValid) {
+        findings.push({ id: 'mrz-checksum-valid', severity: 'pass', title: 'MRZ check digits verified', description: 'The machine-readable zone\'s built-in check digits (passport number, date of birth, expiry date, and the composite check) all match — this is the same validation passport readers perform and is strong evidence the data was not altered after issuance.', confidence: 97 });
+        score += 20;
+      } else {
+        findings.push({ id: 'mrz-checksum-mismatch', severity: 'red_flag', title: 'MRZ check digit mismatch', description: `The machine-readable zone's built-in check digit${mrzCheck.failedFields.length !== 1 ? 's' : ''} for ${mrzCheck.failedFields.join(', ')} did not match the printed value. This can happen from an OCR misread on a low-quality scan, but it is also the standard way passport readers detect an altered document — a consultant should review the physical passport before relying on this scan.`, confidence: 90 });
+        score -= 25;
+      }
+      // Cross-check the MRZ's declared nationality against the real
+      // ICAO/ISO 3166-1 country-code table — informational only (never
+      // affects score), since a code we can't resolve isn't necessarily
+      // wrong (some travel-document categories use non-ISO codes).
+      const countryName = resolveIcaoCountryCode(mrzCheck.nationalityCode);
+      if (countryName) {
+        findings.push({ id: 'mrz-nationality', severity: 'info', title: `Issuing/nationality code: ${countryName}`, description: `The machine-readable zone declares nationality code "${mrzCheck.nationalityCode}", which matches ${countryName} in the ICAO/ISO 3166-1 reference list.`, confidence: 90 });
+      } else {
+        findings.push({ id: 'mrz-nationality-unresolved', severity: 'info', title: 'Nationality code not in reference list', description: `The machine-readable zone's nationality code "${mrzCheck.nationalityCode}" was not found in our ICAO/ISO 3166-1 reference list. This may still be valid — some travel-document categories (stateless, refugee, international organization) use codes outside the standard country list — but it's worth a manual check if the code looks like a typo or OCR misread.`, confidence: 40 });
       }
     } else if (PASSPORT_KEYWORDS.test(text)) {
       findings.push({ id: 'passport-keywords', severity: 'info', title: 'Passport-related fields found', description: 'Recognizable passport field labels were found, though the machine-readable zone line was not clearly captured.', confidence: 65 });

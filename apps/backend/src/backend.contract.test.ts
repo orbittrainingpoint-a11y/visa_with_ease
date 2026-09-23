@@ -505,7 +505,13 @@ test('POST /audit — score reflects the real extracted text, not a canned const
   const create = await post('/applications', { destinationCountry: 'France', visaType: 'Tourist', intendedFrom: '2026-09-01' }, token);
   const applicationId = create.body.application.id;
 
-  const richPassportText = `PASSPORT\nREPUBLIC OF EXAMPLE\nSURNAME: DOE\nGIVEN NAME: JANE\nNATIONALITY: EXAMPLELAND\nDATE OF BIRTH: 01/01/1990\nP<EXMDOE<<JANE<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<\nDATE OF EXPIRY: 01/01/2031`;
+  // Includes a real, complete two-line MRZ (published ICAO Doc 9303 Part 3
+  // worked example) — not just the name line — since the detector now
+  // requires the full structural match (see documentAnalysis.ts) rather
+  // than a loose shape-only regex that a non-passport photo could satisfy
+  // by accident (a real bug caught in production: a photo of a laptop
+  // wallpaper matched the old regex and scored as "MRZ detected, 75%").
+  const richPassportText = `PASSPORT\nREPUBLIC OF EXAMPLE\nSURNAME: DOE\nGIVEN NAME: JANE\nNATIONALITY: EXAMPLELAND\nDATE OF BIRTH: 01/01/1990\nP<UTODOE<<JOHN<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<\nL898902C36UTO7408122F1204159ZE184226B<<<<<10\nDATE OF EXPIRY: 01/01/2031`;
   const { res: richRes, body: richBody } = await post('/audit', {
     applicationId, documentId: 'doc-audit-real-rich', documentType: 'Passport', extractedText: richPassportText
   }, token);
@@ -545,6 +551,27 @@ test('POST /audit — verifies real MRZ check digits (ICAO 9303), catching a tam
   assert.equal(tamperedFinding.severity, 'red_flag');
   assert.ok(tamperedFinding.description.includes('date of birth'), 'should name the specific field that failed');
   assert.ok(tamperedBody.result.score < validBody.result.score, 'a checksum mismatch must lower the score, not just add an ignorable note');
+});
+
+test('POST /audit — a non-passport photo does not falsely register as "MRZ detected"', async () => {
+  // Real bug found in production: uploading a photo of a laptop wallpaper
+  // (labeled as a passport) got OCR'd into some incidental run of
+  // uppercase/digit characters, and the old detector — a loose regex
+  // matching ANY 20-44 character run of A-Z0-9< — confidently reported
+  // "Machine-readable zone detected, 75% confidence" purely from that
+  // coincidence, scoring the wallpaper 55/100. The detector must now only
+  // claim MRZ detection when the stricter structural parser (real DOB/
+  // expiry digit positions, ICAO check-digit shape) actually matches.
+  const token = await demoToken('consumer');
+  const create = await post('/applications', { destinationCountry: 'France', visaType: 'Tourist', intendedFrom: '2026-09-01' }, token);
+  const applicationId = create.body.application.id;
+
+  const wallpaperOcrNoise = `HDMI1 DISPLAYPORT USB-C 4K60HZ ABCDEFGHIJKLMNOPQRST1234567890`;
+  const { body } = await post('/audit', {
+    applicationId, documentId: 'doc-not-a-passport', documentType: 'passport', extractedText: wallpaperOcrNoise
+  }, token);
+  assert.ok(!body.result.findings.some((f: any) => f.id === 'mrz-detected'), 'must not claim MRZ detection from incidental OCR noise that merely matches the character shape');
+  assert.ok(body.result.findings.some((f: any) => f.id === 'passport-mismatch'), 'expected an honest "doesn\'t look like a passport" finding instead');
 });
 
 test('POST /audit — with an image attached but no AI configured (AI_MOCK=true), falls back to the OCR-text heuristic instead of calling out or crashing', async () => {

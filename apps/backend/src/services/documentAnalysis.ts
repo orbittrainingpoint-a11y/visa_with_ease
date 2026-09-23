@@ -1,17 +1,27 @@
 import type { AuditRequest, AuditResult, Finding } from '@visaiq/contracts';
+import { analyzeDocumentWithGrok } from './grokVision.js';
 import { analyzeDocumentWithGemini } from './geminiVision.js';
 import { resolveIcaoCountryCode } from './countryCodes.js';
 
-// Two real analysis paths, in priority order:
-//  1. Gemini multimodal — the model actually looks at the captured image/PDF
-//     when one was sent and an API key is configured. Real structured
-//     extraction, not text pattern-matching.
-//  2. The heuristic below — deterministic checks against the on-device OCR
+// Three real analysis paths, in priority order:
+//  1. Grok multimodal (xAI) — tried first since it's the actively-configured
+//     "for analysis" provider. Real structured extraction, not text
+//     pattern-matching — same as Gemini below.
+//  2. Gemini multimodal — used if Grok isn't configured or its call failed.
+//  3. The heuristic below — deterministic checks against the on-device OCR
 //     text (Google ML Kit) the mobile app already extracted. This is the
-//     fallback when no image was sent or Gemini is unavailable/misconfigured
-//     — never a fake canned result regardless of which path runs.
+//     fallback when no image was sent or neither vision provider is
+//     available — never a fake canned result regardless of which path runs.
 export async function analyzeDocument(input: AuditRequest): Promise<AuditResult> {
   if (input.imageBase64 && input.mimeType) {
+    const grokResult = await analyzeDocumentWithGrok({
+      documentId: input.documentId,
+      documentType: input.documentType ?? 'Document',
+      imageBase64: input.imageBase64,
+      mimeType: input.mimeType
+    });
+    if (grokResult) return grokResult;
+
     const geminiResult = await analyzeDocumentWithGemini({
       documentId: input.documentId,
       documentType: input.documentType ?? 'Document',

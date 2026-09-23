@@ -1268,8 +1268,18 @@ main {
    at all", so the text rendered as one long line spilling past the card's
    360px column (real bug, seen visually overflowing into the panel next to
    it). max-width caps it back to the column regardless of alignment mode. */
-.upload-drop p {
+/* The real fix, and it has to apply to every direct child, not just the
+   paragraph: min-width defaults to auto on a grid item, which blocks it
+   from shrinking below its content's intrinsic (unwrapped) width no matter
+   what max-width says or what justify-items is set to — the actual
+   textbook cause of "content overflows a grid cell" bugs. Confirmed by
+   testing in isolation: the file input and both buttons were extending
+   past the card's border exactly like the paragraph text was, all for the
+   same reason, all needing the same fix. */
+.upload-drop > * {
+  min-width: 0;
   max-width: 100%;
+  box-sizing: border-box;
 }
 
 .upload-layout {

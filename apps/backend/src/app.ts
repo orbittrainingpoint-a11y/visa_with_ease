@@ -652,7 +652,12 @@ export function createApp(services: Services = createServices()) {
       const application = applicationId
         ? await services.applications.getApplication(applicationId, req.user!.uid)
         : null;
-      res.json(await services.ai.chat(req.body, { application }));
+      // Real admin-managed (or built-in default) requirements data for the
+      // applicant's own destination — the same knowledge base /requirements
+      // itself reads from, so guidance is grounded in actual embassy rules
+      // instead of the model's general training knowledge.
+      const requirements = await services.requirements.getRequirementsForCountry(application?.destinationCountry);
+      res.json(await services.ai.chat(req.body, { application, requirements }));
     } catch (err) {
       next(err);
     }

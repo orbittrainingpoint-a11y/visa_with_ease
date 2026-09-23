@@ -642,6 +642,28 @@ test('POST /chat — off-topic message is rejected before AI call', async () => 
   );
 });
 
+test('POST /chat — "what\'s my score" is answered instantly from real data, never an AI call', async () => {
+  const token = await demoToken('consumer');
+  const create = await post('/applications', { destinationCountry: 'France', visaType: 'Tourist', intendedFrom: '2026-09-01' }, token);
+  const applicationId = create.body.application.id;
+
+  const { res, body } = await post('/chat', { applicationId, message: "what's my score?" }, token);
+  assert.equal(res.status, 200);
+  assert.ok(/\d+\/100/.test(body.reply), 'expected the real readiness score to appear in the reply');
+  assert.equal(body.escalate, false);
+});
+
+test('POST /chat — "how do I apply" is answered instantly from the real requirements knowledge base', async () => {
+  const token = await demoToken('consumer');
+  const create = await post('/applications', { destinationCountry: 'France', visaType: 'Tourist', intendedFrom: '2026-09-01' }, token);
+  const applicationId = create.body.application.id;
+
+  const { res, body } = await post('/chat', { applicationId, message: 'how do I apply?' }, token);
+  assert.equal(res.status, 200);
+  assert.ok(body.reply.length > 20);
+  assert.equal(body.escalate, false);
+});
+
 test('POST /chat — is rate limited (regression: this had NO limiter at all, so every message — a real, billed AI call once AI_MOCK=false — could be sent as fast as the network allows with zero cap)', async () => {
   const token = await demoToken('consumer');
   process.env.RATE_LIMIT_DISABLED = 'false';

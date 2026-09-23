@@ -1,10 +1,10 @@
 import { chatResponseSchema } from '@visaiq/contracts';
-import type { ChatRequest, ChatResponse, VisaApplication } from '@visaiq/contracts';
+import type { ChatRequest, ChatResponse, RequirementsResponse, VisaApplication } from '@visaiq/contracts';
 import type { AiProvider, HealthStatus } from './types.js';
 
 type ProviderName = 'claude' | 'gemini';
 
-type Grounding = { application?: VisaApplication | null };
+type Grounding = { application?: VisaApplication | null; requirements?: RequirementsResponse | null };
 
 interface ProviderConfig {
   name: ProviderName;
@@ -43,8 +43,23 @@ function buildGroundingBlock(application?: VisaApplication | null): string {
 - Intended travel date: ${application.intendedFrom}`;
 }
 
-function systemPromptFor(grounding?: { application?: VisaApplication | null }): string {
-  return VISA_SYSTEM_PROMPT_BASE + buildGroundingBlock(grounding?.application);
+// The same admin-managed (or built-in default) requirements dataset
+// /requirements itself serves — grounding the AI's document/fee/process
+// answers in the actual knowledge base instead of its general training
+// knowledge, which can be wrong or out of date for a specific country.
+function buildRequirementsBlock(requirements?: RequirementsResponse | null): string {
+  if (!requirements || requirements.requirements.length === 0) return '';
+  const items = requirements.requirements
+    .map((r) => `  - ${r.title} (${r.required ? 'required' : 'optional'}, currently ${r.satisfied ? 'satisfied' : 'missing'}): ${r.description}`)
+    .join('\n');
+  return `\n\nReal visa requirements knowledge base for this destination (authoritative — do not invent requirements not listed here):
+- Fees: ${requirements.fees}
+- Processing time: ${requirements.processingTime}
+${items}`;
+}
+
+function systemPromptFor(grounding?: Grounding): string {
+  return VISA_SYSTEM_PROMPT_BASE + buildGroundingBlock(grounding?.application) + buildRequirementsBlock(grounding?.requirements);
 }
 
 function fallbackReply(input: ChatRequest, grounding?: { application?: VisaApplication | null }): ChatResponse {
@@ -72,6 +87,42 @@ function legacyFallbackReply(input: ChatRequest): ChatResponse {
     suggestedActions: ['Review missing documents', 'Refresh official requirements', 'Find a consultant'],
     escalate: complexity,
     escalationReason: complexity ? 'Complexity or urgency threshold detected' : undefined
+  });
+}
+
+// Common, high-frequency questions get an instant, deterministic answer
+// straight from this user's own real data — never a provider call, checked
+// before the off-topic filter or the AI-configured check even run. This is
+// a deliberate cost optimization: "what's my score" doesn't need to burn an
+// LLM round-trip when the exact number already lives in the application
+// record this chat is grounded in either way.
+const SCORE_QUESTION_RE = /\b(my |the )?(readiness )?score\b|\bhow ready\b|\bam i ready\b|\bmy (application )?status\b|\bmy progress\b/i;
+const HOW_TO_APPLY_RE = /\bhow (do|to|can) i apply\b|\bhow does (this|it) work\b|\bsteps? to apply\b|\bapplication process\b|\bhow to (start|begin) (my |the )?application\b|\bwhat do i need to (do|submit)\b/i;
+
+function scoreReply(application: VisaApplication): ChatResponse {
+  return chatResponseSchema.parse({
+    reply: `Your ${application.destinationCountry} ${application.visaType} application is at ${application.readinessScore}/100 readiness. You've uploaded ${application.documentsUploaded}/${application.documentsRequired} required documents, with ${application.issuesCount} open issue${application.issuesCount === 1 ? '' : 's'} to resolve before your ${application.intendedFrom} travel date.`,
+    suggestedActions: ['Review missing documents', 'Open application checklist', 'Find a consultant'],
+    escalate: false
+  });
+}
+
+function howToApplyReply(application: VisaApplication | null | undefined, requirements: RequirementsResponse | null | undefined): ChatResponse {
+  if (!application || !requirements || requirements.requirements.length === 0) {
+    return chatResponseSchema.parse({
+      reply: 'Start by creating an application with your destination and visa type — that unlocks a personalized document checklist and readiness score. From there: upload each required document for AI review, resolve any flagged issues, and once your checklist is complete you can book an expert review or submit.',
+      suggestedActions: ['Start a new application', 'Browse visa requirements', 'Find a consultant'],
+      escalate: false
+    });
+  }
+  const missing = requirements.requirements.filter((r) => r.required && !r.satisfied);
+  const stepsText = missing.length > 0
+    ? `Next, upload: ${missing.map((r) => r.title).join(', ')}.`
+    : 'All required documents are uploaded — review any flagged issues, then you can book an expert review or submit.';
+  return chatResponseSchema.parse({
+    reply: `For your ${application.destinationCountry} ${application.visaType} application: ${stepsText} Typical processing time is ${requirements.processingTime}, with fees around ${requirements.fees}.`,
+    suggestedActions: ['Upload a document', 'Open application checklist', 'Find a consultant'],
+    escalate: false
   });
 }
 
@@ -171,6 +222,15 @@ export function createAiProvider(): AiProvider {
 
   return {
     async chat(input, grounding) {
+      // Instant, free answers for the highest-frequency questions — checked
+      // first, ahead of the off-topic filter and the AI-configured check, so
+      // they never cost a provider call even once AI is live.
+      if (grounding?.application && SCORE_QUESTION_RE.test(input.message)) {
+        return scoreReply(grounding.application);
+      }
+      if (HOW_TO_APPLY_RE.test(input.message)) {
+        return howToApplyReply(grounding?.application, grounding?.requirements);
+      }
       // Reject off-topic queries before spending any AI tokens
       if (isOffTopic(input.message)) {
         return chatResponseSchema.parse({

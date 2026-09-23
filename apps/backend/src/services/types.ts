@@ -75,7 +75,7 @@ export interface RequirementsCache {
 }
 
 export interface AiProvider {
-  chat(input: ChatRequest, grounding?: { application?: VisaApplication | null }): Promise<ChatResponse>;
+  chat(input: ChatRequest, grounding?: { application?: VisaApplication | null; requirements?: RequirementsResponse | null }): Promise<ChatResponse>;
   health(): HealthStatus;
 }
 

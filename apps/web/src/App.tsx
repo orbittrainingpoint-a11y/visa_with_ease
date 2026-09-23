@@ -130,7 +130,7 @@ const nav: { to: string; label: string; icon: typeof Home; roles?: string[] }[] 
   { to: '/consultants', label: 'Consultants', icon: Users },
   { to: '/consultant-console', label: 'Console', icon: MessageCircle, roles: ['consultant', 'platform_admin'] },
   { to: '/hr', label: 'HR portal', icon: LockKeyhole, roles: ['hr_admin', 'platform_admin'] },
-  { to: '/employee', label: 'Employee', icon: ShieldCheck },
+  { to: '/employee', label: 'Employee', icon: ShieldCheck, roles: ['consumer', 'platform_admin'] },
   { to: '/booking', label: 'Booking', icon: CalendarClock },
   { to: '/visa-calculator', label: 'Visa Calculator', icon: CircleDollarSign },
   { to: '/bank-balance', label: 'Bank Balance', icon: ChevronRight },
@@ -141,10 +141,10 @@ const nav: { to: string; label: string; icon: typeof Home; roles?: string[] }[] 
   { to: '/referrals', label: 'Referrals', icon: Users },
   { to: '/help', label: 'Help & FAQ', icon: MessageCircle },
   { to: '/pricing', label: 'Pricing', icon: Zap },
-  { to: '/api-portal', label: 'API Portal', icon: Code2 },
+  { to: '/api-portal', label: 'API Portal', icon: Code2, roles: ['platform_admin'] },
   { to: '/partners', label: 'Partners', icon: Package },
-  { to: '/compliance-db', label: 'Compliance DB', icon: Globe2 },
-  { to: '/investor', label: 'Investor Demo', icon: TrendingUp },
+  { to: '/compliance-db', label: 'Compliance DB', icon: Globe2, roles: ['platform_admin'] },
+  { to: '/investor', label: 'Investor Demo', icon: TrendingUp, roles: ['platform_admin'] },
   { to: '/admin/users', label: 'Users', icon: Users, roles: ['platform_admin'] },
   { to: '/admin/audit-log', label: 'Audit log', icon: FileText, roles: ['platform_admin'] },
   { to: '/admin/knowledge-base', label: 'Knowledge base', icon: BookOpen, roles: ['platform_admin'] },
@@ -281,7 +281,11 @@ export function App() {
               ? <HrPortal />
               : <Navigate to="/app" replace />
           } />
-          <Route path="/employee" element={<EmployeePortal />} />
+          <Route path="/employee" element={
+            session.user.roles.includes('consumer') || session.user.roles.includes('platform_admin')
+              ? <EmployeePortal />
+              : <Navigate to="/app" replace />
+          } />
           <Route path="/booking" element={<Booking />} />
           <Route path="/booking/:consultantId" element={<Booking />} />
           <Route path="/settings" element={<SettingsPage />} />
@@ -314,10 +318,22 @@ export function App() {
               : <Navigate to="/app" replace />
           } />
           <Route path="/pricing" element={<PricingPage />} />
-          <Route path="/api-portal" element={<ApiPortal />} />
+          <Route path="/api-portal" element={
+            session.user.roles.includes('platform_admin')
+              ? <ApiPortal />
+              : <Navigate to="/app" replace />
+          } />
           <Route path="/partners" element={<EcosystemPartners />} />
-          <Route path="/compliance-db" element={<ComplianceDb />} />
-          <Route path="/investor" element={<InvestorDemo />} />
+          <Route path="/compliance-db" element={
+            session.user.roles.includes('platform_admin')
+              ? <ComplianceDb />
+              : <Navigate to="/app" replace />
+          } />
+          <Route path="/investor" element={
+            session.user.roles.includes('platform_admin')
+              ? <InvestorDemo />
+              : <Navigate to="/app" replace />
+          } />
         </Routes>
       </main>
     </div>

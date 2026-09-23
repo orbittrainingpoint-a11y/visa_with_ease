@@ -1278,7 +1278,13 @@ main {
 
 .upload-drop {
   display: grid;
-  justify-items: center;
+  /* No justify-items: center — that sizes grid items (this p included) to
+     their max-content width instead of stretching to the column, which for
+     a full sentence means "as if it never wrapped", overflowing past the
+     360px column no matter what max-width is set on the item itself (its
+     own percentage basis stays ambiguous under non-stretch alignment).
+     text-align below already centers the visible text/icons/buttons — that
+     was the actual mechanism doing the centering, not this. */
   align-content: center;
   gap: 12px;
   min-height: 310px;

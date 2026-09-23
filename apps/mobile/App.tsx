@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   login as apiLogin, register as apiRegister, googleLogin as apiGoogleLogin,
   sendChatMessage, setToken,
@@ -307,7 +307,16 @@ function AppInner() {
   // application" flow only if they don't have one yet — returning users with
   // existing applications land straight on the dashboard instead of being
   // routed through onboarding on every login.
-  const routeAfterAuth = async () => {
+  // useCallback with an empty dep array: every setter called here is a
+  // stable useState setter, and fetchApplications/normalizeApp are
+  // module-level — the load*() calls below are intentionally left out of
+  // the array (fire-and-forget background refreshes, not read for their
+  // return value here) rather than chased into their own useCallbacks,
+  // which would expand this fix well beyond the bug it's for. What matters
+  // for that bug is that THIS function stays referentially stable, since
+  // handleLogin depends on it and WelcomeScreen's sticky-footer effect
+  // depends on handleLogin in turn — see the comment on handleLogin.
+  const routeAfterAuth = useCallback(async () => {
     setLoadingApps(true);
     setLoadAppsError('');
     let firstAppId: string | undefined;
@@ -323,7 +332,7 @@ function AppInner() {
       setLoadingApps(false);
     }
     void Promise.all([loadConsultants(), loadSessionOpts(), loadNotifications(), loadDocuments(firstAppId)]);
-  };
+  }, []);
 
   // Registers this device for real push notifications once signed in.
   // Best-effort and silent on failure — a user who denies the permission (or
@@ -442,7 +451,16 @@ function AppInner() {
     }
   };
 
-  const handleLogin = async () => {
+  // useCallback is load-bearing here, not just tidiness: WelcomeScreen's
+  // sticky-footer effect lists this function in its own dependency array
+  // and calls a setState (setStickyFooter) that lives in this component —
+  // an unstable (redefined-every-render) function reference there caused a
+  // genuine infinite render loop (new render -> new handleLogin -> effect
+  // refires -> setStickyFooter -> new render -> ...), pegging the JS thread
+  // at 100%+ CPU and starving every Pressable's onPress on that screen of
+  // any chance to run (real bug, found by noticing the sign-in screen's
+  // checkbox/buttons were completely unresponsive to taps).
+  const handleLogin = useCallback(async () => {
     if (loginLoading) return;
     setLoginError('');
     setLoginLoading(true);
@@ -456,7 +474,7 @@ function AppInner() {
     } finally {
       setLoginLoading(false);
     }
-  };
+  }, [authEmail, authPassword, loginLoading, routeAfterAuth]);
 
   const handleGoogleLogin = async () => {
     if (loginLoading) return;

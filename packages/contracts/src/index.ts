@@ -95,7 +95,10 @@ export const chatResponseSchema = z.object({
   reply: z.string(),
   suggestedActions: z.array(z.string()),
   escalate: z.boolean(),
-  escalationReason: z.string().optional()
+  escalationReason: z.string().optional(),
+  // True when this is the built-in basic answer because the AI model was
+  // unavailable (out of credit, outage, not configured) — never presented as AI.
+  degraded: z.boolean().optional()
 });
 
 export const auditRequestSchema = z.object({

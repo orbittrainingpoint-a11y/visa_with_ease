@@ -62,7 +62,6 @@ for (const Comp of [Text, TextInput] as any[]) {
     };
   }
 }
-import { CHAT_KB } from './src/data';
 import { getCacheSnapshot, clearCache } from './src/offlineCache';
 import { loadPreferences, savePreferences, DEFAULT_PREFERENCES, type SettingsPreferences } from './src/preferences';
 import { colors, scoreColor } from './src/theme';
@@ -261,13 +260,15 @@ function AppInner() {
     if (navigatingBack.current) { navigatingBack.current = false; previousRoute.current = route; return; }
     const prev = previousRoute.current;
     // Auth/transient screens never go on the stack: back from Home must not return to sign-in or a finished analysis.
-    const transient = ['splash', 'welcome', 'register', 'verify', 'forgotPassword', 'liveAnalysis', 'onboarding'];
+    const transient = ['splash', 'welcome', 'register', 'verify', 'forgotPassword', 'liveAnalysis', 'onboarding', 'camera', 'upload'];
     if (prev !== route && !transient.includes(prev.name)) routeHistory.current = [...routeHistory.current.slice(-29), prev];
     if (route.name === 'welcome') routeHistory.current = [];
     previousRoute.current = route;
   }, [route]);
   useEffect(() => {
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      // Keyboard open: back only closes it (Android can deliver the key to the app first).
+      if (Keyboard.isVisible()) { Keyboard.dismiss(); return true; }
       if (route.name === 'liveAnalysis') return true; // mid-upload: don't abandon it with a stray swipe
       if (route.name === 'register' || route.name === 'forgotPassword') { setRoute({ name: 'welcome' }); return true; }
       if (route.name === 'camera') { setRoute({ name: 'upload', state: 'select' }); return true; }
@@ -287,7 +288,7 @@ function AppInner() {
   const [loginLoading, setLoginLoading] = useState(false);
   const [message, setMessage] = useState('');
   const [isTyping, setIsTyping] = useState(false);
-  const [sessionMessages, setSessionMessages] = useState<Array<{ id: string; role: 'user' | 'ai'; text: string }>>([]);
+  const [sessionMessages, setSessionMessages] = useState<Array<{ id: string; role: 'user' | 'ai'; text: string; note?: string }>>([]);
 
   // Real data state
   const [appList, setAppList] = useState<ReturnType<typeof normalizeApp>[]>([]);
@@ -584,12 +585,18 @@ function AppInner() {
     }
     setIsTyping(true);
     try {
-      const { reply } = await sendChatMessage(trimmed);
-      setSessionMessages(prev => [...prev, { id: `a-${Date.now()}`, role: 'ai', text: reply }]);
+      const { reply, degraded } = await sendChatMessage(trimmed, appList[0]?.id);
+      setSessionMessages(prev => [...prev, {
+        id: `a-${Date.now()}`, role: 'ai', text: reply,
+        note: degraded ? 'Basic answer from your application data — the AI assistant is temporarily unavailable.' : undefined,
+      }]);
     } catch {
-      const match = CHAT_KB.find(([re]) => re.test(trimmed));
-      const fallback = match ? match[1] : "I'm here to help with your visa application. What would you like to know?";
-      setSessionMessages(prev => [...prev, { id: `a-${Date.now()}`, role: 'ai', text: fallback }]);
+      // Never dress a failure up as an AI answer: say plainly that nothing came back.
+      setSessionMessages(prev => [...prev, {
+        id: `a-${Date.now()}`, role: 'ai',
+        text: "I couldn't reach the assistant just now. Check your connection and send your message again.",
+        note: 'No answer was generated.',
+      }]);
     } finally {
       setIsTyping(false);
     }
@@ -1086,7 +1093,11 @@ function WelcomeScreen({
   const { height: winH } = useWindowDimensions();
   useEffect(() => {
     if (!showForm) return;
-    const sub = BackHandler.addEventListener('hardwareBackPress', () => { setShowForm(false); return true; });
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (Keyboard.isVisible()) { Keyboard.dismiss(); return true; }
+      setShowForm(false);
+      return true;
+    });
     return () => sub.remove();
   }, [showForm]);
 
@@ -1422,7 +1433,10 @@ function ApplicationDetailScreen({ id, appList, tab, setTab, back, upload, openA
         return (
           <Section title="Readiness overview">
             {documents.length > 0 && (
-              <TaskRow title="Passport uploaded" meta="Identity document is on file for this application." done={documents.some((d) => d.type === 'Passport' && d.status !== 'Missing')} />
+              (() => {
+                const passportOnFile = documents.some((d) => d.type?.toLowerCase() === 'passport' && d.status !== 'Missing');
+                return <TaskRow title={passportOnFile ? 'Passport uploaded' : 'Passport not uploaded yet'} meta={passportOnFile ? 'Identity document is on file for this application.' : 'Upload your passport bio page first — every other check is compared against it.'} done={passportOnFile} />;
+              })()
             )}
             {missingDocs.length > 0 ? (
               <TaskRow
@@ -1917,18 +1931,23 @@ function UploadScreen({ state, activeApplicationId, openNewApplication, back, ne
   );
 }
 
-const AUDIT_TIMELINE = ['File received and encrypted', 'OCR text extracted', 'Identity fields compared', 'Visa rules checked', 'Validated findings published'];
+// Human labels for a stored audit's document type / status.
+const AUDIT_STATUS_LABEL: Record<string, string> = { excellent: 'Passed all checks', attention_needed: 'Needs attention', issues_to_fix: 'Issues to fix' };
+function documentTypeLabel(type: string): string {
+  const label = DOC_KIND_LABEL[toDocKind(type.toLowerCase())];
+  return label.charAt(0).toUpperCase() + label.slice(1);
+}
 
 function AuditReportScreen({ docId, back, openRequirements, fetchedAudit, auditError, onMount, onRetry }: { docId: string; back: () => void; openRequirements: () => void; fetchedAudit?: any; auditError?: string; onMount?: () => void; onRetry?: () => void }) {
   useEffect(() => { onMount?.(); }, []);
 
   const audit = fetchedAudit ?? {};
   const score: number = audit.score ?? 0;
-  const status: string = audit.status ?? 'Pending';
-  const title: string = audit.documentType ?? docId;
+  const status: string = AUDIT_STATUS_LABEL[audit.status] ?? audit.status ?? 'Pending';
+  const title: string = audit.documentType ? documentTypeLabel(audit.documentType) : docId;
   const generatedAt: string = audit.generatedAt ? new Date(audit.generatedAt).toLocaleString() : 'Pending';
   const findings: any[] = audit.findings ?? [];
-  const severityColor = { pass: colors.green500, info: colors.royal600, warn: colors.gold500, redflag: '#DC2626' } as Record<string, string>;
+  const severityColor = { pass: colors.green500, info: colors.royal600, warn: colors.gold500, red_flag: '#DC2626', redflag: '#DC2626' } as Record<string, string>;
 
   const handleSharePdf = async () => {
     try {
@@ -1980,13 +1999,17 @@ function AuditReportScreen({ docId, back, openRequirements, fetchedAudit, auditE
         <Text style={styles.reportText}>Generated {generatedAt}</Text>
       </LinearGradient>
 
-      <Section title="What this scan checks">
-        {AUDIT_TIMELINE.map((step) => (
-          <View key={step} style={[styles.taskRow, { gap: 10 }]}>
-            <View style={{ width: 22, height: 22, borderRadius: 11, backgroundColor: colors.green100, alignItems: 'center', justifyContent: 'center' }}>
-              <Ionicons name="checkmark" size={13} color={colors.green500} />
-            </View>
-            <Text style={styles.rowTitle}>{step}</Text>
+      {/* Summary counted from the real findings — nothing here is asserted unless the analysis produced it */}
+      <Section title="At a glance">
+        {[
+          { label: 'Serious problems', n: findings.filter((f) => f.severity === 'red_flag').length, color: '#DC2626', icon: 'close-circle' as IoniconName },
+          { label: 'Warnings', n: findings.filter((f) => f.severity === 'warn').length, color: colors.gold500, icon: 'warning' as IoniconName },
+          { label: 'Checks passed', n: findings.filter((f) => f.severity === 'pass').length, color: colors.green500, icon: 'checkmark-circle' as IoniconName },
+        ].map((row) => (
+          <View key={row.label} style={[styles.taskRow, { gap: 10 }]}>
+            <Ionicons name={row.icon} size={22} color={row.color} />
+            <Text style={[styles.rowTitle, { flex: 1 }]}>{row.label}</Text>
+            <Text style={{ fontWeight: '900', color: row.n > 0 ? row.color : colors.slate500, fontSize: 16 }}>{row.n}</Text>
           </View>
         ))}
       </Section>
@@ -2181,13 +2204,22 @@ function RequirementsScreen({ back, openConsultants, destinationCountry }: { bac
 // document type that would satisfy it — the backend's own `satisfied` flag
 // isn't tied to any specific application's uploads, so this is computed here.
 function matchesUploadedDoc(req: { id: string; title: string }, docMap: Map<string | undefined, ApiDocument>): boolean {
+  // The documents list always contains a placeholder for every document type
+  // (status 'Missing' until something is really uploaded), so being *present*
+  // in the map proves nothing — only a non-Missing status counts as uploaded.
+  // A tick also needs the document to have actually passed its check: a photo
+  // that scored 18/100 (e.g. "doesn't look like a passport") is not a met requirement.
+  const uploaded = (...types: string[]) => types.some((t) => {
+    const d = docMap.get(t);
+    return !!d && d.status !== 'Missing' && (d.score ?? 0) >= 50;
+  });
   const text = `${req.id} ${req.title}`.toLowerCase();
-  if (text.includes('passport')) return !!docMap.get('passport');
-  if (text.includes('bank') || text.includes('financ') || text.includes('fund')) return !!docMap.get('finance');
-  if (text.includes('insur')) return !!docMap.get('insurance');
-  if (text.includes('itinerary') || text.includes('flight') || text.includes('hotel') || text.includes('reserv')) return !!docMap.get('itinerary');
-  if (text.includes('photo')) return !!docMap.get('photo');
-  if (text.includes('employ') || text.includes('student') || text.includes('enroll')) return !!docMap.get('employment');
+  if (text.includes('passport')) return uploaded('passport');
+  if (text.includes('bank') || text.includes('financ') || text.includes('fund')) return uploaded('bank', 'finance');
+  if (text.includes('insur')) return uploaded('insurance');
+  if (text.includes('itinerary') || text.includes('flight') || text.includes('hotel') || text.includes('reserv')) return uploaded('itinerary');
+  if (text.includes('photo')) return uploaded('photo');
+  if (text.includes('employ') || text.includes('student') || text.includes('enroll')) return uploaded('employment');
   return false;
 }
 
@@ -2242,7 +2274,7 @@ function RequirementList({ documents, destinationCountry }: { documents: ApiDocu
 function ChatScreen({ message, setMessage, sessionMessages, isTyping, sendMessage, openConsultants, appList, bottomInset }: {
   message: string;
   setMessage: (value: string) => void;
-  sessionMessages: Array<{ id: string; role: 'user' | 'ai'; text: string }>;
+  sessionMessages: Array<{ id: string; role: 'user' | 'ai'; text: string; note?: string }>;
   isTyping: boolean;
   sendMessage: () => void;
   openConsultants: () => void;
@@ -2291,6 +2323,7 @@ function ChatScreen({ message, setMessage, sessionMessages, isTyping, sendMessag
         {sessionMessages.map((item) => (
           <View key={item.id} style={item.role === 'user' ? styles.userBubble : styles.aiBubble}>
             <Text style={item.role === 'user' ? styles.userText : styles.bodyText}>{item.role === 'ai' ? item.text.replace(/\*\*/g, '') : item.text}</Text>
+            {!!item.note && <Text style={{ color: colors.slate500, fontSize: 11, fontStyle: 'italic', marginTop: -8 }}>{item.note}</Text>}
           </View>
         ))}
         {isTyping && (
@@ -4792,11 +4825,15 @@ function FaceVerificationScreen({ back }: { back: () => void }) {
 function buildTimelineStages(app: ReturnType<typeof normalizeApp> | null, documents: ApiDocument[], hasAuditResult: boolean, hasBooking: boolean) {
   const decided = app?.statusRaw === 'approved' || app?.statusRaw === 'rejected';
   const submitted = decided || app?.statusRaw === 'submitted';
+  // The documents list holds a 'Missing' placeholder for every document type,
+  // so only non-Missing entries are actually uploaded.
+  const uploadedDocs = documents.filter((d) => d.status !== 'Missing');
+  const insuranceUploaded = uploadedDocs.some((d) => d.type?.toLowerCase() === 'insurance');
   return [
-    { label: 'Documents collected', done: documents.length > 0, note: documents.length > 0 ? `${documents.length} uploaded` : 'None uploaded yet' },
+    { label: 'Documents collected', done: uploadedDocs.length > 0, note: uploadedDocs.length > 0 ? `${uploadedDocs.length} uploaded` : 'None uploaded yet' },
     { label: 'AI audit complete', done: hasAuditResult, note: hasAuditResult ? 'At least one document audited' : 'Run an audit from Documents' },
     { label: 'Requirements met', done: !!app && app.documentsUploaded >= app.documentsRequired && app.documentsRequired > 0, note: app ? `${app.documentsUploaded}/${app.documentsRequired} required documents` : 'No application yet' },
-    { label: 'Insurance uploaded', done: documents.some(d => d.type?.toLowerCase() === 'insurance'), note: documents.some(d => d.type?.toLowerCase() === 'insurance') ? 'Uploaded' : 'Not uploaded yet' },
+    { label: 'Insurance uploaded', done: insuranceUploaded, note: insuranceUploaded ? 'Uploaded' : 'Not uploaded yet' },
     { label: 'Consultant appointment booked', done: hasBooking, note: hasBooking ? 'Booked this session' : 'Not booked yet' },
     { label: 'Application submitted', done: submitted, note: submitted ? 'Submitted' : 'Not submitted yet' },
     { label: 'Decision received', done: decided, note: decided ? (app?.statusRaw === 'approved' ? 'Approved' : 'Rejected') : 'Awaiting decision' },
@@ -5262,6 +5299,11 @@ function CameraScreen({ docType, back, onCapture }: { docType: string; back: () 
   const [auto, setAuto] = useState(true);
   const [liveHint, setLiveHint] = useState('Align the document within the frame');
   const [liveReady, setLiveReady] = useState(false);
+  const [capturing, setCapturing] = useState(false);
+  // Bumping this remounts the camera view, which drops any picture request a
+  // background preview probe left hanging on the native side.
+  const [cameraKey, setCameraKey] = useState(0);
+  const [captureError, setCaptureError] = useState<string | null>(null);
   const cameraRef = useRef<CameraView>(null);
   const busyRef = useRef(false);
 
@@ -5304,13 +5346,24 @@ function CameraScreen({ docType, back, onCapture }: { docType: string; back: () 
     if (!cameraRef.current || busyRef.current) return;
     busyRef.current = true;
     try {
-      const photo = await cameraRef.current.takePictureAsync({ quality: 0.85, base64: false });
-      const uri = photo?.uri ?? null;
-      if (!uri) { setVerdict({ status: 'unclear', title: 'Capture failed', detail: 'The camera returned no image. Try again.' }); return; }
+      // A preview probe taken a moment earlier can leave the camera busy for a
+      // beat, so one automatic retry keeps the first tap from being lost.
+      let uri: string | null = null;
+      for (let attempt = 0; attempt < 2 && !uri; attempt++) {
+        try {
+          const photo = await cameraRef.current?.takePictureAsync({ quality: 0.85, base64: false });
+          uri = photo?.uri ?? null;
+        } catch {
+          await new Promise((r) => setTimeout(r, 600));
+        }
+      }
+      if (!uri) {
+        setLiveReady(false);
+        setCaptureError("Couldn't take the photo — tap the shutter again");
+        return;
+      }
       setCaptured(uri);
       await analyse(uri);
-    } catch {
-      setVerdict({ status: 'unclear', title: 'Capture failed', detail: 'The camera returned no image. Try again.' });
     } finally {
       busyRef.current = false;
     }
@@ -5319,13 +5372,25 @@ function CameraScreen({ docType, back, onCapture }: { docType: string; back: () 
   // Manual shutter: stop the auto loop, let any in-flight preview probe finish
   // (it holds the camera), then take the real shot — a tap is never dropped.
   const onShutter = async () => {
+    if (capturing) return;
+    setCapturing(true);
+    setCaptureError(null);
     setAuto(false);
-    for (let waited = 0; busyRef.current && waited < 4000; waited += 150) await new Promise((r) => setTimeout(r, 150));
+    // A preview probe may still hold the camera: give it a moment to finish, and
+    // if it doesn't, reset the camera rather than queue behind a request that may never return.
+    for (let waited = 0; busyRef.current && waited < 2500; waited += 150) await new Promise((r) => setTimeout(r, 150));
+    if (busyRef.current) {
+      busyRef.current = false;
+      setCameraKey((k) => k + 1);
+      await new Promise((r) => setTimeout(r, 1200));
+    }
     await capturePhoto();
+    setCapturing(false);
   };
 
   const retake = () => {
     setAuto(true);
+    setCaptureError(null);
     setCaptured(null); setVerdict(null); setCheckUnavailable(false); setDetectedText(''); setImageBase64(undefined);
     setLiveReady(false); setLiveHint('Align the document within the frame');
   };
@@ -5349,7 +5414,10 @@ function CameraScreen({ docType, back, onCapture }: { docType: string; back: () 
           busyRef.current = true;
           let probe: ReturnType<typeof probeFrame> | undefined;
           try {
-            const shot = await cameraRef.current.takePictureAsync({ quality: 0.3, base64: false, shutterSound: false });
+            const shot = await Promise.race([
+              cameraRef.current.takePictureAsync({ quality: 0.3, base64: false, shutterSound: false }),
+              new Promise<never>((_, reject) => setTimeout(() => reject(new Error('probe timeout')), 8000)),
+            ]);
             if (stopped || !shot?.uri) return;
             const { default: TextRecognition } = await import('@react-native-ml-kit/text-recognition');
             const ocr = await TextRecognition.recognize(shot.uri);
@@ -5417,14 +5485,14 @@ function CameraScreen({ docType, back, onCapture }: { docType: string; back: () 
       <StatusBar barStyle="light-content" />
       {/* Camera viewfinder */}
       {!captured ? (
-        <CameraView ref={cameraRef} style={{ flex: 1 }} facing={facing} flash={facing === 'back' ? flash : 'off'}>
+        <CameraView key={cameraKey} ref={cameraRef} style={{ flex: 1 }} facing={facing} flash={facing === 'back' ? flash : 'off'}>
           {/* Top bar */}
           <View style={{ flexDirection: 'row', alignItems: 'center', padding: 16, gap: 8 }}>
             <Pressable onPress={back} style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(0,0,0,0.4)', alignItems: 'center', justifyContent: 'center' }}>
               <Ionicons name="arrow-back" size={22} color="#fff" />
             </Pressable>
             <View style={{ flex: 1, alignItems: 'center' }}>
-              <Text style={{ color: '#fff', fontWeight: '900', fontSize: 15 }} numberOfLines={1}>Scan {docLabel}</Text>
+              <Text style={{ color: '#fff', fontWeight: '900', fontSize: 15, backgroundColor: 'rgba(0,0,0,0.55)', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 14, overflow: 'hidden' }} numberOfLines={1}>Scan {docLabel}</Text>
             </View>
             <Pressable onPress={() => setFacing(f => f === 'back' ? 'front' : 'back')} style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(0,0,0,0.4)', alignItems: 'center', justifyContent: 'center' }}>
               <Ionicons name="camera-reverse-outline" size={22} color="#fff" />
@@ -5437,7 +5505,7 @@ function CameraScreen({ docType, back, onCapture }: { docType: string; back: () 
           <View style={{ alignItems: 'center', paddingHorizontal: 20 }}>
             <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center', backgroundColor: liveReady ? 'rgba(16,185,129,0.92)' : 'rgba(0,0,0,0.6)', paddingHorizontal: 14, paddingVertical: 8, borderRadius: 20, maxWidth: '100%' }}>
               <Ionicons name={liveReady ? 'checkmark-circle' : 'scan-outline'} size={16} color="#fff" />
-              <Text style={{ color: '#fff', fontWeight: '700', fontSize: 12.5, flexShrink: 1 }}>{auto ? liveHint : 'Auto-capture off — tap the shutter'}</Text>
+              <Text style={{ color: '#fff', fontWeight: '700', fontSize: 12.5, flexShrink: 1 }}>{capturing ? 'Capturing…' : captureError ?? (auto ? liveHint : 'Auto-capture off — tap the shutter')}</Text>
             </View>
           </View>
           {/* Frame guide */}
@@ -5518,13 +5586,12 @@ function CameraScreen({ docType, back, onCapture }: { docType: string; back: () 
 }
 
 // ─── Live AI Analysis Screen ──────────────────────────────────────────────────
+// Progress labels only — shown while the real request is in flight. Nothing here
+// claims a result: once the audit returns, the real findings replace this list.
 const AI_STAGES = [
-  { label: 'Extracting text · OCR pass',         duration: '0.4s', done: true  },
-  { label: 'Reading biographic fields',           duration: '0.6s', done: true  },
-  { label: 'Validating passport format',          duration: '0.3s', done: true  },
-  { label: 'Cross-checking with profile name',    duration: '…',    active: true },
-  { label: 'Checking expiry against visa rules',  duration: '',     done: false  },
-  { label: 'Generating validated findings report',duration: '',     done: false  },
+  { label: 'Reading the document' },
+  { label: 'Checking it against the requirements' },
+  { label: 'Preparing your report' },
 ];
 
 function LiveAnalysisScreen({ docTitle, documentId, documentType, extractedText, imageBase64, mimeType, applicationId, onDone }: {
@@ -5581,11 +5648,22 @@ function LiveAnalysisScreen({ docTitle, documentId, documentType, extractedText,
     return () => { cancelled = true; clearInterval(stageTimer); };
   }, [applicationId, documentId, documentType, extractedText, imageBase64, mimeType, attempt]);
 
-  const stages = AI_STAGES.map((s, i) => ({
-    ...s,
+  const stages = AI_STAGES.map((st, i) => ({
+    ...st,
     done: i < stageIdx,
     active: i === stageIdx && !done,
   }));
+  const liveInsets = useSafeAreaInsets();
+  const statusTone = result?.status === 'excellent'
+    ? { color: colors.green500, bg: 'rgba(16,185,129,0.15)', border: 'rgba(16,185,129,0.3)', title: 'Passed all checks' }
+    : result?.status === 'attention_needed'
+      ? { color: '#F59E0B', bg: 'rgba(245,158,11,0.15)', border: 'rgba(245,158,11,0.3)', title: 'Needs attention' }
+      : { color: '#F87171', bg: 'rgba(220,38,38,0.15)', border: 'rgba(220,38,38,0.3)', title: 'Issues found' };
+  const severityIcon = (sev: string): { name: IoniconName; color: string } =>
+    sev === 'pass' ? { name: 'checkmark-circle', color: colors.green500 }
+      : sev === 'red_flag' ? { name: 'close-circle', color: '#F87171' }
+        : sev === 'warn' ? { name: 'warning', color: '#F59E0B' }
+          : { name: 'information-circle', color: '#93C5FD' };
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.navy900 }}>
@@ -5597,24 +5675,18 @@ function LiveAnalysisScreen({ docTitle, documentId, documentType, extractedText,
           <Text style={{ color: '#fff', fontSize: 11, fontWeight: '700' }}>Real-time</Text>
         </View>
       </View>
-      <ScrollView contentContainerStyle={{ padding: 20, paddingBottom: 40 }}>
+      <ScrollView contentContainerStyle={{ padding: 20, paddingBottom: 40 + liveInsets.bottom }}>
         {/* Document preview card */}
         <View style={{ alignItems: 'center', marginBottom: 24 }}>
           <View style={{ width: 160, height: 210, borderRadius: 12, backgroundColor: '#fff', overflow: 'hidden', shadowColor: '#000', shadowOpacity: 0.4, shadowRadius: 20 }}>
-            <LinearGradient colors={['#1A56DB','#0EA5E9']} style={{ height: 48, padding: 10 }}>
-              <Text style={{ color: 'rgba(255,255,255,0.7)', fontSize: 7, fontWeight: '700', letterSpacing: 1.5 }}>REPUBLIC OF INDIA</Text>
-              <Text style={{ color: '#fff', fontSize: 11, fontWeight: '900', marginTop: 2 }}>PASSPORT</Text>
+            <LinearGradient colors={['#1A56DB','#0EA5E9']} style={{ height: 48, padding: 10, justifyContent: 'center' }}>
+              <Text style={{ color: '#fff', fontSize: 11, fontWeight: '900' }} numberOfLines={2}>{documentTypeLabel(docTitle)}</Text>
             </LinearGradient>
-            <View style={{ flexDirection: 'row', gap: 8, padding: 10 }}>
-              <View style={{ width: 36, height: 48, backgroundColor: colors.slate100, borderRadius: 4, alignItems: 'center', justifyContent: 'center' }}>
-                <Ionicons name="person-outline" size={20} color={colors.slate300} />
-              </View>
-              <View style={{ flex: 1, gap: 4 }}>
-                {[60,80,50,70].map((w,i) => <View key={i} style={{ width: `${w}%`, height: 4, backgroundColor: colors.slate200, borderRadius: 2 }} />)}
-              </View>
+            <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+              <Ionicons name="document-text-outline" size={44} color={colors.slate300} />
             </View>
-            {/* Scan line */}
-            <View style={{ position: 'absolute', left: 0, right: 0, top: '60%', height: 2, backgroundColor: 'rgba(14,165,233,0.8)', shadowColor: '#0EA5E9', shadowRadius: 8, shadowOpacity: 1 }} />
+            {/* Scan line — only while a real analysis is running */}
+            {!done && !error && <View style={{ position: 'absolute', left: 0, right: 0, top: '60%', height: 2, backgroundColor: 'rgba(14,165,233,0.8)', shadowColor: '#0EA5E9', shadowRadius: 8, shadowOpacity: 1 }} />}
             {/* AI badge */}
             <View style={{ position: 'absolute', top: -10, right: -10, backgroundColor: '#7C3AED', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 20 }}>
               <Text style={{ color: '#fff', fontSize: 8, fontWeight: '800' }}>AI</Text>
@@ -5625,31 +5697,47 @@ function LiveAnalysisScreen({ docTitle, documentId, documentType, extractedText,
             <Text style={{ color: 'rgba(255,255,255,0.5)', fontSize: 10, fontWeight: '700', letterSpacing: 2, textTransform: 'uppercase' }}>Readiness score</Text>
             {score === null
               ? <ActivityIndicator size="large" color={colors.teal500} style={{ marginVertical: 12 }} />
-              : <Text style={{ color: colors.green500, fontSize: 56, fontWeight: '900', fontVariant: ['tabular-nums'] }}>{score}</Text>}
+              : <Text style={{ color: score >= 75 ? colors.green500 : score >= 50 ? '#F59E0B' : '#F87171', fontSize: 56, fontWeight: '900', fontVariant: ['tabular-nums'] }}>{score}</Text>}
             {score !== null && <Text style={{ color: 'rgba(255,255,255,0.4)', fontSize: 14 }}>/ 100</Text>}
             {!done && !error && <Text style={{ color: colors.teal500, fontSize: 11, fontWeight: '700', marginTop: 4 }}>Analyzing…</Text>}
           </View>
         </View>
-        {/* Stage list */}
-        <View style={{ backgroundColor: 'rgba(255,255,255,0.05)', borderRadius: 16, padding: 16, gap: 4 }}>
-          {stages.map((stage, i) => (
-            <View key={i} style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 8 }}>
-              <View style={{ width: 22, height: 22, borderRadius: 11, backgroundColor: stage.done ? colors.green500 : stage.active ? 'transparent' : 'rgba(255,255,255,0.08)', alignItems: 'center', justifyContent: 'center' }}>
-                {stage.done && <Ionicons name="checkmark" size={13} color="#fff" />}
-                {stage.active && <ActivityIndicator size="small" color="#7C3AED" />}
+        {/* Progress while running */}
+        {!done && !error && (
+          <View style={{ backgroundColor: 'rgba(255,255,255,0.05)', borderRadius: 16, padding: 16, gap: 4 }}>
+            {stages.map((stage, i) => (
+              <View key={i} style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 8 }}>
+                <View style={{ width: 22, height: 22, borderRadius: 11, backgroundColor: stage.done ? 'rgba(255,255,255,0.25)' : 'rgba(255,255,255,0.08)', alignItems: 'center', justifyContent: 'center' }}>
+                  {stage.done && <Ionicons name="checkmark" size={13} color="#fff" />}
+                  {stage.active && <ActivityIndicator size="small" color="#7C3AED" />}
+                </View>
+                <Text style={{ flex: 1, color: stage.active ? '#fff' : 'rgba(255,255,255,0.4)', fontSize: 13, fontWeight: stage.active ? '700' : '500' }}>{stage.label}{stage.active && '…'}</Text>
               </View>
-              <Text style={{ flex: 1, color: stage.done ? 'rgba(255,255,255,0.45)' : stage.active ? '#fff' : 'rgba(255,255,255,0.25)', fontSize: 13, fontWeight: stage.active ? '700' : '500' }}>
-                {stage.label}{stage.active && '…'}
-              </Text>
-              {stage.duration && <Text style={{ color: stage.done ? colors.green500 : stage.active ? '#7C3AED' : 'rgba(255,255,255,0.2)', fontSize: 10, fontWeight: '700', fontVariant: ['tabular-nums'] }}>{stage.duration}</Text>}
-            </View>
-          ))}
-        </View>
+            ))}
+          </View>
+        )}
+        {/* The real result: the actual findings, each with its own severity — never a fixed row of green ticks */}
         {done && result && (
           <>
-            <View style={{ marginTop: 16, padding: 14, backgroundColor: 'rgba(16,185,129,0.15)', borderRadius: 14, borderWidth: 1, borderColor: 'rgba(16,185,129,0.3)' }}>
-              <Text style={{ color: colors.green500, fontWeight: '900', marginBottom: 4 }}>Analysis complete</Text>
-              <Text style={{ color: 'rgba(255,255,255,0.6)', fontSize: 12, lineHeight: 18 }}>Analysis complete. AI findings are ready in your audit report. Review each item and resolve any flagged issues to improve your readiness score.</Text>
+            <View style={{ padding: 14, backgroundColor: statusTone.bg, borderRadius: 14, borderWidth: 1, borderColor: statusTone.border }}>
+              <Text style={{ color: statusTone.color, fontWeight: '900', marginBottom: 4 }}>{statusTone.title}</Text>
+              <Text style={{ color: 'rgba(255,255,255,0.6)', fontSize: 12, lineHeight: 18 }}>
+                {result.findings.length === 0 ? 'No findings were reported for this document.' : `${result.findings.length} finding${result.findings.length === 1 ? '' : 's'} from this check. Review each one and fix anything flagged.`}
+              </Text>
+            </View>
+            <View style={{ backgroundColor: 'rgba(255,255,255,0.05)', borderRadius: 16, padding: 14, marginTop: 12, gap: 10 }}>
+              {result.findings.slice(0, 6).map((f) => {
+                const icon = severityIcon(f.severity);
+                return (
+                  <View key={f.id} style={{ flexDirection: 'row', gap: 10, alignItems: 'flex-start' }}>
+                    <Ionicons name={icon.name} size={20} color={icon.color} style={{ marginTop: 1 }} />
+                    <View style={{ flex: 1 }}>
+                      <Text style={{ color: '#fff', fontWeight: '700', fontSize: 13 }}>{f.title}</Text>
+                      <Text style={{ color: 'rgba(255,255,255,0.55)', fontSize: 12, lineHeight: 17, marginTop: 2 }}>{f.description}</Text>
+                    </View>
+                  </View>
+                );
+              })}
             </View>
             <Pressable style={[styles.primaryButton, { marginTop: 14 }]} onPress={() => onDone(result)}>
               <Text style={styles.primaryButtonText}>View full audit report</Text>

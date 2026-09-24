@@ -189,9 +189,20 @@ test.describe('Requirements', () => {
     await assertNoUndefined(page);
   });
 
-  test('freshness badge is visible', async ({ page }) => {
+  test('shows honestly whether the requirements were verified against the official source', async ({ page }) => {
     await page.goto('/requirements');
-    await expect(page.getByText(/fetched|ago|expires/i).first()).toBeVisible();
+    // Built-in data has never been verified by an admin, so it must say so
+    // rather than imply a live fetch from an official site.
+    await expect(page.getByText(/not yet verified against the official source/i).first()).toBeVisible();
+    await expect(page.getByText(/fetched .* ago/i)).toHaveCount(0);
+  });
+
+  test('each requirement explains why it is needed', async ({ page }) => {
+    await page.goto('/requirements');
+    const why = page.getByText('Why is this needed?').first();
+    await expect(why).toBeVisible();
+    await why.click();
+    await expect(page.getByText(/official sources|required for this visa/i).first()).toBeVisible();
   });
 });
 
@@ -387,11 +398,14 @@ test.describe('Partners', () => {
 // ─── Compliance DB ────────────────────────────────────────────────────────────
 
 test.describe('Compliance DB', () => {
-  test.beforeEach(async ({ page }) => {
+  test('a consumer cannot reach the admin-only page', async ({ page }) => {
     await loginAsDemo(page, 'consumer');
+    await page.goto('/compliance-db');
+    await expect(page).not.toHaveURL(/compliance-db/);
   });
 
-  test('compliance db page loads country table', async ({ page }) => {
+  test('compliance db page loads country table for a platform admin', async ({ page }) => {
+    await loginAsDemo(page, 'platform_admin');
     await page.goto('/compliance-db');
     await expect(page.getByRole('heading', { name: /knowledge base/i })).toBeVisible();
     await assertNoUndefined(page);
@@ -415,8 +429,14 @@ test.describe('Pricing', () => {
 // ─── API Portal ───────────────────────────────────────────────────────────────
 
 test.describe('API Portal', () => {
-  test('api portal loads with developer tools', async ({ page }) => {
+  test('a consumer cannot reach the developer-only page', async ({ page }) => {
     await loginAsDemo(page, 'consumer');
+    await page.goto('/api-portal');
+    await expect(page).not.toHaveURL(/api-portal/);
+  });
+
+  test('api portal loads with developer tools for a platform admin', async ({ page }) => {
+    await loginAsDemo(page, 'platform_admin');
     await page.goto('/api-portal');
     await expect(page.getByRole('heading', { name: /api|developer|portal/i }).first()).toBeVisible();
     await assertNoUndefined(page);
@@ -426,8 +446,14 @@ test.describe('API Portal', () => {
 // ─── Investor Demo ────────────────────────────────────────────────────────────
 
 test.describe('Investor Demo', () => {
-  test('investor page loads pitch deck content', async ({ page }) => {
+  test('a consumer cannot reach the investor page', async ({ page }) => {
     await loginAsDemo(page, 'consumer');
+    await page.goto('/investor');
+    await expect(page).not.toHaveURL(/investor/);
+  });
+
+  test('investor page loads pitch deck content for a platform admin', async ({ page }) => {
+    await loginAsDemo(page, 'platform_admin');
     await page.goto('/investor');
     await expect(page.getByRole('heading').first()).toBeVisible();
     await expect(page.getByText(/TAM|SAM|SOM|revenue|market/i).first()).toBeVisible();

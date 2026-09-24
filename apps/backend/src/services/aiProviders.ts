@@ -163,7 +163,12 @@ async function postWithTimeout(config: ProviderConfig, input: ChatRequest, groun
       body: JSON.stringify(config.buildBody(input, grounding)),
       signal: controller.signal
     });
-    if (!response.ok) throw new Error(`${config.name} returned ${response.status}`);
+    if (!response.ok) {
+      // Keep the provider's own explanation (e.g. "credit balance too low") in the
+      // logs — a bare status code hid a billing outage behind "returned 400".
+      const detail = await response.text().catch(() => '');
+      throw new Error(`${config.name} returned ${response.status}: ${detail.slice(0, 300)}`);
+    }
     return response.json();
   } finally {
     clearTimeout(timer);
@@ -188,7 +193,7 @@ async function callProvider(config: ProviderConfig, input: ChatRequest, groundin
     }
   }
   console.warn('AI provider failed, falling back to deterministic response', lastError);
-  return fallbackReply(input, grounding);
+  return { ...fallbackReply(input, grounding), degraded: true };
 }
 
 const claudeConfig: ProviderConfig = {
@@ -246,7 +251,7 @@ export function createAiProvider(): AiProvider {
           escalate: false
         });
       }
-      if (!configured) return fallbackReply(input, grounding);
+      if (!configured) return { ...fallbackReply(input, grounding), degraded: true };
       if (process.env.ANTHROPIC_API_KEY) return callProvider(claudeConfig, input, grounding);
       return callProvider(geminiConfig, input, grounding);
     },

@@ -674,9 +674,11 @@ export function createApp(services: Services = createServices()) {
       // "given service" data source) when applicationId refers to an application
       // they actually own — never another user's data, and never invented state.
       const applicationId = (req.body as { applicationId?: string }).applicationId;
+      // No id supplied (older clients): fall back to the caller's own most recent
+      // application, so "my score" / "what's missing" still mean their real data.
       const application = applicationId
         ? await services.applications.getApplication(applicationId, req.user!.uid)
-        : null;
+        : (await services.applications.listApplications(req.user!.uid))[0] ?? null;
       // Real admin-managed (or built-in default) requirements data for the
       // applicant's own destination — the same knowledge base /requirements
       // itself reads from, so guidance is grounded in actual embassy rules

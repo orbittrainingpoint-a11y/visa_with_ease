@@ -100,6 +100,18 @@ test('POST /auth/refresh — rejects a missing or invalid token', async () => {
   assert.equal((await post('/auth/refresh', {}, 'not-a-token')).res.status, 401);
 });
 
+test('POST /chat — without an applicationId it still answers about the caller own latest application', async () => {
+  // A fresh account, so the shared demo user's application list (asserted empty elsewhere) stays untouched.
+  const reg = await post('/auth/register', { name: 'Chat Default', email: `chat-default-${Date.now()}@example.com`, password: 'Sup3rSecret!x' });
+  assert.equal(reg.res.status, 201);
+  const token = reg.body.token as string;
+  const created = await post('/applications', { destinationCountry: 'France', visaType: 'schengen-tourist', intendedFrom: '2026-12-01' }, token);
+  assert.equal(created.res.status, 201);
+  const { res, body } = await post('/chat', { message: "what's my score" }, token);
+  assert.equal(res.status, 200);
+  assert.match(body.reply, /France/, 'grounded in the caller own France application, not a generic reply');
+});
+
 test('POST /auth/register — password too short returns 400', async () => {
   const { res, body } = await post('/auth/register', {
     name: 'Test User', email: 'test@example.com', password: 'short'

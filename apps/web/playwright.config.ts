@@ -2,6 +2,7 @@ import { defineConfig, devices } from '@playwright/test';
 
 export default defineConfig({
   testDir: './tests',
+  testIgnore: '**/unit/**', // vitest unit tests live here; Playwright must not load them
   timeout: 45_000,
   retries: process.env.CI ? 2 : 0,
   // The dev-mode servers (tsx watch + Vite dev) aren't built for heavy concurrency —

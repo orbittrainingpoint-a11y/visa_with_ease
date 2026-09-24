@@ -247,6 +247,8 @@ export interface ChatReply {
   reply: string;
   escalate?: boolean;
   suggestedActions?: string[];
+  /** True when the server could only give its built-in basic answer (AI model unavailable). */
+  degraded?: boolean;
 }
 export function sendChatMessage(message: string, applicationId?: string) {
   return request<ChatReply>('POST', '/chat', { message, applicationId });

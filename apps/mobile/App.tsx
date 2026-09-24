@@ -564,7 +564,7 @@ function AppInner() {
   };
 
   return (
-    <SafeAreaView style={[styles.shell, ['splash','welcome'].includes(route.name) && { backgroundColor: '#fff' }]} edges={['top']}>
+    <SafeAreaView style={[styles.shell, ['splash','welcome','register','forgotPassword'].includes(route.name) && { backgroundColor: '#fff' }]} edges={['top']}>
       <StatusBar barStyle="dark-content" />
       {/* Padded by the keyboard's real overlap, which lifts the absolutely-
           positioned pinned footer/composer above it too. */}

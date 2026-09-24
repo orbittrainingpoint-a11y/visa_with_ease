@@ -1,7 +1,8 @@
+import React from 'react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   login as apiLogin, register as apiRegister, googleLogin as apiGoogleLogin,
-  sendChatMessage, setToken,
+  sendChatMessage, setToken, startSession, endSession, restoreSession,
   fetchApplications, createApplication as apiCreateApplication,
   fetchConsultants as apiFetchConsultants,
   fetchSessionOptions as apiFetchSessionOptions,
@@ -19,7 +20,7 @@ import {
   type ApiNotification, type ApiDocument, type ApiRequirement, type ApiMessage, type ApiConversationThread, type ApiAccessGrant,
 } from './src/api';
 import { GoogleSignin, statusCodes } from '@react-native-google-signin/google-signin';
-import { ActivityIndicator, Alert, Animated, Dimensions, Image, Keyboard, Linking, Platform, Pressable, ScrollView, StatusBar, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Alert, Animated, Dimensions, Image, Keyboard, Linking, Platform, Pressable, ScrollView, StatusBar, StyleSheet, Text, TextInput, useWindowDimensions, View } from 'react-native';
 import { SafeAreaProvider, SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -47,6 +48,20 @@ Notifications.setNotificationHandler({
 });
 
 type IoniconName = React.ComponentProps<typeof Ionicons>['name'];
+
+// Phones from different makers ship very different "large text" settings (some
+// go to 200%). Uncapped, that pushes buttons and labels off narrow screens, so
+// system font scaling is honoured up to 1.25x — still larger for readability,
+// without breaking layouts. Patches Text/TextInput render once at load.
+for (const Comp of [Text, TextInput] as any[]) {
+  const originalRender = Comp?.render;
+  if (typeof originalRender === 'function') {
+    Comp.render = function patchedRender(...args: any[]) {
+      const element = originalRender.apply(this, args);
+      return React.cloneElement(element, { maxFontSizeMultiplier: element.props.maxFontSizeMultiplier ?? 1.25 });
+    };
+  }
+}
 import { CHAT_KB } from './src/data';
 import { getCacheSnapshot, clearCache } from './src/offlineCache';
 import { loadPreferences, savePreferences, DEFAULT_PREFERENCES, type SettingsPreferences } from './src/preferences';
@@ -54,8 +69,8 @@ import { colors, scoreColor } from './src/theme';
 import { DOC_KIND_LABEL, judge, probeFrame, recognise, similarity, type DocKind, type OcrLike, type FaceLike, type Verdict } from './src/documentRecognition';
 
 // ─── Device metrics — dynamic safe area support ───────────────────────────────
-// StatusBar.currentHeight is reliable on Android; 0 on iOS (SafeAreaView handles it)
-const STATUSBAR_H = Platform.OS === 'android' ? (StatusBar.currentHeight ?? 24) : 0;
+// Status-bar / cutout / gesture-bar space always comes from safe-area insets (real
+// per-device values on every Android maker's skin), never StatusBar.currentHeight guesses.
 const { width: SCREEN_W } = Dimensions.get('screen');
 // Height of the pinned-action bar a screen can request via setStickyFooter —
 // BottomNav renders position:absolute (floats above document flow), so the
@@ -198,7 +213,7 @@ function AppInner() {
   // some real devices (Samsung edge-to-edge/gesture nav) even though the OS
   // bar was still there, causing the sticky footer and BottomNav to render
   // underneath it instead of above it.
-  const bottomNavH = 58 + insets.bottom;
+  const bottomNavH = 64 + insets.bottom;
   const [route, setRoute] = useState<Route>({ name: 'splash' });
   const [acceptedTerms, setAcceptedTerms] = useState(false);
   const [authEmail, setAuthEmail] = useState('');
@@ -343,7 +358,7 @@ function AppInner() {
   // for that bug is that THIS function stays referentially stable, since
   // handleLogin depends on it and WelcomeScreen's sticky-footer effect
   // depends on handleLogin in turn — see the comment on handleLogin.
-  const routeAfterAuth = useCallback(async () => {
+  const routeAfterAuth = useCallback(async (resumed = false) => {
     setLoadingApps(true);
     setLoadAppsError('');
     let firstAppId: string | undefined;
@@ -351,7 +366,7 @@ function AppInner() {
       const { applications } = await fetchApplications();
       firstAppId = applications[0]?.id;
       setAppList(applications.map(normalizeApp));
-      setRoute(applications.length === 0 ? { name: 'onboarding', step: 0 } : { name: 'tabs', tab: 'home' });
+      setRoute(applications.length === 0 && !resumed ? { name: 'onboarding', step: 0 } : { name: 'tabs', tab: 'home' });
     } catch (e: any) {
       setLoadAppsError(e?.message ?? 'Failed to load applications. Please try again.');
       setRoute({ name: 'tabs', tab: 'home' });
@@ -492,8 +507,8 @@ function AppInner() {
     setLoginError('');
     setLoginLoading(true);
     try {
-      const session = await apiLogin(authEmail, authPassword);
-      setToken(session.token);
+      const session = await apiLogin(authEmail, authPassword, true);
+      await startSession(session);
       setAuthUser(session.user);
       await routeAfterAuth();
     } catch (e: any) {
@@ -513,7 +528,7 @@ function AppInner() {
       const idToken = userInfo.data?.idToken;
       if (!idToken) throw new Error('No ID token returned from Google');
       const session = await apiGoogleLogin(idToken);
-      setToken(session.token);
+      await startSession(session);
       setAuthUser(session.user);
       await routeAfterAuth();
     } catch (e: any) {
@@ -549,7 +564,7 @@ function AppInner() {
   };
 
   return (
-    <SafeAreaView style={styles.shell} edges={['top']}>
+    <SafeAreaView style={[styles.shell, ['splash','welcome'].includes(route.name) && { backgroundColor: '#fff' }]} edges={['top']}>
       <StatusBar barStyle="dark-content" />
       {/* Padded by the keyboard's real overlap, which lifts the absolutely-
           positioned pinned footer/composer above it too. */}
@@ -601,7 +616,7 @@ function AppInner() {
           isTyping={isTyping}
           appList={appList}
           openConsultants={() => setRoute({ name: 'consultants' })}
-          bottomInset={bottomNavVisible ? bottomNavH : Math.max(insets.bottom, 8)}
+          bottomInset={bottomNavVisible ? bottomNavH : keyboardVisible ? 4 : Math.max(insets.bottom, 8)}
         />
       )}
       {!['camera','liveAnalysis'].includes(route.name) && !isChatRoute && (
@@ -619,7 +634,12 @@ function AppInner() {
         keyboardShouldPersistTaps="handled"
         contentContainerStyle={[styles.content, !['welcome','onboarding','splash','register','verify','forgotPassword'].includes(route.name) && { paddingBottom: bottomNavH + 20 }, !!stickyFooter && { paddingBottom: (bottomNavVisible ? bottomNavH + 20 : 28) + STICKY_FOOTER_H }]}>
         {route.name === 'splash' && (
-          <SplashScreen onDone={() => setRoute({ name: 'welcome' })} />
+          <SplashScreen onDone={() => { void (async () => {
+            const session = await restoreSession();
+            if (!session) { setRoute({ name: 'welcome' }); return; }
+            setAuthUser(session.user);
+            await routeAfterAuth(true);
+          })(); }} />
         )}
         {route.name === 'welcome' && (
           <WelcomeScreen
@@ -728,8 +748,10 @@ function AppInner() {
             openMyMessages={() => setRoute({ name: 'myMessages' })}
             openAccessGrants={() => setRoute({ name: 'accessGrants' })}
             onSignOut={() => {
-              setToken(null);
+              void endSession();
               setAuthUser(null);
+              setAppList([]);
+              setSessionMessages([]);
               setRoute({ name: 'welcome' });
             }}
           />
@@ -887,8 +909,10 @@ function AppInner() {
             authUser={authUser}
             openProfileHub={() => setRoute({ name: 'profileHub' })}
             onSignOut={() => {
-              setToken(null);
+              void endSession();
               setAuthUser(null);
+              setAppList([]);
+              setSessionMessages([]);
               setRoute({ name: 'welcome' });
             }}
           />
@@ -922,7 +946,7 @@ function AppInner() {
           <RegisterScreen
             back={() => setRoute({ name: 'welcome' })}
             onSuccess={(session) => {
-              setToken(session.token);
+              void startSession(session);
               setAuthUser(session.user);
               void Promise.all([loadApplications(), loadConsultants(), loadSessionOpts(), loadNotifications()]);
               void sendVerificationEmail(session.user.email);
@@ -1026,74 +1050,44 @@ function WelcomeScreen({
   const [showForm, setShowForm] = useState(false);
   const canStart = accepted && email.includes('@') && password.length >= 6;
 
-  // Pinned to the bottom of the screen instead of scrolling away below the
-  // form — this is exactly the button a keyboard-covering-it bug was found
-  // and fixed on earlier; pinning it here means it's always visible/reachable
-  // even without opening the keyboard at all, not just reachable via the
-  // keyboard's "Done" key.
-  useEffect(() => {
-    if (!showForm) {
-      setStickyFooter(null);
-      return;
-    }
-    setStickyFooter(
-      <Pressable testID="signin-submit-button" style={[styles.primaryButton, { marginTop: 0 }, (!canStart || loginLoading) && styles.disabledButton]} onPress={canStart && !loginLoading ? start : undefined}>
-        {loginLoading ? <ActivityIndicator color="#fff" /> : <Text style={[styles.primaryButtonText, !canStart && styles.disabledButtonText]}>Sign in</Text>}
-      </Pressable>
-    );
-    return () => setStickyFooter(null);
-  }, [showForm, canStart, loginLoading, start]);
+  const insets = useSafeAreaInsets();
+  const { height: winH } = useWindowDimensions();
 
   if (!showForm) {
-    // ── Marketing / landing view ────────────────────────────────────────
+    // ── Start screen: plain white, brand only — no illustrations ─────────
     return (
-      <View style={{ minHeight: 720, margin: -18 }}>
-        {/* Gradient header with passport illustration */}
-        <LinearGradient colors={['#0B1F4B', '#1A56DB']} style={{ height: 420, padding: 28, paddingTop: 56, position: 'relative', overflow: 'hidden' }}>
-          {/* Passport card illustration */}
-          <LinearGradient colors={['#F59E0B', '#D97706']} style={{ position: 'absolute', top: 32, right: -16, width: 136, height: 136, borderRadius: 18, transform: [{ rotate: '12deg' }] }}>
-            <View style={{ position: 'absolute', inset: 12, borderWidth: 1.5, borderColor: 'rgba(255,255,255,0.3)', borderRadius: 8, padding: 10 }}>
-              <Text style={{ color: 'rgba(255,255,255,0.7)', fontSize: 7, fontWeight: '700', letterSpacing: 1.5 }}>PASSPORT</Text>
-              <View style={{ width: 32, height: 32, borderRadius: 16, backgroundColor: 'rgba(255,255,255,0.15)', marginTop: 10, alignSelf: 'center', alignItems: 'center', justifyContent: 'center' }}>
-                <Ionicons name="person-outline" size={18} color="#fff" />
-              </View>
-            </View>
-          </LinearGradient>
-          {/* Plane icon accent */}
-          <View style={{ position: 'absolute', top: 96, left: 36, width: 32, height: 32, borderRadius: 16, backgroundColor: colors.teal500, alignItems: 'center', justifyContent: 'center' }}>
-            <Ionicons name="airplane" size={16} color="#fff" />
-          </View>
-          {/* Headline */}
-          <View style={{ marginTop: 200 }}>
-            <Text style={{ color: '#fff', fontSize: 34, fontWeight: '900', letterSpacing: -1, lineHeight: 40 }}>Visa applications,{'\n'}simplified.</Text>
-            <Text style={{ color: 'rgba(255,255,255,0.7)', fontSize: 14, marginTop: 12, lineHeight: 22 }}>AI-powered guidance from checklist to approval — know exactly what you need, before you apply.</Text>
-          </View>
-        </LinearGradient>
-        {/* Bottom sheet */}
-        <View style={{ backgroundColor: '#fff', borderTopLeftRadius: 24, borderTopRightRadius: 24, marginTop: -24, padding: 24, flex: 1 }}>
-          {/* Trust strip */}
-          <View style={{ flexDirection: 'row', justifyContent: 'space-around', marginBottom: 22, paddingHorizontal: 8 }}>
+      <View style={{ minHeight: winH - insets.top, margin: -18, backgroundColor: '#fff', paddingHorizontal: 24, paddingTop: 24, paddingBottom: 20 + insets.bottom, justifyContent: 'space-between' }}>
+        <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', gap: 14, paddingVertical: 24 }}>
+          <Image source={require('./assets/logo-icon.png')} style={{ width: 112, height: 112 }} resizeMode="contain" />
+          <Text style={{ color: colors.navy900, fontSize: 30, fontWeight: '900', letterSpacing: -0.5, textAlign: 'center' }}>
+            VISA WITH <Text style={{ color: colors.teal500 }}>EASE</Text>
+          </Text>
+          <Text style={{ color: colors.slate600, fontSize: 14, lineHeight: 21, textAlign: 'center', maxWidth: 300 }}>
+            Know exactly what your visa needs — before you apply.
+          </Text>
+          <View style={{ flexDirection: 'row', justifyContent: 'center', gap: 22, marginTop: 14, flexWrap: 'wrap' }}>
             {[['shield-checkmark-outline','GDPR'],['sparkles','AI-powered'],['headset-outline','Expert support']].map(([icon, label]) => (
               <View key={label} style={{ alignItems: 'center', gap: 6 }}>
                 <Ionicons name={icon as IoniconName} size={22} color={colors.teal500} />
-                <Text style={{ fontSize: 10, fontWeight: '600', color: colors.slate500 }}>{label}</Text>
+                <Text style={{ fontSize: 11, fontWeight: '600', color: colors.slate500 }}>{label}</Text>
               </View>
             ))}
           </View>
-          {/* CTAs */}
+        </View>
+        <View>
           <Pressable style={[styles.secondaryButton, { flexDirection: 'row', gap: 10, marginBottom: 12 }]}
             onPress={onGoogleLogin} disabled={loginLoading}>
             <Ionicons name="logo-google" size={18} color={colors.slate700} />
             <Text style={[styles.secondaryButtonText, { fontWeight: '700' }]}>Continue with Google</Text>
           </Pressable>
-          <Pressable style={[styles.primaryButton, { marginTop: 0 }]} onPress={() => setShowForm(true)}>
+          <Pressable style={[styles.primaryButton, { marginTop: 0, flexDirection: 'row', gap: 8 }]} onPress={onRegister}>
             <Ionicons name="mail-outline" size={18} color="#fff" />
-            <Text style={[styles.primaryButtonText, { marginLeft: 8 }]}>Sign up with email</Text>
+            <Text style={styles.primaryButtonText}>Sign up with email</Text>
           </Pressable>
-          <Pressable style={{ alignItems: 'center', marginTop: 18 }} onPress={() => setShowForm(true)}>
-            <Text style={{ color: colors.royal600, fontWeight: '700', fontSize: 13 }}>I already have an account</Text>
+          <Pressable style={{ alignItems: 'center', paddingVertical: 14 }} onPress={() => setShowForm(true)}>
+            <Text style={{ color: colors.royal600, fontWeight: '700', fontSize: 14 }}>I already have an account</Text>
           </Pressable>
-          <Text style={{ color: colors.slate600, fontSize: 11, textAlign: 'center', marginTop: 20, lineHeight: 17 }}>
+          <Text style={{ color: colors.slate600, fontSize: 11, textAlign: 'center', lineHeight: 17 }}>
             By continuing you agree to our{' '}
             <Text style={{ color: colors.royal600, fontWeight: '700' }} onPress={() => Linking.openURL('https://www.visawithease.com/terms')}>Terms</Text>
             {' & '}
@@ -1105,13 +1099,17 @@ function WelcomeScreen({
   }
 
   // ── Sign-in form view ─────────────────────────────────────────────────
+  // The Sign in button sits directly under the form (right above "Create a
+  // new account"), not pinned to the screen bottom — pinned bars collide with
+  // gesture bars, 3-button nav and the keyboard differently on every Android
+  // maker's skin, whereas in-flow content just follows the form.
   return (
-    <View style={styles.welcome}>
-      <Pressable style={{ flexDirection: 'row', alignItems: 'center', gap: 6, alignSelf: 'flex-start', marginBottom: 8 }} onPress={() => setShowForm(false)}>
+    <View style={{ gap: 12, paddingTop: 4, paddingBottom: 12 }}>
+      <Pressable style={{ flexDirection: 'row', alignItems: 'center', gap: 6, alignSelf: 'flex-start', paddingVertical: 6 }} onPress={() => setShowForm(false)}>
         <Ionicons name="chevron-back" size={18} color={colors.royal600} />
         <Text style={{ color: colors.royal600, fontWeight: '700' }}>Back</Text>
       </Pressable>
-      <Text style={styles.title}>Sign in</Text>
+      <Text style={[styles.title, { marginBottom: 4 }]}>Sign in</Text>
       <View style={styles.stepCard}>
         <Text style={[styles.rowMeta, { marginBottom: 6 }]}>Email address</Text>
         <TextInput value={email} onChangeText={setEmail} autoCapitalize="none" keyboardType="email-address" placeholder="you@example.com" style={styles.searchInput} />
@@ -1123,15 +1121,6 @@ function WelcomeScreen({
           placeholder="Password"
           style={styles.searchInput}
           returnKeyType="done"
-          // Real bug this fixes: the "Sign in" button sits below the
-          // checkbox, low enough on this form that once the keyboard opens
-          // for the password field, the button ends up rendered behind the
-          // keyboard with no way to reach it except manually dismissing the
-          // keyboard first — the OS keyboard draws on top of everything, so
-          // no in-app z-index/scroll fix helps once a tap can't reach it.
-          // Submitting from the keyboard's own "Done" key sidesteps that
-          // entirely, and still respects the same accepted-terms/validation
-          // gate the button itself uses.
           onSubmitEditing={() => { if (canStart && !loginLoading) start(); }}
         />
         <Pressable onPress={onForgot} style={{ alignSelf: 'flex-end', marginTop: 4 }}>
@@ -1145,11 +1134,14 @@ function WelcomeScreen({
         </Pressable>
       </View>
       {loginError ? (
-        <View style={{ backgroundColor: '#FEE2E2', borderRadius: 10, padding: 12, marginBottom: 8 }}>
+        <View style={{ backgroundColor: '#FEE2E2', borderRadius: 10, padding: 12 }}>
           <Text style={{ color: '#DC2626', fontSize: 13 }}>{loginError}</Text>
         </View>
       ) : null}
-      <Pressable style={[styles.secondaryButton, { marginTop: 10 }]} onPress={onRegister}>
+      <Pressable testID="signin-submit-button" style={[styles.primaryButton, { marginTop: 0 }, (!canStart || loginLoading) && styles.disabledButton]} onPress={canStart && !loginLoading ? start : undefined}>
+        {loginLoading ? <ActivityIndicator color="#fff" /> : <Text style={[styles.primaryButtonText, !canStart && styles.disabledButtonText]}>Sign in</Text>}
+      </Pressable>
+      <Pressable style={styles.secondaryButton} onPress={onRegister}>
         <Text style={styles.secondaryButtonText}>Create a new account</Text>
       </Pressable>
     </View>
@@ -3610,7 +3602,7 @@ function BottomNav({ activeTab, setTab, unreadCount = 0, style }: { activeTab: T
   const chatUnread = unreadCount;
   const insets = useSafeAreaInsets();
   return (
-    <View style={[styles.bottomNav, { height: 58 + insets.bottom, paddingBottom: insets.bottom }, style]}>
+    <View style={[styles.bottomNav, { height: 64 + insets.bottom, paddingBottom: insets.bottom }, style]}>
       {tabs.map((item) => {
         const active = activeTab === item.id;
         const badge = item.id === 'chat' ? chatUnread : 0;
@@ -3625,7 +3617,7 @@ function BottomNav({ activeTab, setTab, unreadCount = 0, style }: { activeTab: T
                 </View>
               )}
             </View>
-            <Text style={[styles.navLabel, active && styles.navLabelActive]}>{item.label}</Text>
+            <Text maxFontSizeMultiplier={1} numberOfLines={1} style={[styles.navLabel, active && styles.navLabelActive]}>{item.label}</Text>
           </Pressable>
         );
       })}
@@ -4689,7 +4681,7 @@ function FaceVerificationScreen({ back }: { back: () => void }) {
     <View style={{ flex: 1, backgroundColor: '#000' }}>
       <StatusBar barStyle="light-content" />
       <CameraView ref={cameraRef} style={{ flex: 1 }} facing="front" active={!resultStage}>
-        <View style={{ flexDirection: 'row', alignItems: 'center', padding: 16, paddingTop: STATUSBAR_H + 16 }}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', padding: 16 }}>
           <Pressable onPress={back} style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(0,0,0,0.4)', alignItems: 'center', justifyContent: 'center' }}>
             <Ionicons name="arrow-back" size={22} color="#fff" />
           </Pressable>
@@ -4893,34 +4885,22 @@ function CountryComparisonScreen({ back }: { back: () => void }) {
 // ─── Splash Screen ───────────────────────────────────────────────────────────
 function SplashScreen({ onDone }: { onDone: () => void }) {
   const insets = useSafeAreaInsets();
-  const [progress] = useState(new Animated.Value(0));
-
+  const { height: winH } = useWindowDimensions();
+  // Same look as the native launch screen (white, logo) so there's no flash
+  // between them; stays only as long as the saved-session check needs.
   useEffect(() => {
-    Animated.timing(progress, { toValue: 1, duration: 2200, useNativeDriver: false }).start();
-    const t = setTimeout(onDone, 2400);
+    const t = setTimeout(onDone, 700);
     return () => clearTimeout(t);
   }, []);
 
-  const barWidth = progress.interpolate({ inputRange: [0, 1], outputRange: ['0%', '100%'] });
-
   return (
-    <View style={{ minHeight: 720, backgroundColor: colors.navy900, alignItems: 'center', justifyContent: 'center', margin: -18 }}>
-      <StatusBar barStyle="light-content" />
-      {/* Logo mark */}
-      <View style={{ width: 112, height: 112, borderRadius: 28, backgroundColor: '#fff', alignItems: 'center', justifyContent: 'center', marginBottom: 20, shadowColor: '#0EA5E9', shadowOpacity: 0.5, shadowRadius: 24, elevation: 12 }}>
-        <Image source={require('./assets/logo-icon.png')} style={{ width: 84, height: 84 }} resizeMode="contain" />
-      </View>
-      {/* Wordmark */}
-      <Text style={{ color: '#fff', fontSize: 30, fontWeight: '900', letterSpacing: -0.5 }}>
+    <View style={{ minHeight: winH - insets.top, margin: -18, backgroundColor: '#fff', alignItems: 'center', justifyContent: 'center', gap: 14 }}>
+      <StatusBar barStyle="dark-content" />
+      <Image source={require('./assets/logo-icon.png')} style={{ width: 120, height: 120 }} resizeMode="contain" />
+      <Text style={{ color: colors.navy900, fontSize: 30, fontWeight: '900', letterSpacing: -0.5 }}>
         VISA WITH <Text style={{ color: colors.teal500 }}>EASE</Text>
       </Text>
-      <Text style={{ color: 'rgba(255,255,255,0.45)', fontSize: 13, marginTop: 8, fontWeight: '500' }}>Smart check. Stronger application. Smoother journey.</Text>
-      {/* Progress bar */}
-      <View style={{ position: 'absolute', bottom: 48 + insets.bottom, left: 40, right: 40 }}>
-        <View style={{ height: 3, backgroundColor: 'rgba(255,255,255,0.12)', borderRadius: 2, overflow: 'hidden' }}>
-          <Animated.View style={{ height: '100%', width: barWidth, backgroundColor: '#1A56DB', borderRadius: 2 }} />
-        </View>
-      </View>
+      <ActivityIndicator color={colors.royal600} style={{ marginTop: 18 }} />
     </View>
   );
 }
@@ -4961,19 +4941,10 @@ function RegisterScreen({ back, onSuccess, setStickyFooter }: { back: () => void
     }
   };
 
-  useEffect(() => {
-    setStickyFooter(
-      <Pressable style={[styles.primaryButton, { marginTop: 0 }, !canCreate && styles.disabledButton]} onPress={canCreate ? handleCreate : undefined}>
-        {loading ? <ActivityIndicator color="#fff" /> : <Text style={[styles.primaryButtonText, !canCreate && styles.disabledButtonText]}>Create account</Text>}
-      </Pressable>
-    );
-    return () => setStickyFooter(null);
-  }, [canCreate, loading, name, email, password, accepted]);
-
   return (
-    <View style={styles.welcome}>
+    <View style={{ gap: 12, paddingTop: 4, paddingBottom: 12 }}>
       <BackButton label="Sign in" onPress={back} />
-      <Text style={styles.title}>Create account</Text>
+      <Text style={[styles.title, { marginBottom: 4 }]}>Create account</Text>
       <Text style={styles.bodyText}>Join Visa With Ease to get AI-powered visa readiness, document audit and expert matching.</Text>
       <View style={styles.stepCard}>
         <Text style={[styles.rowMeta, { marginBottom: 6 }]}>Full name</Text>
@@ -5004,6 +4975,9 @@ function RegisterScreen({ back, onSuccess, setStickyFooter }: { back: () => void
           <Text style={{ color: '#DC2626', fontSize: 13 }}>{error}</Text>
         </View>
       ) : null}
+      <Pressable style={[styles.primaryButton, { marginTop: 0 }, !canCreate && styles.disabledButton]} onPress={canCreate ? handleCreate : undefined}>
+        {loading ? <ActivityIndicator color="#fff" /> : <Text style={[styles.primaryButtonText, !canCreate && styles.disabledButtonText]}>Create account</Text>}
+      </Pressable>
     </View>
   );
 }
@@ -5564,7 +5538,7 @@ function LiveAnalysisScreen({ docTitle, documentId, documentType, extractedText,
   return (
     <View style={{ flex: 1, backgroundColor: colors.navy900 }}>
       <StatusBar barStyle="light-content" />
-      <View style={{ paddingTop: STATUSBAR_H + 12, paddingHorizontal: 20, paddingBottom: 16, flexDirection: 'row', alignItems: 'center' }}>
+      <View style={{ paddingTop: 12, paddingHorizontal: 20, paddingBottom: 16, flexDirection: 'row', alignItems: 'center' }}>
         <Text style={{ flex: 1, color: '#fff', fontWeight: '900', fontSize: 16 }}>Live AI analysis</Text>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: 'rgba(124,58,237,0.3)', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20 }}>
           <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: '#7C3AED' }} />

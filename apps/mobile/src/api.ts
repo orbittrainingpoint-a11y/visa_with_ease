@@ -1,3 +1,5 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
+
 // Central API client — all calls go through here
 export const BASE_URL: string =
   process.env.EXPO_PUBLIC_API_BASE_URL ??
@@ -19,7 +21,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
     const text = await res.text().catch(() => res.statusText);
     let msg = text;
     try { msg = JSON.parse(text)?.error?.message ?? text; } catch { /* raw text */ }
-    throw new Error(msg || `${method} ${path} → ${res.status}`);
+    throw Object.assign(new Error(msg || `${method} ${path} → ${res.status}`), { status: res.status });
   }
   return res.json() as Promise<T>;
 }
@@ -36,6 +38,47 @@ export interface AuthSession {
   user: AuthUser;
   expiresAt: string;
 }
+// ── Persisted session ─────────────────────────────────────────────────────────
+// Stays signed in across app restarts until the user signs out: the session is
+// saved on login, and on every launch the stored token is exchanged for a fresh
+// 30-day one (/auth/refresh), so regular use never hits an expiry. Only an
+// explicit sign-out, a deleted account, or a month without opening the app
+// returns to the sign-in screen.
+const SESSION_KEY = 'visaiq.session.v1';
+
+export async function startSession(session: AuthSession) {
+  setToken(session.token);
+  try { await AsyncStorage.setItem(SESSION_KEY, JSON.stringify(session)); } catch { /* storage unavailable — session just won't survive a restart */ }
+}
+
+export async function endSession() {
+  setToken(null);
+  try { await AsyncStorage.removeItem(SESSION_KEY); } catch { /* nothing stored */ }
+}
+
+/** Returns the still-valid saved session (refreshed), or null if signed out/expired. */
+export async function restoreSession(): Promise<AuthSession | null> {
+  let saved: AuthSession | null = null;
+  try {
+    const raw = await AsyncStorage.getItem(SESSION_KEY);
+    saved = raw ? (JSON.parse(raw) as AuthSession) : null;
+  } catch { saved = null; }
+  if (!saved?.token || !saved.user || Date.parse(saved.expiresAt) <= Date.now()) {
+    if (saved) await endSession();
+    return null;
+  }
+  setToken(saved.token);
+  try {
+    const fresh = await request<AuthSession>('POST', '/auth/refresh', {});
+    await startSession(fresh);
+    return fresh;
+  } catch (e: any) {
+    if (e?.status === 401) { await endSession(); return null; }
+    // Offline / server hiccup: keep the user signed in with what we have.
+    return saved;
+  }
+}
+
 export function login(email: string, password: string, remember = false) {
   return request<AuthSession>('POST', '/auth/session', { email, password, remember });
 }

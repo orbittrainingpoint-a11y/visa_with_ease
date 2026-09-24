@@ -194,6 +194,23 @@ export function createApp(services: Services = createServices()) {
     res.status(201).json({ token, user: { uid: record.uid, email: record.email, name: record.name, roles: record.roles }, expiresAt });
   });
 
+  // Sliding session for the mobile app: called on every app launch with the
+  // stored token, returns a fresh 30-day one. As long as the app is opened at
+  // least once a month the user stays signed in until they sign out; a deleted
+  // account or an expired/forged token gets 401 and the app falls back to the
+  // sign-in screen.
+  app.post('/auth/refresh', requireAuth, async (req, res) => {
+    const email = req.user!.email;
+    const record = email ? await getUserByEmail(email) : null;
+    if (!record || record.uid !== req.user!.uid) {
+      return res.status(401).json({ error: { code: 'UNAUTHORIZED', message: 'Session no longer valid' } });
+    }
+    const days = 30;
+    const expiresAt = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
+    const token = signToken({ uid: record.uid, email: record.email, roles: record.roles }, `${days}d`);
+    res.json({ token, user: { uid: record.uid, email: record.email, name: record.name, roles: record.roles }, expiresAt });
+  });
+
   // Registration — creates account, returns session token immediately
   app.post('/auth/register', authLimiter, async (req, res) => {
     const { name, email, password } = req.body ?? {};

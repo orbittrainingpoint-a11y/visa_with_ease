@@ -86,6 +86,20 @@ test('POST /auth/session — valid credentials return a session', async () => {
   assert.ok(Date.parse(body.expiresAt) > Date.now(), 'expiresAt in future');
 });
 
+test('POST /auth/refresh — issues a fresh long-lived session for a valid token', async () => {
+  const login = await post('/auth/session', { email: 'sarah.mathew@example.com', password: 'demo1234', remember: true });
+  const { res, body } = await post('/auth/refresh', {}, login.body.token);
+  assert.equal(res.status, 200);
+  assert.equal(body.user.email, 'sarah.mathew@example.com');
+  assert.ok(body.token, 'token present');
+  assert.ok(Date.parse(body.expiresAt) > Date.now() + 29 * 24 * 60 * 60 * 1000, 'expires ~30 days out');
+});
+
+test('POST /auth/refresh — rejects a missing or invalid token', async () => {
+  assert.equal((await post('/auth/refresh', {})).res.status, 401);
+  assert.equal((await post('/auth/refresh', {}, 'not-a-token')).res.status, 401);
+});
+
 test('POST /auth/register — password too short returns 400', async () => {
   const { res, body } = await post('/auth/register', {
     name: 'Test User', email: 'test@example.com', password: 'short'

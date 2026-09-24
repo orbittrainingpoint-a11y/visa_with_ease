@@ -19,7 +19,7 @@ import {
   type ApiNotification, type ApiDocument, type ApiRequirement, type ApiMessage, type ApiConversationThread, type ApiAccessGrant,
 } from './src/api';
 import { GoogleSignin, statusCodes } from '@react-native-google-signin/google-signin';
-import { ActivityIndicator, Alert, Animated, Dimensions, Image, Linking, Platform, Pressable, ScrollView, StatusBar, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Alert, Animated, Dimensions, Image, Keyboard, Linking, Platform, Pressable, ScrollView, StatusBar, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaProvider, SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -51,6 +51,7 @@ import { CHAT_KB } from './src/data';
 import { getCacheSnapshot, clearCache } from './src/offlineCache';
 import { loadPreferences, savePreferences, DEFAULT_PREFERENCES, type SettingsPreferences } from './src/preferences';
 import { colors, scoreColor } from './src/theme';
+import { DOC_KIND_LABEL, judge, probeFrame, recognise, similarity, type DocKind, type OcrLike, type FaceLike, type Verdict } from './src/documentRecognition';
 
 // ─── Device metrics — dynamic safe area support ───────────────────────────────
 // StatusBar.currentHeight is reliable on Android; 0 on iOS (SafeAreaView handles it)
@@ -224,6 +225,17 @@ function AppInner() {
       setRoute({ name: 'tabs', tab: 'profile' });
     }
   }, [route.name, authUser]);
+  // Real keyboard height, tracked ourselves: on edge-to-edge Android the window
+  // isn't resized for the keyboard, and KeyboardAvoidingView didn't lift the
+  // pinned footer/composer in testing, so the whole shell is padded by exactly
+  // this much instead.
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
+  const keyboardVisible = keyboardHeight > 0;
+  useEffect(() => {
+    const show = Keyboard.addListener(Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow', (e) => setKeyboardHeight(e.endCoordinates.height + (Platform.OS === 'android' ? insets.bottom : 0)));
+    const hide = Keyboard.addListener(Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide', () => setKeyboardHeight(0));
+    return () => { show.remove(); hide.remove(); };
+  }, [insets.bottom]);
   const [loginError, setLoginError] = useState('');
   const [loginLoading, setLoginLoading] = useState(false);
   const [message, setMessage] = useState('');
@@ -283,7 +295,22 @@ function AppInner() {
   }, []);
 
   const activeTab = route.name === 'tabs' ? route.tab : route.name === 'application' ? 'apps' : route.name === 'newApp' ? 'apps' : route.name === 'upload' ? 'docs' : 'home';
-  const bottomNavVisible = !['camera','liveAnalysis','welcome','splash','register','verify','forgotPassword'].includes(route.name) && route.name !== 'onboarding';
+  const isChatRoute = route.name === 'tabs' && route.tab === 'chat';
+  // Tab bar hides while the keyboard is up: it would otherwise sit between the
+  // keyboard and the field/button being typed into, eating a fifth of the
+  // usable screen. It comes straight back when the keyboard closes.
+  const bottomNavVisible = !keyboardVisible && !['camera','liveAnalysis','welcome','splash','register','verify','forgotPassword'].includes(route.name) && route.name !== 'onboarding';
+
+  // "More below" affordance for the main scrolling screen: a chevron button
+  // that appears whenever content continues below the fold and jumps down a
+  // page when tapped, instead of relying on people guessing a screen scrolls.
+  const mainScrollRef = useRef<ScrollView>(null);
+  const mainScroll = useRef({ y: 0, viewH: 0, contentH: 0 });
+  const [canScrollDown, setCanScrollDown] = useState(false);
+  const updateCanScroll = useCallback(() => {
+    const { y, viewH, contentH } = mainScroll.current;
+    setCanScrollDown(contentH > viewH + 24 && y + viewH < contentH - 24);
+  }, []);
 
   const goHome = () => setRoute({ name: 'tabs', tab: 'home' });
   const goChat = () => setRoute({ name: 'tabs', tab: 'chat' });
@@ -524,6 +551,9 @@ function AppInner() {
   return (
     <SafeAreaView style={styles.shell} edges={['top']}>
       <StatusBar barStyle="dark-content" />
+      {/* Padded by the keyboard's real overlap, which lifts the absolutely-
+          positioned pinned footer/composer above it too. */}
+      <View style={{ flex: 1, paddingBottom: ['camera','liveAnalysis'].includes(route.name) ? 0 : keyboardHeight }}>
   {/* Camera screen renders fullscreen outside ScrollView */}
       {route.name === 'camera' && (
         <CameraScreen
@@ -562,12 +592,32 @@ function AppInner() {
           unreadCount={notificationList.filter(n => !n.read).length}
         />
       )}
-      {!['camera','liveAnalysis'].includes(route.name) && (
+      {isChatRoute && (
+        <ChatScreen
+          message={message}
+          setMessage={setMessage}
+          sessionMessages={sessionMessages}
+          sendMessage={handleSendChat}
+          isTyping={isTyping}
+          appList={appList}
+          openConsultants={() => setRoute({ name: 'consultants' })}
+          bottomInset={bottomNavVisible ? bottomNavH : Math.max(insets.bottom, 8)}
+        />
+      )}
+      {!['camera','liveAnalysis'].includes(route.name) && !isChatRoute && (
       /* keyboardShouldPersistTaps="handled": without it, ScrollView's default
          ('never') swallows the FIRST tap on anything below an open keyboard
          just to dismiss it — so tapping an autocomplete suggestion row (which
          isn't itself a text input) never reached that row's onPress at all. */
-      <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={[styles.content, !['welcome','onboarding','splash','register','verify','forgotPassword'].includes(route.name) && { paddingBottom: bottomNavH + 20 }, !!stickyFooter && { paddingBottom: (bottomNavVisible ? bottomNavH + 20 : 28) + STICKY_FOOTER_H }]}>
+      <ScrollView
+        ref={mainScrollRef}
+        persistentScrollbar
+        scrollEventThrottle={64}
+        onScroll={(e) => { mainScroll.current.y = e.nativeEvent.contentOffset.y; updateCanScroll(); }}
+        onLayout={(e) => { mainScroll.current.viewH = e.nativeEvent.layout.height; updateCanScroll(); }}
+        onContentSizeChange={(_w, h) => { mainScroll.current.contentH = h; updateCanScroll(); }}
+        keyboardShouldPersistTaps="handled"
+        contentContainerStyle={[styles.content, !['welcome','onboarding','splash','register','verify','forgotPassword'].includes(route.name) && { paddingBottom: bottomNavH + 20 }, !!stickyFooter && { paddingBottom: (bottomNavVisible ? bottomNavH + 20 : 28) + STICKY_FOOTER_H }]}>
         {route.name === 'splash' && (
           <SplashScreen onDone={() => setRoute({ name: 'welcome' })} />
         )}
@@ -653,17 +703,6 @@ function AppInner() {
             loadError={loadDocumentsError}
             retryLoad={() => loadDocuments(appList[0]?.id)}
             onMount={() => loadDocuments(appList[0]?.id)}
-          />
-        )}
-        {route.name === 'tabs' && route.tab === 'chat' && (
-          <ChatScreen
-            message={message}
-            setMessage={setMessage}
-            sessionMessages={sessionMessages}
-            sendMessage={handleSendChat}
-            isTyping={isTyping}
-            appList={appList}
-            openConsultants={() => setRoute({ name: 'consultants' })}
           />
         )}
         {route.name === 'tabs' && route.tab === 'profile' && (
@@ -895,14 +934,23 @@ function AppInner() {
         {route.name === 'verify' && <VerifyEmailScreen email={route.email} onDone={() => setRoute({ name: 'onboarding', step: 0 })} />}
       </ScrollView>
       )}
+      {canScrollDown && !isChatRoute && !['camera','liveAnalysis'].includes(route.name) && (
+        <Pressable
+          accessibilityLabel="Scroll down"
+          onPress={() => mainScrollRef.current?.scrollTo({ y: mainScroll.current.y + mainScroll.current.viewH * 0.8, animated: true })}
+          style={{ position: 'absolute', right: 14, bottom: keyboardHeight + (bottomNavVisible ? bottomNavH : 0) + (stickyFooter ? STICKY_FOOTER_H : 0) + 12, width: 40, height: 40, borderRadius: 20, backgroundColor: colors.royal600, alignItems: 'center', justifyContent: 'center', elevation: 6, shadowColor: '#000', shadowOpacity: 0.25, shadowRadius: 6 }}
+        >
+          <Ionicons name="chevron-down" size={22} color="#fff" />
+        </Pressable>
+      )}
       {(stickyFooter || bottomNavVisible) && (
         // Stacked in normal flow inside one bottom-anchored container instead
         // of two independently absolute-positioned bars — plain stacking
         // can't drift out of sync. BottomNav pads its own bottom edge by the
         // real safe-area inset (not a Dimensions(screen)-Dimensions(window)
         // guess), so it clears the OS nav bar/gesture pill on every device.
-        <View style={{ position: 'absolute', left: 0, right: 0, bottom: 0 }}>
-          {stickyFooter && <View style={styles.stickyFooterBar}>{stickyFooter}</View>}
+        <View style={{ position: 'absolute', left: 0, right: 0, bottom: keyboardHeight }}>
+          {stickyFooter && <View style={[styles.stickyFooterBar, !bottomNavVisible && !keyboardVisible && { paddingBottom: 14 + insets.bottom }]}>{stickyFooter}</View>}
           {bottomNavVisible && (
             <BottomNav
               activeTab={activeTab}
@@ -913,6 +961,7 @@ function AppInner() {
           )}
         </View>
       )}
+      </View>
     </SafeAreaView>
   );
 }
@@ -1734,16 +1783,19 @@ function UploadScreen({ state, activeApplicationId, openNewApplication, back, ne
       // Real on-device OCR (Google ML Kit) on the picked image — not simulated.
       // A failure here is a legitimate "couldn't read this" signal, not hidden.
       let extractedText: string | undefined;
+      let ocrBlocks: OcrLike['blocks'];
       try {
         const { default: TextRecognition } = await import('@react-native-ml-kit/text-recognition');
         const ocr = await TextRecognition.recognize(asset.uri);
         extractedText = ocr?.text?.trim() || undefined;
+        ocrBlocks = ocr?.blocks;
       } catch { /* extractedText stays undefined — backend treats this honestly */ }
       // The real file bytes — lets the backend run actual AI vision on it.
       let imageBase64: string | undefined;
       try {
         imageBase64 = await FileSystem.readAsStringAsync(asset.uri, { encoding: FileSystem.EncodingType.Base64 });
       } catch { /* imageBase64 stays undefined — falls back to OCR-text analysis */ }
+      if (docType && !(await confirmDocumentMatch(docType, extractedText ? { text: extractedText, blocks: ocrBlocks } : null))) return;
       onPicked(docType ?? 'other', extractedText, imageBase64, mimeType);
       next(slugifyDocumentId(asset.fileName));
     } catch { next(); }
@@ -1758,17 +1810,20 @@ function UploadScreen({ state, activeApplicationId, openNewApplication, back, ne
       // On-device OCR only runs on images — PDFs skip straight to the real
       // file bytes below, which Gemini can read directly (including PDFs).
       let extractedText: string | undefined;
+      let ocrBlocks: OcrLike['blocks'];
       if (isImage) {
         try {
           const { default: TextRecognition } = await import('@react-native-ml-kit/text-recognition');
           const ocr = await TextRecognition.recognize(asset.uri);
           extractedText = ocr?.text?.trim() || undefined;
+          ocrBlocks = ocr?.blocks;
         } catch { /* extractedText stays undefined */ }
       }
       let imageBase64: string | undefined;
       try {
         imageBase64 = await FileSystem.readAsStringAsync(asset.uri, { encoding: FileSystem.EncodingType.Base64 });
       } catch { /* imageBase64 stays undefined — honest "couldn't verify" fallback applies */ }
+      if (docType && isImage && !(await confirmDocumentMatch(docType, extractedText ? { text: extractedText, blocks: ocrBlocks } : null))) return;
       onPicked(docType ?? 'other', extractedText, imageBase64, mimeType);
       next(slugifyDocumentId(asset.name));
     } catch { next(); }
@@ -2140,7 +2195,7 @@ function RequirementList({ documents, destinationCountry }: { documents: ApiDocu
   );
 }
 
-function ChatScreen({ message, setMessage, sessionMessages, isTyping, sendMessage, openConsultants, appList }: {
+function ChatScreen({ message, setMessage, sessionMessages, isTyping, sendMessage, openConsultants, appList, bottomInset }: {
   message: string;
   setMessage: (value: string) => void;
   sessionMessages: Array<{ id: string; role: 'user' | 'ai'; text: string }>;
@@ -2148,53 +2203,88 @@ function ChatScreen({ message, setMessage, sessionMessages, isTyping, sendMessag
   sendMessage: () => void;
   openConsultants: () => void;
   appList: ReturnType<typeof normalizeApp>[];
+  /** Space reserved under the composer for the tab bar (0-ish when hidden). */
+  bottomInset: number;
 }) {
   const activeApp = appList[0] ?? null;
+  const listRef = useRef<ScrollView>(null);
+  const [atBottom, setAtBottom] = useState(true);
+  const scrollToEnd = useCallback((animated = true) => listRef.current?.scrollToEnd({ animated }), []);
+  // Newest message (or the typing dots) always comes into view.
+  useEffect(() => { scrollToEnd(); }, [sessionMessages.length, isTyping, scrollToEnd]);
   return (
-    <View style={styles.chatScreen}>
-      <Text style={styles.eyebrow}>Visa With Ease Assistant</Text>
-      <Text style={styles.title}>Visa-scoped chat</Text>
-      {activeApp && (
-        <View style={styles.contextRow}>
-          <Badge tone="neutral" label={activeApp.destinationCountry} />
-          <Badge tone="neutral" label={`${activeApp.documentsUploaded}/${activeApp.documentsRequired} docs`} />
-          {activeApp.issuesCount > 0 && <Badge tone="warn" label={`${activeApp.issuesCount} issues`} />}
-        </View>
-      )}
-      {sessionMessages.length === 0 && (
-        <View style={styles.aiBubble}>
-          <Text style={styles.bodyText}>{activeApp ? `I can see your ${activeApp.destinationCountry} ${activeApp.visaType} application (score ${activeApp.readinessScore}). How can I help?` : "Hello! I'm your Visa With Ease assistant. Ask me anything about visa requirements, documents, or your application."}</Text>
-        </View>
-      )}
-      {sessionMessages.map((item) => (
-        <View key={item.id} style={item.role === 'user' ? styles.userBubble : styles.aiBubble}>
-          <Text style={item.role === 'user' ? styles.userText : styles.bodyText}>{item.text}</Text>
-        </View>
-      ))}
-      {isTyping && (
-        <View style={[styles.aiBubble, { flexDirection: 'row', gap: 4, alignItems: 'center', paddingVertical: 12 }]}>
-          {[0,1,2].map(i => (
-            <View key={i} style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: colors.slate300 }} />
-          ))}
-        </View>
-      )}
-      {activeApp && activeApp.issuesCount > 0 && (
-        <View style={styles.escalationCard}>
-          <Text style={styles.rowTitle}>Complexity detected</Text>
-          <Text style={styles.rowMeta}>{activeApp.issuesCount} open issue{activeApp.issuesCount === 1 ? '' : 's'} on your {activeApp.destinationCountry} application may affect submission risk. Share only selected context with a consultant.</Text>
-          <Pressable style={styles.goldButton} onPress={openConsultants}><Text style={styles.primaryButtonText}>Find consultant</Text></Pressable>
-        </View>
-      )}
-      {/* Non-dismissible disclaimer banner — always visible */}
-      <View style={[styles.disclaimer, { flexDirection: 'row', gap: 8, alignItems: 'center' }]}>
-        <Ionicons name="shield-checkmark-outline" size={14} color="#92400E" />
-        <Text style={[styles.disclaimerText, { flex: 1, textAlign: 'left' }]}>AI guidance — not legal advice. Always verify with the official embassy or consulate before applying.</Text>
-      </View>
-      <View style={styles.composer}>
-        <TextInput value={message} onChangeText={setMessage} placeholder="Ask about your application" style={styles.input} returnKeyType="send" onSubmitEditing={sendMessage} />
-        <Pressable style={styles.send} onPress={sendMessage}>
-          <Ionicons name="arrow-up" size={20} color="#fff" />
+    // Fixed column: scrolling conversation on top, composer pinned underneath
+    // it — the input can never drift down the page or under the tab bar, and
+    // the keyboard lifts the whole column (see KeyboardAvoidingView in AppInner).
+    <View style={{ flex: 1 }}>
+      <ScrollView
+        ref={listRef}
+        style={{ flex: 1 }}
+        persistentScrollbar
+        keyboardShouldPersistTaps="handled"
+        contentContainerStyle={[styles.chatScreen, { padding: 18, paddingBottom: 12 }]}
+        scrollEventThrottle={64}
+        onContentSizeChange={() => { if (atBottom) scrollToEnd(false); }}
+        onScroll={(e) => {
+          const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
+          setAtBottom(contentOffset.y + layoutMeasurement.height >= contentSize.height - 40);
+        }}
+      >
+        <Text style={styles.eyebrow}>Visa With Ease Assistant</Text>
+        <Text style={styles.title}>Visa-scoped chat</Text>
+        {activeApp && (
+          <View style={styles.contextRow}>
+            <Badge tone="neutral" label={activeApp.destinationCountry} />
+            <Badge tone="neutral" label={`${activeApp.documentsUploaded}/${activeApp.documentsRequired} docs`} />
+            {activeApp.issuesCount > 0 && <Badge tone="warn" label={`${activeApp.issuesCount} issues`} />}
+          </View>
+        )}
+        {sessionMessages.length === 0 && (
+          <View style={styles.aiBubble}>
+            <Text style={styles.bodyText}>{activeApp ? `I can see your ${activeApp.destinationCountry} ${activeApp.visaType} application (score ${activeApp.readinessScore}). How can I help?` : "Hello! I'm your Visa With Ease assistant. Ask me anything about visa requirements, documents, or your application."}</Text>
+          </View>
+        )}
+        {sessionMessages.map((item) => (
+          <View key={item.id} style={item.role === 'user' ? styles.userBubble : styles.aiBubble}>
+            <Text style={item.role === 'user' ? styles.userText : styles.bodyText}>{item.role === 'ai' ? item.text.replace(/\*\*/g, '') : item.text}</Text>
+          </View>
+        ))}
+        {isTyping && (
+          <View style={[styles.aiBubble, { flexDirection: 'row', gap: 4, alignItems: 'center', paddingVertical: 12 }]}>
+            {[0,1,2].map(i => (
+              <View key={i} style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: colors.slate300 }} />
+            ))}
+          </View>
+        )}
+        {activeApp && activeApp.issuesCount > 0 && (
+          <View style={styles.escalationCard}>
+            <Text style={styles.rowTitle}>Complexity detected</Text>
+            <Text style={styles.rowMeta}>{activeApp.issuesCount} open issue{activeApp.issuesCount === 1 ? '' : 's'} on your {activeApp.destinationCountry} application may affect submission risk. Share only selected context with a consultant.</Text>
+            <Pressable style={styles.goldButton} onPress={openConsultants}><Text style={styles.primaryButtonText}>Find consultant</Text></Pressable>
+          </View>
+        )}
+      </ScrollView>
+      {!atBottom && (
+        <Pressable
+          accessibilityLabel="Scroll to latest message"
+          onPress={() => scrollToEnd()}
+          style={{ position: 'absolute', right: 14, bottom: 118 + bottomInset, width: 38, height: 38, borderRadius: 19, backgroundColor: colors.royal600, alignItems: 'center', justifyContent: 'center', elevation: 6, shadowColor: '#000', shadowOpacity: 0.25, shadowRadius: 6 }}
+        >
+          <Ionicons name="chevron-down" size={22} color="#fff" />
         </Pressable>
+      )}
+      <View style={{ paddingHorizontal: 18, paddingTop: 8, paddingBottom: bottomInset + 8, gap: 8, backgroundColor: colors.slate50, borderTopWidth: 1, borderTopColor: colors.slate100 }}>
+        {/* Non-dismissible disclaimer — always visible, kept to one compact line */}
+        <View style={{ flexDirection: 'row', gap: 6, alignItems: 'center' }}>
+          <Ionicons name="shield-checkmark-outline" size={13} color="#92400E" />
+          <Text style={[styles.disclaimerText, { flex: 1, textAlign: 'left', fontSize: 10.5 }]} numberOfLines={2}>AI guidance — not legal advice. Verify with the official embassy or consulate.</Text>
+        </View>
+        <View style={styles.composer}>
+          <TextInput value={message} onChangeText={setMessage} placeholder="Ask about your application" style={styles.input} returnKeyType="send" onSubmitEditing={sendMessage} />
+          <Pressable style={styles.send} onPress={sendMessage}>
+            <Ionicons name="arrow-up" size={20} color="#fff" />
+          </Pressable>
+        </View>
       </View>
     </View>
   );
@@ -5106,49 +5196,172 @@ function VerifyEmailScreen({ email, onDone }: { email: string; onDone: () => voi
 // ─── Camera Scanner Screen ────────────────────────────────────────────────────
 const SCAN_BOX = SCREEN_W - 64;
 
+const DOC_KINDS: DocKind[] = ['passport', 'bank', 'employment', 'insurance', 'itinerary', 'photo', 'other'];
+function toDocKind(id: string): DocKind {
+  return (DOC_KINDS as string[]).includes(id) ? (id as DocKind) : 'other';
+}
+
+/**
+ * Gallery/file picks skip the live camera check, so run the same "is this
+ * really that document?" recognition on the picked image's OCR text and let
+ * the user back out before it's uploaded. Returns true to proceed.
+ */
+function confirmDocumentMatch(docTypeId: string, ocr: OcrLike | null): Promise<boolean> {
+  const kind = toDocKind(docTypeId);
+  // Photos and "other" can't be judged from text alone.
+  if (kind === 'photo' || kind === 'other' || !ocr) return Promise.resolve(true);
+  const verdict = judge(kind, recognise(ocr));
+  if (verdict.status !== 'mismatch') return Promise.resolve(true);
+  return new Promise((resolve) => {
+    Alert.alert(verdict.title, verdict.detail, [
+      { text: 'Choose another', style: 'cancel', onPress: () => resolve(false) },
+      { text: 'Use anyway', style: 'destructive', onPress: () => resolve(true) },
+    ], { onDismiss: () => resolve(false) });
+  });
+}
+
 function CameraScreen({ docType, back, onCapture }: { docType: string; back: () => void; onCapture: (extractedText?: string, imageBase64?: string, mimeType?: string) => void }) {
   const insets = useSafeAreaInsets();
+  const docKind = toDocKind(docType);
+  const docLabel = DOC_KIND_LABEL[docKind];
   const [permission, requestPermission] = useCameraPermissions();
   const [flash, setFlash] = useState<'off' | 'on'>('off');
-  const [facing] = useState<'front' | 'back'>('back');
+  const [facing, setFacing] = useState<'front' | 'back'>(docKind === 'photo' ? 'front' : 'back');
   const [captured, setCaptured] = useState<string | null>(null);
-  const [quality, setQuality] = useState<'checking' | 'good' | 'warn' | 'unverified' | null>(null);
+  const [analysing, setAnalysing] = useState(false);
+  const [verdict, setVerdict] = useState<Verdict | null>(null);
+  const [checkUnavailable, setCheckUnavailable] = useState(false);
   const [detectedText, setDetectedText] = useState('');
   const [imageBase64, setImageBase64] = useState<string | undefined>(undefined);
+  const [auto, setAuto] = useState(true);
+  const [liveHint, setLiveHint] = useState('Align the document within the frame');
+  const [liveReady, setLiveReady] = useState(false);
   const cameraRef = useRef<CameraView>(null);
+  const busyRef = useRef(false);
+
+  // Frame shape follows the document: landscape card for passport/ID, tall
+  // page for letters and statements, portrait for a face photo.
+  const frameW = docKind === 'photo' ? SCAN_BOX * 0.72 : ['passport', 'other'].includes(docKind) ? SCAN_BOX : SCAN_BOX * 0.82;
+  const frameH = docKind === 'photo' ? frameW * 1.3 : docKind === 'passport' ? SCAN_BOX * 0.7 : docKind === 'other' ? SCAN_BOX * 0.75 : frameW * 1.3;
+
+  const analyse = async (uri: string) => {
+    setAnalysing(true);
+    setVerdict(null);
+    setCheckUnavailable(false);
+    try {
+      setImageBase64(await FileSystem.readAsStringAsync(uri, { encoding: FileSystem.EncodingType.Base64 }));
+    } catch {
+      setImageBase64(undefined);
+    }
+    try {
+      const { default: TextRecognition } = await import('@react-native-ml-kit/text-recognition');
+      const ocr = await TextRecognition.recognize(uri);
+      setDetectedText((ocr?.text ?? '').trim());
+      // Faces matter for the passport photo and the biometric photo; skip the
+      // extra native call for document types that have none.
+      let faces: FaceLike[] = [];
+      if (docKind === 'photo' || docKind === 'passport') {
+        try {
+          const { default: FaceDetection } = await import('@react-native-ml-kit/face-detection');
+          faces = await FaceDetection.detect(uri, { performanceMode: 'fast', minFaceSize: 0.05 });
+        } catch { /* face check unavailable — text signals still apply */ }
+      }
+      setVerdict(judge(docKind, recognise(ocr, faces)));
+    } catch {
+      setCheckUnavailable(true);
+    } finally {
+      setAnalysing(false);
+    }
+  };
 
   const capturePhoto = async () => {
-    if (!cameraRef.current) return;
+    if (!cameraRef.current || busyRef.current) return;
+    busyRef.current = true;
     try {
       const photo = await cameraRef.current.takePictureAsync({ quality: 0.85, base64: false });
       const uri = photo?.uri ?? null;
+      if (!uri) { setVerdict({ status: 'unclear', title: 'Capture failed', detail: 'The camera returned no image. Try again.' }); return; }
       setCaptured(uri);
-      if (!uri) { setQuality('warn'); return; }
-      setQuality('checking');
-      // Read the real captured file for upload — this is what lets the
-      // backend run actual AI vision on the document instead of only the
-      // on-device OCR text below.
-      try {
-        setImageBase64(await FileSystem.readAsStringAsync(uri, { encoding: FileSystem.EncodingType.Base64 }));
-      } catch {
-        setImageBase64(undefined);
-      }
-      // Real on-device OCR (Google ML Kit) — not a simulated result. A
-      // document with a readable amount of text is marked good; near-empty
-      // OCR output (blur, glare, blank frame) is flagged for a retake.
-      try {
-        const { default: TextRecognition } = await import('@react-native-ml-kit/text-recognition');
-        const result = await TextRecognition.recognize(uri);
-        const text = (result?.text ?? '').trim();
-        setDetectedText(text);
-        setQuality(text.length >= 15 ? 'good' : 'warn');
-      } catch {
-        setQuality('unverified');
-      }
+      await analyse(uri);
     } catch {
-      setQuality('warn');
+      setVerdict({ status: 'unclear', title: 'Capture failed', detail: 'The camera returned no image. Try again.' });
+    } finally {
+      busyRef.current = false;
     }
   };
+
+  // Manual shutter: stop the auto loop, let any in-flight preview probe finish
+  // (it holds the camera), then take the real shot — a tap is never dropped.
+  const onShutter = async () => {
+    setAuto(false);
+    for (let waited = 0; busyRef.current && waited < 4000; waited += 150) await new Promise((r) => setTimeout(r, 150));
+    await capturePhoto();
+  };
+
+  const retake = () => {
+    setAuto(true);
+    setCaptured(null); setVerdict(null); setCheckUnavailable(false); setDetectedText(''); setImageBase64(undefined);
+    setLiveReady(false); setLiveHint('Align the document within the frame');
+  };
+
+  // Auto-capture: every ~1s grab a small preview frame, run the same on-device
+  // recognition as the post-capture check, and fire the real shutter once the
+  // SAME recognisable document has been in frame for two frames in a row.
+  // Manual shutter stays available the whole time.
+  useEffect(() => {
+    if (!permission?.granted || captured || !auto) return;
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let prev: Set<string> | null = null;
+    let streak = 0;
+    let failures = 0;
+
+    const tick = async () => {
+      if (stopped) return;
+      try {
+        if (cameraRef.current && !busyRef.current) {
+          busyRef.current = true;
+          let probe: ReturnType<typeof probeFrame> | undefined;
+          try {
+            const shot = await cameraRef.current.takePictureAsync({ quality: 0.3, base64: false, shutterSound: false });
+            if (stopped || !shot?.uri) return;
+            const { default: TextRecognition } = await import('@react-native-ml-kit/text-recognition');
+            const ocr = await TextRecognition.recognize(shot.uri);
+            let faces: FaceLike[] = [];
+            if (docKind === 'photo') {
+              const { default: FaceDetection } = await import('@react-native-ml-kit/face-detection');
+              faces = await FaceDetection.detect(shot.uri, { performanceMode: 'fast', minFaceSize: 0.05 });
+            }
+            probe = probeFrame(docKind, ocr, faces, { width: shot.width, height: shot.height });
+          } finally {
+            busyRef.current = false;
+          }
+          if (stopped || !probe) return;
+          failures = 0;
+          setLiveHint(probe.hint);
+          setLiveReady(probe.ready);
+          if (probe.ready) {
+            const same = prev !== null && (docKind === 'photo' || similarity(prev, probe.tokens) >= 0.5);
+            streak = same ? streak + 1 : 1;
+            prev = probe.tokens;
+            if (streak >= 2) { stopped = true; await capturePhoto(); return; }
+          } else {
+            streak = 0; prev = null;
+          }
+        }
+      } catch {
+        failures += 1;
+        if (failures >= 3) {
+          setLiveHint('Auto-detect unavailable — tap the shutter to capture');
+          setAuto(false);
+          return;
+        }
+      }
+      if (!stopped) timer = setTimeout(tick, 900);
+    };
+    timer = setTimeout(tick, 1200);
+    return () => { stopped = true; if (timer) clearTimeout(timer); };
+  }, [permission?.granted, captured, auto, docKind, facing]);
 
   if (!permission) return <View style={{ flex: 1, backgroundColor: '#000', alignItems: 'center', justifyContent: 'center' }}><ActivityIndicator color="#fff" /></View>;
   if (!permission.granted) {
@@ -5165,94 +5378,111 @@ function CameraScreen({ docType, back, onCapture }: { docType: string; back: () 
     );
   }
 
+  const frameColor = liveReady ? '#10B981' : '#0EA5E9';
+  const verdictTone = verdict?.status === 'match'
+    ? { bg: 'rgba(16,185,129,0.95)', icon: 'checkmark-circle' as IoniconName }
+    : verdict?.status === 'mismatch'
+      ? { bg: 'rgba(220,38,38,0.95)', icon: 'close-circle' as IoniconName }
+      : { bg: 'rgba(217,119,6,0.95)', icon: 'warning' as IoniconName };
+  const problem = verdict?.status === 'mismatch' || verdict?.status === 'unclear';
+
   return (
     <View style={{ flex: 1, backgroundColor: '#000' }}>
       <StatusBar barStyle="light-content" />
       {/* Camera viewfinder */}
       {!captured ? (
-        <CameraView ref={cameraRef} style={{ flex: 1 }} facing={facing} flash={flash}>
+        <CameraView ref={cameraRef} style={{ flex: 1 }} facing={facing} flash={facing === 'back' ? flash : 'off'}>
           {/* Top bar */}
-          <View style={{ flexDirection: 'row', alignItems: 'center', padding: 16, paddingTop: STATUSBAR_H + 16 }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', padding: 16, gap: 8 }}>
             <Pressable onPress={back} style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(0,0,0,0.4)', alignItems: 'center', justifyContent: 'center' }}>
               <Ionicons name="arrow-back" size={22} color="#fff" />
             </Pressable>
             <View style={{ flex: 1, alignItems: 'center' }}>
-              <Text style={{ color: '#fff', fontWeight: '900', fontSize: 15 }}>Capture {docType}</Text>
-              <Text style={{ color: 'rgba(255,255,255,0.6)', fontSize: 11, marginTop: 2 }}>Align document within the frame</Text>
+              <Text style={{ color: '#fff', fontWeight: '900', fontSize: 15 }} numberOfLines={1}>Scan {docLabel}</Text>
             </View>
+            <Pressable onPress={() => setFacing(f => f === 'back' ? 'front' : 'back')} style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(0,0,0,0.4)', alignItems: 'center', justifyContent: 'center' }}>
+              <Ionicons name="camera-reverse-outline" size={22} color="#fff" />
+            </Pressable>
             <Pressable onPress={() => setFlash(f => f === 'off' ? 'on' : 'off')} style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(0,0,0,0.4)', alignItems: 'center', justifyContent: 'center' }}>
               <Ionicons name={flash === 'on' ? 'flash' : 'flash-off'} size={20} color={flash === 'on' ? '#F59E0B' : '#fff'} />
             </Pressable>
           </View>
-          {/* Edge detection overlay */}
-          <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
-            <View style={{ width: SCAN_BOX, height: SCAN_BOX * 0.7, position: 'relative' }}>
-              {/* Corner guides */}
-              {[[-1,-1],[-1,1],[1,-1],[1,1]].map(([h,v], i) => (
-                <View key={i} style={{ position: 'absolute', top: v < 0 ? 0 : undefined, bottom: v > 0 ? 0 : undefined, left: h < 0 ? 0 : undefined, right: h > 0 ? 0 : undefined, width: 24, height: 24, borderTopWidth: v < 0 ? 3 : 0, borderBottomWidth: v > 0 ? 3 : 0, borderLeftWidth: h < 0 ? 3 : 0, borderRightWidth: h > 0 ? 3 : 0, borderColor: '#0EA5E9' }} />
-              ))}
-              {/* Scan line animation hint */}
-              <View style={{ position: 'absolute', left: 0, right: 0, top: '40%', height: 2, backgroundColor: 'rgba(14,165,233,0.7)' }} />
+          {/* Live guidance — says what the scanner sees right now */}
+          <View style={{ alignItems: 'center', paddingHorizontal: 20 }}>
+            <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center', backgroundColor: liveReady ? 'rgba(16,185,129,0.92)' : 'rgba(0,0,0,0.6)', paddingHorizontal: 14, paddingVertical: 8, borderRadius: 20, maxWidth: '100%' }}>
+              <Ionicons name={liveReady ? 'checkmark-circle' : 'scan-outline'} size={16} color="#fff" />
+              <Text style={{ color: '#fff', fontWeight: '700', fontSize: 12.5, flexShrink: 1 }}>{auto ? liveHint : 'Auto-capture off — tap the shutter'}</Text>
             </View>
           </View>
-          {/* Capture button — paddingBottom must clear the Android system nav
-              bar/gesture pill since this screen renders outside the app's
-              normal Header/BottomNav shell. Uses the real safe-area inset,
-              not a Dimensions guess, so it clears on every device/skin. */}
-          <View style={{ paddingBottom: 48 + insets.bottom, alignItems: 'center', gap: 16 }}>
-            <Pressable onPress={capturePhoto} style={{ width: 72, height: 72, borderRadius: 36, backgroundColor: '#fff', borderWidth: 4, borderColor: 'rgba(255,255,255,0.4)', alignItems: 'center', justifyContent: 'center' }}>
-              <View style={{ width: 56, height: 56, borderRadius: 28, backgroundColor: '#fff' }} />
-            </Pressable>
-            <Text style={{ color: 'rgba(255,255,255,0.6)', fontSize: 12 }}>Tap to capture · Hold steady</Text>
+          {/* Frame guide */}
+          <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+            <View style={{ width: frameW, height: frameH, position: 'relative' }}>
+              {[[-1,-1],[-1,1],[1,-1],[1,1]].map(([h,v], i) => (
+                <View key={i} style={{ position: 'absolute', top: v < 0 ? 0 : undefined, bottom: v > 0 ? 0 : undefined, left: h < 0 ? 0 : undefined, right: h > 0 ? 0 : undefined, width: 28, height: 28, borderTopWidth: v < 0 ? 4 : 0, borderBottomWidth: v > 0 ? 4 : 0, borderLeftWidth: h < 0 ? 4 : 0, borderRightWidth: h > 0 ? 4 : 0, borderColor: frameColor, borderRadius: 4 }} />
+              ))}
+              {docKind === 'passport' && (
+                <Text style={{ position: 'absolute', bottom: 8, left: 0, right: 0, textAlign: 'center', color: 'rgba(255,255,255,0.75)', fontSize: 10, fontWeight: '700', letterSpacing: 1 }}>KEEP THE TWO &lt;&lt;&lt; LINES INSIDE</Text>
+              )}
+            </View>
+          </View>
+          {/* Capture controls — paddingBottom clears the Android nav bar/gesture pill */}
+          <View style={{ paddingBottom: 32 + insets.bottom, alignItems: 'center', gap: 14 }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 28 }}>
+              <Pressable onPress={() => setAuto(a => !a)} style={{ width: 64, alignItems: 'center', gap: 4 }}>
+                <View style={{ width: 44, height: 44, borderRadius: 22, backgroundColor: auto ? colors.royal600 : 'rgba(255,255,255,0.2)', alignItems: 'center', justifyContent: 'center' }}>
+                  <Ionicons name="scan-circle-outline" size={26} color="#fff" />
+                </View>
+                <Text style={{ color: '#fff', fontSize: 11, fontWeight: '700' }}>Auto {auto ? 'on' : 'off'}</Text>
+              </Pressable>
+              <Pressable onPress={onShutter} style={{ width: 72, height: 72, borderRadius: 36, backgroundColor: '#fff', borderWidth: 4, borderColor: 'rgba(255,255,255,0.4)', alignItems: 'center', justifyContent: 'center' }}>
+                <View style={{ width: 56, height: 56, borderRadius: 28, backgroundColor: '#fff' }} />
+              </Pressable>
+              <View style={{ width: 64 }} />
+            </View>
+            <Text style={{ color: 'rgba(255,255,255,0.6)', fontSize: 12 }}>{auto ? 'Captures on its own once the document is in frame' : 'Tap to capture · Hold steady'}</Text>
           </View>
         </CameraView>
       ) : (
         // Preview captured image
         <View style={{ flex: 1 }}>
           <Image source={{ uri: captured }} style={{ flex: 1, resizeMode: 'contain', backgroundColor: '#000' }} />
-          {/* Quality feedback — driven by real on-device OCR, not a timer */}
-          <View style={{ position: 'absolute', top: 48, left: 0, right: 0, alignItems: 'center', paddingHorizontal: 24 }}>
-            {quality === 'checking' && (
-              <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.7)', padding: 12, borderRadius: 20 }}>
+          {/* What the scanner actually recognised — never a bare "text found" tick */}
+          <View style={{ position: 'absolute', top: 16, left: 0, right: 0, alignItems: 'center', paddingHorizontal: 20 }}>
+            {analysing && (
+              <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.75)', padding: 12, borderRadius: 20 }}>
                 <ActivityIndicator size="small" color="#0EA5E9" />
-                <Text style={{ color: '#fff', fontWeight: '700' }}>Reading document…</Text>
+                <Text style={{ color: '#fff', fontWeight: '700' }}>Checking what this is…</Text>
               </View>
             )}
-            {quality === 'good' && (
-              <View style={{ gap: 6, alignItems: 'center', width: '100%' }}>
-                <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center', backgroundColor: 'rgba(16,185,129,0.9)', padding: 12, borderRadius: 20 }}>
-                  <Ionicons name="checkmark-circle" size={18} color="#fff" />
-                  <Text style={{ color: '#fff', fontWeight: '700' }}>Text detected — looks readable</Text>
+            {!analysing && verdict && (
+              <View style={{ flexDirection: 'row', gap: 10, alignItems: 'flex-start', backgroundColor: verdictTone.bg, padding: 14, borderRadius: 16, width: '100%' }}>
+                <Ionicons name={verdictTone.icon} size={24} color="#fff" />
+                <View style={{ flex: 1 }}>
+                  <Text style={{ color: '#fff', fontWeight: '900', fontSize: 14 }}>{verdict.title}</Text>
+                  <Text style={{ color: 'rgba(255,255,255,0.92)', fontSize: 12.5, marginTop: 3, lineHeight: 17 }}>{verdict.detail}</Text>
                 </View>
-                {!!detectedText && (
-                  <View style={{ backgroundColor: 'rgba(0,0,0,0.65)', borderRadius: 12, padding: 10, maxWidth: '100%' }}>
-                    <Text style={{ color: 'rgba(255,255,255,0.85)', fontSize: 11 }} numberOfLines={2}>{detectedText.replace(/\n/g, ' ')}</Text>
-                  </View>
-                )}
               </View>
             )}
-            {quality === 'warn' && (
-              <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center', backgroundColor: 'rgba(245,158,11,0.9)', padding: 12, borderRadius: 20 }}>
-                <Ionicons name="warning-outline" size={18} color="#fff" />
-                <Text style={{ color: '#fff', fontWeight: '700' }}>Little to no text found — retake in better light</Text>
-              </View>
-            )}
-            {quality === 'unverified' && (
-              <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center', backgroundColor: 'rgba(100,116,139,0.9)', padding: 12, borderRadius: 20 }}>
+            {!analysing && !verdict && checkUnavailable && (
+              <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center', backgroundColor: 'rgba(100,116,139,0.92)', padding: 12, borderRadius: 20 }}>
                 <Ionicons name="information-circle-outline" size={18} color="#fff" />
                 <Text style={{ color: '#fff', fontWeight: '700' }}>Captured — on-device check unavailable</Text>
               </View>
             )}
           </View>
           {/* Action buttons — same Android nav-bar clearance as the capture button above */}
-          <View style={{ position: 'absolute', bottom: 40 + insets.bottom, left: 24, right: 24, flexDirection: 'row', gap: 12 }}>
-            <Pressable onPress={() => { setCaptured(null); setQuality(null); setDetectedText(''); setImageBase64(undefined); }} style={{ flex: 1, height: 52, borderRadius: 14, backgroundColor: 'rgba(255,255,255,0.15)', alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: 8 }}>
+          <View style={{ position: 'absolute', bottom: 32 + insets.bottom, left: 24, right: 24, flexDirection: 'row', gap: 12 }}>
+            <Pressable onPress={retake} style={{ flex: 1, height: 52, borderRadius: 14, backgroundColor: problem ? colors.royal600 : 'rgba(255,255,255,0.15)', alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: 8 }}>
               <Ionicons name="refresh-outline" size={20} color="#fff" />
               <Text style={{ color: '#fff', fontWeight: '700' }}>Retake</Text>
             </Pressable>
-            <Pressable onPress={() => onCapture(detectedText || undefined, imageBase64, 'image/jpeg')} style={{ flex: 1, height: 52, borderRadius: 14, backgroundColor: quality === 'good' ? colors.green500 : colors.royal600, alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: 8 }}>
+            <Pressable
+              disabled={analysing}
+              onPress={() => onCapture(detectedText || undefined, imageBase64, 'image/jpeg')}
+              style={{ flex: 1, height: 52, borderRadius: 14, opacity: analysing ? 0.5 : 1, backgroundColor: verdict?.status === 'match' ? colors.green500 : problem ? 'rgba(255,255,255,0.15)' : colors.royal600, alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: 8 }}
+            >
               <Ionicons name="cloud-upload-outline" size={20} color="#fff" />
-              <Text style={{ color: '#fff', fontWeight: '700' }}>Use this photo</Text>
+              <Text style={{ color: '#fff', fontWeight: '700' }}>{problem ? 'Use anyway' : 'Use this photo'}</Text>
             </Pressable>
           </View>
         </View>

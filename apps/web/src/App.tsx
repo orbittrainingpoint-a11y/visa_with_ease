@@ -609,6 +609,18 @@ export function relativeTripLabel(dateISO: string) {
   return `${days} days`;
 }
 
+// Honest provenance line: says whether a person at Visa With Ease actually checked
+// this country's data against the official source, and when — never implies a
+// live fetch from a government site, because there isn't one.
+export function verificationLabel(v: RequirementsResponse['verification']) {
+  if (v?.status === 'verified' && v.verifiedAt) {
+    const days = Math.floor((Date.now() - Date.parse(v.verifiedAt)) / 86_400_000);
+    const when = new Date(v.verifiedAt).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
+    return days > 90 ? `Last verified ${when} — over 3 months ago, confirm on the official site` : `Verified by Visa With Ease on ${when}`;
+  }
+  return 'Not yet verified against the official source — guidance only, confirm on the official site';
+}
+
 export function sourceFreshnessLabel(freshness: RequirementsResponse['freshness']) {
   const expiresIn = Math.max(0, Math.ceil((Date.parse(freshness.expiresAt) - Date.now()) / 3_600_000));
   return `Fetched ${freshness.ageHours}h ago, expires in ${expiresIn}h under the 24h cache policy.`;
@@ -1284,7 +1296,7 @@ function Analysis() {
   const docId = `${active.id}-passport`;
   const { data: audit } = useApi<AuditResult>(`/audit/${docId}`, fallbackAuditResult);
   const { data: reqs } = useApi<RequirementsResponse>('/requirements', fallbackRequirements);
-  const freshness = sourceFreshnessLabel(reqs.freshness);
+  const freshness = verificationLabel(reqs.verification);
   const riskLabel = active.readinessScore >= 85 ? 'low' : active.readinessScore >= 60 ? 'medium' : 'high';
   const blockers = audit.findings.filter(f => f.severity === 'warn' || f.severity === 'red_flag');
   const passing = audit.findings.filter(f => f.severity === 'pass');
@@ -1334,7 +1346,7 @@ function Analysis() {
         <article className="panel">
           <h2>Coverage and source confidence</h2>
           <div className="activity-row"><ShieldCheck size={18} /><div><strong>Route coverage</strong><span>{routeCoverage}</span></div></div>
-          <div className="activity-row"><Globe2 size={18} /><div><strong>Source freshness</strong><span>{freshness}</span></div></div>
+          <div className="activity-row"><Globe2 size={18} /><div><strong>Requirements source</strong><span>{freshness}</span></div></div>
           <div className="activity-row"><CalendarClock size={18} /><div><strong>Processing estimate</strong><span>{reqs.processingTime}</span></div></div>
         </article>
       </div>
@@ -1610,55 +1622,50 @@ function UploadFlow() {
   );
 }
 
-const REQ_FEE_RATES: Record<string, { symbol: string; rate: number }> = {
-  USD: { symbol: '$',    rate: 1.00 }, AED: { symbol: 'AED ', rate: 3.67 },
-  INR: { symbol: '₹',   rate: 83.5 }, GBP: { symbol: '£',   rate: 0.79  },
-};
-
 function Requirements() {
-  const { data: requirements, refetch } = useApi<RequirementsResponse>('/requirements', fallbackRequirements);
-  const expiresIn = Math.max(0, Math.ceil((Date.parse(requirements.freshness.expiresAt) - Date.now()) / 3_600_000));
-  const [feeCurrency, setFeeCurrency] = useState<keyof typeof REQ_FEE_RATES>('AED');
-  const feeEUR = 80;
-  const { symbol, rate } = REQ_FEE_RATES[feeCurrency];
-  const localFee = Math.round(feeEUR * (rate / 0.92));
+  // Requirements for the applicant's real destination (their most recent
+  // application), not a fixed country — with none yet, the general default set.
+  const { data: appsData } = useApi<{ applications: VisaApplication[] }>('/applications', { applications: [] });
+  const activeApp = appsData.applications[0];
+  const { data: requirements } = useApi<RequirementsResponse>(
+    activeApp ? `/requirements?country=${encodeURIComponent(activeApp.destinationCountry)}` : '/requirements',
+    fallbackRequirements
+  );
+  const verified = requirements.verification?.status === 'verified';
+  const staleVerified = verified && Date.now() - Date.parse(requirements.verification!.verifiedAt ?? '') > 90 * 86_400_000;
+  const sourceLinks = requirements.sourceUrls;
 
   return (
     <section className="page">
       <div className="page-title">
         <div>
           <p>Requirements</p>
-          <h1>France · Schengen Tourist</h1>
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <span className="freshness">Fetched {requirements.freshness.ageHours}h ago · expires in {expiresIn}h</span>
-          {/* Fee currency switcher */}
-          <div style={{ display: 'flex', gap: 4 }}>
-            {(Object.keys(REQ_FEE_RATES) as Array<keyof typeof REQ_FEE_RATES>).map(c => (
-              <button key={c} onClick={() => setFeeCurrency(c)} style={{ padding: '5px 10px', borderRadius: 8, border: 'none', cursor: 'pointer', fontWeight: 700, fontSize: 11, background: feeCurrency === c ? '#1A56DB' : '#F1F5F9', color: feeCurrency === c ? '#fff' : '#475569' }}>{c}</button>
-            ))}
-          </div>
+          <h1>{activeApp ? `${activeApp.destinationCountry} · ${activeApp.visaType}` : 'Visa requirements'}</h1>
         </div>
       </div>
-      {/* Fee display */}
+      {/* Fee display — exactly what the knowledge base says, no invented conversion */}
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, marginBottom: 16 }}>
         <article className="panel" style={{ flex: '1 1 140px', padding: '14px 18px' }}>
           <div style={{ fontSize: 12, color: '#64748B', fontWeight: 600 }}>Visa fee</div>
-          <div style={{ fontSize: 28, fontWeight: 900, color: '#0F172A', margin: '4px 0 2px' }}>€{feeEUR}</div>
-          <div style={{ fontSize: 13, color: '#94A3B8' }}>≈ {symbol}{localFee} {feeCurrency}</div>
+          <div style={{ fontSize: 20, fontWeight: 900, color: '#0F172A', margin: '4px 0 2px' }}>{requirements.fees}</div>
+          <div style={{ fontSize: 13, color: '#94A3B8' }}>confirm the current amount on the official site</div>
         </article>
         <article className="panel" style={{ flex: '1 1 140px', padding: '14px 18px' }}>
           <div style={{ fontSize: 12, color: '#64748B', fontWeight: 600 }}>Processing time</div>
           <div style={{ fontSize: 22, fontWeight: 900, color: '#0F172A', margin: '4px 0 2px' }}>{requirements.processingTime}</div>
-          <div style={{ fontSize: 13, color: '#94A3B8' }}>from appointment date</div>
+          <div style={{ fontSize: 13, color: '#94A3B8' }}>typical, not guaranteed</div>
         </article>
         <article className="panel" style={{ flex: '1 1 140px', padding: '14px 18px' }}>
           <div style={{ fontSize: 12, color: '#64748B', fontWeight: 600 }}>Coverage</div>
-          <div style={{ fontSize: 22, fontWeight: 900, color: '#10B981', margin: '4px 0 2px' }}>{requirements.coverageStatus}</div>
-          <div style={{ fontSize: 13, color: '#94A3B8' }}>official source backed</div>
+          <div style={{ fontSize: 22, fontWeight: 900, color: '#0F172A', margin: '4px 0 2px' }}>{requirements.coverageStatus}</div>
+          <div style={{ fontSize: 13, color: '#94A3B8' }}>{verified ? 'checked by our team' : 'not yet checked by our team'}</div>
         </article>
       </div>
-      <StalenessBanner ageHours={requirements.freshness.ageHours} onRefresh={() => { refetch(); showToast('Refreshing requirements from official source…', 'info'); }} />
+      {/* Provenance: says plainly whether a person verified this against the official source */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 16px', borderRadius: 10, marginBottom: 16, background: verified && !staleVerified ? '#ECFDF5' : '#FEF3C7', border: `1px solid ${verified && !staleVerified ? '#A7F3D0' : '#FDE68A'}` }}>
+        {verified && !staleVerified ? <CheckCircle2 size={16} color="#047857" /> : <AlertTriangle size={16} color="#D97706" />}
+        <span style={{ flex: 1, fontSize: 13, color: verified && !staleVerified ? '#065F46' : '#92400E', fontWeight: 600 }}>{verificationLabel(requirements.verification)}</span>
+      </div>
       <div className="warning-banner">
         <Sparkles size={18} />
         AI guidance — not legal advice. Verify with official embassy.
@@ -1671,6 +1678,18 @@ function Requirements() {
               <div>
                 <h3>{item.title}</h3>
                 <p>{item.description}</p>
+                <details style={{ marginTop: 6 }}>
+                  <summary style={{ cursor: 'pointer', fontSize: 12, fontWeight: 700, color: '#1A56DB' }}>Why is this needed?</summary>
+                  <div style={{ fontSize: 12.5, color: '#475569', marginTop: 6, lineHeight: 1.5 }}>
+                    <p style={{ margin: '0 0 6px' }}>{item.why ?? 'This is listed as required for this visa by the official sources below. Exact requirements can vary with your circumstances, so confirm on the official site.'}</p>
+                    {item.sourceIds.length > 0 && (
+                      <p style={{ margin: 0 }}>Source: {item.sourceIds.map((sid) => sourceLinks.find((s) => s.id === sid)).filter(Boolean).map((s, i) => (
+                        <span key={s!.id}>{i > 0 ? ', ' : ''}<a href={s!.url} target="_blank" rel="noreferrer">{s!.label}</a></span>
+                      ))}</p>
+                    )}
+                    {!item.required && <p style={{ margin: '6px 0 0' }}>Marked optional — it can strengthen your application but isn't strictly required.</p>}
+                  </div>
+                </details>
               </div>
               <span className={item.satisfied ? 'chip success' : 'chip'}>{item.satisfied ? 'Uploaded' : 'Missing'}</span>
             </article>
@@ -3404,24 +3423,6 @@ function CountryComparison() {
   );
 }
 
-// ─── Staleness Banner ────────────────────────────────────────────────────────
-function StalenessBanner({ ageHours, onRefresh }: { ageHours: number; onRefresh?: () => void }) {
-  if (ageHours < 18) return null;
-  return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 16px', borderRadius: 10, background: '#FEF3C7', border: '1px solid #FDE68A', marginBottom: 16 }}>
-      <AlertTriangle size={16} color="#D97706" />
-      <span style={{ flex: 1, fontSize: 13, color: '#92400E', fontWeight: 600 }}>
-        Requirements data is {ageHours}h old — may not reflect the latest consulate rules.
-      </span>
-      {onRefresh && (
-        <button onClick={onRefresh} style={{ padding: '5px 12px', borderRadius: 8, border: '1px solid #D97706', background: '#fff', color: '#D97706', fontWeight: 700, fontSize: 12, cursor: 'pointer' }}>
-          Refresh
-        </button>
-      )}
-    </div>
-  );
-}
-
 // ─── Visa Waiver Checker ─────────────────────────────────────────────────────
 const WEB_WAIVER_RULES: Record<string, Record<string, { type: 'waiver' | 'visa' | 'eta'; note: string }>> = {
   'India':    { 'France': { type: 'visa', note: 'Schengen visa required — EUR 80 + VFS fee.' }, 'United Kingdom': { type: 'visa', note: 'Standard Visitor visa — £115.' }, 'Thailand': { type: 'waiver', note: '30-day visa waiver — no application needed.' }, 'Maldives': { type: 'waiver', note: 'Free 30-day on-arrival stamp.' }, 'United States': { type: 'visa', note: 'B1/B2 visa required — $185.' }, 'Japan': { type: 'visa', note: 'Tourist visa required ~5 days processing.' }, 'Singapore': { type: 'visa', note: 'Visa on arrival for 30 days.' }, 'UAE': { type: 'eta', note: 'eVisa on arrival for 14 days.' } },
@@ -4021,8 +4022,12 @@ function KnowledgeBase() {
   const [countryNameInput, setCountryNameInput] = useState('');
   const [form, setForm] = useState(emptyOverrideForm());
   const [saving, setSaving] = useState(false);
+  // The admin's attestation that they just checked this against the official
+  // sources listed below — the server records who and when; it's never assumed.
+  const [markVerified, setMarkVerified] = useState(false);
 
   function startAdd() {
+    setMarkVerified(false);
     setForm(emptyOverrideForm());
     setCountryNameInput('');
     setEditingCountry('');
@@ -4030,6 +4035,7 @@ function KnowledgeBase() {
 
   function startEdit(country: string) {
     const existing = data.overrides[country];
+    setMarkVerified(false);
     setForm({
       coverageStatus: existing.coverageStatus,
       fees: existing.fees,
@@ -4082,7 +4088,8 @@ function KnowledgeBase() {
         fees: form.fees.trim(),
         processingTime: form.processingTime.trim(),
         requirements: form.requirements,
-        sourceUrls: form.sourceUrls
+        sourceUrls: form.sourceUrls,
+        markVerified
       }, 'PUT');
       showToast(`Saved ${country} to the knowledge base`, 'success');
       setEditingCountry(null);
@@ -4147,13 +4154,16 @@ function KnowledgeBase() {
 
           <h3 style={{ fontSize: 14, marginBottom: 8 }}>Requirements</h3>
           {form.requirements.map((r, i) => (
-            <div key={r.id} style={{ display: 'flex', gap: 8, marginBottom: 8, alignItems: 'center' }}>
+            <div key={r.id} style={{ marginBottom: 10 }}>
+            <div style={{ display: 'flex', gap: 8, marginBottom: 4, alignItems: 'center' }}>
               <input value={r.title} onChange={(e) => updateRequirement(i, { title: e.target.value })} placeholder="Title, e.g. Valid passport" style={{ flex: 1, padding: '8px 10px', borderRadius: 8, border: '1px solid #E2E8F0', fontSize: 13 }} />
               <input value={r.description} onChange={(e) => updateRequirement(i, { description: e.target.value })} placeholder="Description" style={{ flex: 2, padding: '8px 10px', borderRadius: 8, border: '1px solid #E2E8F0', fontSize: 13 }} />
               <label style={{ fontSize: 12, color: '#475569', display: 'flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }}>
                 <input type="checkbox" checked={r.required} onChange={(e) => updateRequirement(i, { required: e.target.checked })} /> Required
               </label>
               <button type="button" onClick={() => removeRequirement(i)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#DC2626' }}><Trash2 size={16} /></button>
+            </div>
+            <input value={r.why ?? ''} onChange={(e) => updateRequirement(i, { why: e.target.value || undefined })} maxLength={600} placeholder="Why is this required / what happens without it? (shown to applicants under “Why?”)" style={{ width: '100%', padding: '7px 10px', borderRadius: 8, border: '1px dashed #CBD5E1', fontSize: 12, color: '#475569' }} />
             </div>
           ))}
           <button type="button" onClick={addRequirement} style={{ padding: '6px 12px', borderRadius: 8, border: '1px dashed #CBD5E1', background: 'transparent', color: '#475569', fontSize: 12, fontWeight: 700, cursor: 'pointer', marginBottom: 16 }}><Plus size={12} /> Add requirement</button>
@@ -4168,6 +4178,10 @@ function KnowledgeBase() {
           ))}
           <button type="button" onClick={addSource} style={{ padding: '6px 12px', borderRadius: 8, border: '1px dashed #CBD5E1', background: 'transparent', color: '#475569', fontSize: 12, fontWeight: 700, cursor: 'pointer', marginBottom: 20 }}><Plus size={12} /> Add source</button>
 
+          <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start', fontSize: 13, color: '#334155', marginBottom: 16, padding: '10px 12px', borderRadius: 10, background: '#F8FAFC', border: '1px solid #E2E8F0' }}>
+            <input type="checkbox" checked={markVerified} onChange={(e) => setMarkVerified(e.target.checked)} style={{ marginTop: 3 }} />
+            <span><strong>I checked this against the official sources listed above, today.</strong> Applicants will see “Verified by Visa With Ease on {new Date().toLocaleDateString()}”. Leave unticked if you haven't — it stays marked as not yet verified (or keeps its previous verification date).</span>
+          </label>
           <div style={{ display: 'flex', gap: 10 }}>
             <button type="button" onClick={save} disabled={saving} className="primary-button" style={{ opacity: saving ? 0.7 : 1 }}><Save size={16} /> {saving ? 'Saving…' : 'Save'}</button>
             <button type="button" onClick={() => setEditingCountry(null)} style={{ padding: '9px 18px', borderRadius: 10, border: '1px solid #E2E8F0', background: '#fff', color: '#475569', fontWeight: 700, fontSize: 13, cursor: 'pointer' }}>Cancel</button>
@@ -4189,6 +4203,7 @@ function KnowledgeBase() {
                 <div>
                   <h3>{country}</h3>
                   <p>{o.fees} · {o.processingTime} · {o.requirements.length} requirement{o.requirements.length === 1 ? '' : 's'}</p>
+                  <p style={{ color: o.verification?.status === 'verified' ? '#047857' : '#B45309', fontWeight: 700, fontSize: 12 }}>{verificationLabel(o.verification)}</p>
                 </div>
                 <span className={`status ${o.coverageStatus === 'supported' ? 'ready' : o.coverageStatus === 'partial' ? 'in_progress' : 'issues'}`}>{o.coverageStatus}</span>
                 <div style={{ display: 'flex', gap: 6 }}>

@@ -1,4 +1,5 @@
 import { getRequirementsForCountry } from '@visaiq/mock-data';
+import { toClientRequirements, type RequirementsOverrideData } from './verification.js';
 import type { AccessGrantRequest, AuditResult, RequirementsResponse, VisaApplication } from '@visaiq/contracts';
 import type { Firestore } from 'firebase-admin/firestore';
 import { createAiProvider } from './aiProviders.js';
@@ -168,8 +169,9 @@ export function createFirestoreServices(db: Firestore): Services {
   // checked first and, when present, wins outright. This is what lets a
   // platform_admin add or correct a country's visa requirements from the
   // web app and have it take effect immediately, with no code deploy.
-  function freshen(data: Omit<RequirementsResponse, 'freshness'>): RequirementsResponse {
+  function freshen(stored: RequirementsOverrideData): RequirementsResponse {
     const fetchedAt = new Date();
+    const data = toClientRequirements(stored);
     return { ...data, freshness: { fetchedAt: fetchedAt.toISOString(), expiresAt: new Date(fetchedAt.getTime() + 24 * 60 * 60 * 1000).toISOString(), ageHours: 0 } };
   }
 
@@ -177,7 +179,7 @@ export function createFirestoreServices(db: Firestore): Services {
     async getRequirements(context) {
       if (context?.destinationCountry) {
         const override = await db.collection('visaKnowledgeBaseOverrides').doc(context.destinationCountry).get();
-        if (override.exists) return freshen(override.data() as Omit<RequirementsResponse, 'freshness'>);
+        if (override.exists) return freshen(override.data() as RequirementsOverrideData);
       }
       const key = Buffer.from(JSON.stringify(context)).toString('base64url');
       const doc = await db.collection('requirementsCache').doc(key).get();
@@ -192,7 +194,7 @@ export function createFirestoreServices(db: Firestore): Services {
     async getRequirementsForCountry(country) {
       if (!country) return currentRequirements();
       const override = await db.collection('visaKnowledgeBaseOverrides').doc(country).get();
-      if (override.exists) return freshen(override.data() as Omit<RequirementsResponse, 'freshness'>);
+      if (override.exists) return freshen(override.data() as RequirementsOverrideData);
       const key = `country:${country}`;
       const doc = await db.collection('requirementsCache').doc(key).get();
       if (doc.exists) return doc.data() as RequirementsResponse;
@@ -203,7 +205,7 @@ export function createFirestoreServices(db: Firestore): Services {
     async listCountryOverrides() {
       const snap = await db.collection('visaKnowledgeBaseOverrides').get();
       const out: Record<string, RequirementsResponse> = {};
-      snap.docs.forEach((d) => { out[d.id] = freshen(d.data() as Omit<RequirementsResponse, 'freshness'>); });
+      snap.docs.forEach((d) => { out[d.id] = freshen(d.data() as RequirementsOverrideData); });
       return out;
     },
     async setCountryOverride(country, data) {

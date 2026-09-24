@@ -381,6 +381,39 @@ test('PUT /admin/knowledge-base/:country — a real edit changes what /requireme
   assert.notEqual(afterDelete.fees, 'TSL 1 (test fixture fee)', 'deleting the override should revert to the default dataset');
 });
 
+test('Knowledge base verification — only an explicit markVerified stamps who/when, and later edits keep the stamp', async () => {
+  const adminToken = await demoToken('platform_admin');
+  const country = 'Verifyland';
+  const override = {
+    coverageStatus: 'supported',
+    requirements: [{ id: 'req-vl-1', title: 'Valid passport', description: 'Fixture.', required: true, satisfied: false, sourceIds: ['src-vl'], why: 'Fixture reason.' }],
+    fees: 'VL 1', processingTime: '1 day',
+    sourceUrls: [{ id: 'src-vl', label: 'Verifyland MFA', url: 'https://example.com/vl' }]
+  };
+
+  const first = await put(`/admin/knowledge-base/${country}`, override, adminToken);
+  assert.equal(first.res.status, 200);
+  assert.equal(first.body.requirements.verification.status, 'unverified');
+  assert.equal(first.body.requirements.requirements[0].why, 'Fixture reason.');
+
+  const verified = await put(`/admin/knowledge-base/${country}`, { ...override, markVerified: true }, adminToken);
+  assert.equal(verified.body.requirements.verification.status, 'verified');
+  assert.ok(Date.parse(verified.body.requirements.verification.verifiedAt) > Date.now() - 60_000);
+  assert.ok(verified.body.requirements.verification.verifiedBy, 'records who verified');
+
+  // A later edit that doesn't re-attest keeps the existing stamp (neither re-verifies nor un-verifies).
+  const edited = await put(`/admin/knowledge-base/${country}`, { ...override, fees: 'VL 2' }, adminToken);
+  assert.equal(edited.body.requirements.verification.status, 'verified');
+  assert.equal(edited.body.requirements.verification.verifiedAt, verified.body.requirements.verification.verifiedAt);
+
+  // A client cannot forge a stamp by sending its own verification fields.
+  const forged = await put(`/admin/knowledge-base/Forgeland`, { ...override, verification: { status: 'verified', verifiedAt: '2020-01-01T00:00:00.000Z', verifiedBy: 'me' } }, adminToken);
+  assert.equal(forged.body.requirements.verification.status, 'unverified');
+
+  await del(`/admin/knowledge-base/${country}`, adminToken);
+  await del(`/admin/knowledge-base/Forgeland`, adminToken);
+});
+
 test('PUT /admin/knowledge-base/:country — rejects an invalid payload instead of silently accepting bad data', async () => {
   const adminToken = await demoToken('platform_admin');
   const { res, body } = await put('/admin/knowledge-base/Testlandia', { fees: 'only a fee, missing everything else' }, adminToken);

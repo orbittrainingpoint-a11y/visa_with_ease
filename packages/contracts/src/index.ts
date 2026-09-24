@@ -39,7 +39,20 @@ export const requirementSchema = z.object({
   description: z.string(),
   required: z.boolean(),
   satisfied: z.boolean(),
-  sourceIds: z.array(z.string())
+  sourceIds: z.array(z.string()),
+  // Plain-language reason this is asked for / what happens without it. Optional:
+  // clients fall back to an honest generic explanation pointing at the sources.
+  why: z.string().max(600).optional()
+});
+
+// Whether a human at Visa With Ease has checked this country's data against
+// the official sources listed with it, and when. Absent/'unverified' means the
+// data is our best guidance but has NOT been confirmed against the official
+// source — clients must say so rather than imply it was.
+export const requirementsVerificationSchema = z.object({
+  status: z.enum(['verified', 'unverified']),
+  verifiedAt: z.string().nullable(),
+  verifiedBy: z.string().nullable()
 });
 
 export const requirementsResponseSchema = z.object({
@@ -48,13 +61,18 @@ export const requirementsResponseSchema = z.object({
   fees: z.string(),
   processingTime: z.string(),
   sourceUrls: z.array(z.object({ id: z.string(), label: z.string(), url: z.string() })),
-  freshness: z.object({ fetchedAt: z.string(), expiresAt: z.string(), ageHours: z.number() })
+  freshness: z.object({ fetchedAt: z.string(), expiresAt: z.string(), ageHours: z.number() }),
+  verification: requirementsVerificationSchema.optional()
 });
 
 // What a platform_admin submits from the web app's knowledge-base editor —
 // everything in a RequirementsResponse except freshness, which the server
 // always computes itself rather than trusting a client-supplied timestamp.
-export const requirementsOverrideSchema = requirementsResponseSchema.omit({ freshness: true });
+// `markVerified` is the admin's attestation that they checked this against the
+// listed official sources just now; the server stamps the time and who did it.
+export const requirementsOverrideSchema = requirementsResponseSchema
+  .omit({ freshness: true, verification: true })
+  .extend({ markVerified: z.boolean().optional() });
 
 export const applicationSchema = z.object({
   id: z.string(),

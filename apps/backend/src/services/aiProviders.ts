@@ -52,7 +52,14 @@ function buildRequirementsBlock(requirements?: RequirementsResponse | null): str
   const items = requirements.requirements
     .map((r) => `  - ${r.title} (${r.required ? 'required' : 'optional'}, currently ${r.satisfied ? 'satisfied' : 'missing'}): ${r.description}`)
     .join('\n');
-  return `\n\nReal visa requirements knowledge base for this destination (authoritative — do not invent requirements not listed here):
+  const v = requirements.verification;
+  const verifiedLine = v?.status === 'verified' && v.verifiedAt
+    ? `Verified against the official sources by the Visa With Ease team on ${v.verifiedAt.slice(0, 10)}.`
+    : 'NOT yet verified against the official source by the Visa With Ease team — present these as guidance and tell the user to confirm on the official site.';
+  const sources = requirements.sourceUrls.map((s) => `${s.label} (${s.url})`).join('; ');
+  return `
+
+Visa requirements knowledge base for this destination (do not invent requirements not listed here). ${verifiedLine}${sources ? ` Official sources: ${sources}.` : ''}
 - Fees: ${requirements.fees}
 - Processing time: ${requirements.processingTime}
 ${items}`;

@@ -9,7 +9,7 @@ import {
   createBooking as apiCreateBooking,
   createAccessGrant as apiCreateAccessGrant, fetchMyAccessGrants, revokeAccessGrant,
   fetchNotifications, markNotificationRead, fetchDocuments, fetchAuditResult, fetchExchangeRates,
-  createUploadSlot, enqueueAudit, fetchRequirements, fetchPartners,
+  createUploadSlot, enqueueAudit, fetchRequirements, verificationLabel, fetchPartners,
   fetchProfile, updateProfile,
   forgotPassword, verifyEmailOtp, sendVerificationEmail, fetchBookingSlots, fetchVisaWaiver,
   fetch2faStatus, send2faCode, verify2faCode, disable2fa, deleteAccount,
@@ -20,7 +20,7 @@ import {
   type ApiNotification, type ApiDocument, type ApiRequirement, type ApiMessage, type ApiConversationThread, type ApiAccessGrant,
 } from './src/api';
 import { GoogleSignin, statusCodes } from '@react-native-google-signin/google-signin';
-import { ActivityIndicator, Alert, Animated, Dimensions, Image, Keyboard, Linking, Platform, Pressable, ScrollView, StatusBar, StyleSheet, Text, TextInput, useWindowDimensions, View } from 'react-native';
+import { ActivityIndicator, Alert, Animated, BackHandler, Dimensions, Image, Keyboard, Linking, Platform, Pressable, ScrollView, StatusBar, StyleSheet, Text, TextInput, useWindowDimensions, View } from 'react-native';
 import { SafeAreaProvider, SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -251,6 +251,38 @@ function AppInner() {
     const hide = Keyboard.addListener(Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide', () => setKeyboardHeight(0));
     return () => { show.remove(); hide.remove(); };
   }, [insets.bottom]);
+  // Android back button / back gesture: walk back through the screens the user
+  // actually visited instead of closing the app from anywhere. Exits only from
+  // Home (or the start screen), like a normal app.
+  const routeHistory = useRef<Route[]>([]);
+  const previousRoute = useRef<Route>(route);
+  const navigatingBack = useRef(false);
+  useEffect(() => {
+    if (navigatingBack.current) { navigatingBack.current = false; previousRoute.current = route; return; }
+    const prev = previousRoute.current;
+    // Auth/transient screens never go on the stack: back from Home must not return to sign-in or a finished analysis.
+    const transient = ['splash', 'welcome', 'register', 'verify', 'forgotPassword', 'liveAnalysis', 'onboarding'];
+    if (prev !== route && !transient.includes(prev.name)) routeHistory.current = [...routeHistory.current.slice(-29), prev];
+    if (route.name === 'welcome') routeHistory.current = [];
+    previousRoute.current = route;
+  }, [route]);
+  useEffect(() => {
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (route.name === 'liveAnalysis') return true; // mid-upload: don't abandon it with a stray swipe
+      if (route.name === 'register' || route.name === 'forgotPassword') { setRoute({ name: 'welcome' }); return true; }
+      if (route.name === 'camera') { setRoute({ name: 'upload', state: 'select' }); return true; }
+      const prev = routeHistory.current[routeHistory.current.length - 1];
+      if (prev) {
+        routeHistory.current = routeHistory.current.slice(0, -1);
+        navigatingBack.current = true;
+        setRoute(prev);
+        return true;
+      }
+      if (route.name === 'tabs' && route.tab !== 'home') { setRoute({ name: 'tabs', tab: 'home' }); return true; }
+      return false; // Home / start screen: let Android close the app
+    });
+    return () => sub.remove();
+  }, [route]);
   const [loginError, setLoginError] = useState('');
   const [loginLoading, setLoginLoading] = useState(false);
   const [message, setMessage] = useState('');
@@ -1052,6 +1084,11 @@ function WelcomeScreen({
 
   const insets = useSafeAreaInsets();
   const { height: winH } = useWindowDimensions();
+  useEffect(() => {
+    if (!showForm) return;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => { setShowForm(false); return true; });
+    return () => sub.remove();
+  }, [showForm]);
 
   if (!showForm) {
     // ── Start screen: plain white, brand only — no illustrations ─────────
@@ -2063,7 +2100,8 @@ function RequirementsScreen({ back, openConsultants, destinationCountry }: { bac
 
   const fees: string | null = reqData?.fees ?? null;
   const processingTime: string | null = reqData?.processingTime ?? null;
-  const freshness = reqData?.freshness;
+  const provenance = reqData ? verificationLabel(reqData.verification) : null;
+  const [openWhy, setOpenWhy] = useState<string | null>(null);
   const reqList: any[] = reqData?.requirements ?? [];
   const sourceUrls: any[] = reqData?.sourceUrls ?? [];
 
@@ -2072,10 +2110,10 @@ function RequirementsScreen({ back, openConsultants, destinationCountry }: { bac
       <BackButton label="Home" onPress={back} />
       <Text style={styles.eyebrow}>Official-source intelligence</Text>
       <Text style={styles.title}>Visa requirements{destinationCountry ? ` — ${destinationCountry}` : ''}</Text>
-      {freshness && (
-        <View style={[styles.notice, { flexDirection: 'row', gap: 6, alignItems: 'center' }]}>
-          <Ionicons name="time-outline" size={14} color="#92400E" />
-          <Text style={[styles.noticeText, { flex: 1 }]}>Fetched {new Date(freshness.fetchedAt).toLocaleDateString()} · Expires {new Date(freshness.expiresAt).toLocaleDateString()} · {freshness.ageHours}h old</Text>
+      {provenance && (
+        <View style={[styles.notice, { flexDirection: 'row', gap: 6, alignItems: 'center' }, provenance.ok && { backgroundColor: '#ECFDF5', borderColor: '#A7F3D0' }]}>
+          <Ionicons name={provenance.ok ? 'checkmark-circle' : 'alert-circle-outline'} size={16} color={provenance.ok ? '#047857' : '#92400E'} />
+          <Text style={[styles.noticeText, { flex: 1 }, provenance.ok && { color: '#065F46' }]}>{provenance.text}</Text>
         </View>
       )}
       {loadError ? (
@@ -2097,7 +2135,21 @@ function RequirementsScreen({ back, openConsultants, destinationCountry }: { bac
           </Section>
           <Section title="Requirements checklist">
             {reqList.map((item: any) => (
-              <TaskRow key={item.id} title={item.title} meta={item.description} done={item.satisfied} />
+              <View key={item.id}>
+                <TaskRow title={item.title} meta={item.description} done={item.satisfied} />
+                <Pressable onPress={() => setOpenWhy(openWhy === item.id ? null : item.id)} style={{ paddingLeft: 4, paddingBottom: 6 }} accessibilityLabel={`Why is ${item.title} needed`}>
+                  <Text style={{ color: colors.royal600, fontWeight: '700', fontSize: 12 }}>{openWhy === item.id ? 'Hide' : 'Why is this needed?'}</Text>
+                </Pressable>
+                {openWhy === item.id && (
+                  <View style={{ backgroundColor: colors.slate50, borderRadius: 10, padding: 10, marginBottom: 8 }}>
+                    <Text style={styles.rowMeta}>{item.why ?? 'This is listed as required for this visa by the official sources below. Exact requirements can vary with your circumstances, so confirm on the official site.'}</Text>
+                    {!item.required && <Text style={[styles.rowMeta, { marginTop: 6 }]}>Marked optional — it can strengthen your application but isn't strictly required.</Text>}
+                    {(item.sourceIds ?? []).map((sid: string) => sourceUrls.find((s: any) => s.id === sid)).filter(Boolean).map((s: any) => (
+                      <Pressable key={s.id} onPress={() => openUrlSafely(s.url)}><Text style={{ color: colors.royal600, fontWeight: '700', fontSize: 12, marginTop: 6 }}>Source: {s.label}</Text></Pressable>
+                    ))}
+                  </View>
+                )}
+              </View>
             ))}
             {reqList.length === 0 && <Text style={styles.rowMeta}>No requirements data available.</Text>}
           </Section>
@@ -2118,7 +2170,7 @@ function RequirementsScreen({ back, openConsultants, destinationCountry }: { bac
         </Section>
       )}
       <View style={styles.disclaimer}>
-        <Text style={styles.disclaimerText}>Requirements sourced from official embassy sites and refreshed every 24h. Always verify before applying.</Text>
+        <Text style={styles.disclaimerText}>Guidance compiled from the official sources listed above. Requirements change and vary by applicant — always confirm on the official site before applying.</Text>
       </View>
       <Pressable style={styles.goldButton} onPress={openConsultants}><Text style={styles.primaryButtonText}>Ask a verified consultant</Text></Pressable>
     </View>

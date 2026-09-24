@@ -136,6 +136,23 @@ export interface ApiRequirement {
   required: boolean;
   satisfied: boolean;
   sourceIds: string[];
+  why?: string;
+}
+export interface ApiRequirementsVerification {
+  status: 'verified' | 'unverified';
+  verifiedAt: string | null;
+  verifiedBy: string | null;
+}
+/** Honest provenance line: whether a person at Visa With Ease checked this against the official source, and when. */
+export function verificationLabel(v?: ApiRequirementsVerification): { text: string; ok: boolean } {
+  if (v?.status === 'verified' && v.verifiedAt) {
+    const days = Math.floor((Date.now() - Date.parse(v.verifiedAt)) / 86_400_000);
+    const when = new Date(v.verifiedAt).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
+    return days > 90
+      ? { text: `Last verified ${when} — over 3 months ago, confirm on the official site`, ok: false }
+      : { text: `Verified by Visa With Ease on ${when}`, ok: true };
+  }
+  return { text: 'Not yet verified against the official source — guidance only, confirm on the official site', ok: false };
 }
 export interface ApiRequirementsResponse {
   coverageStatus: string;
@@ -144,6 +161,7 @@ export interface ApiRequirementsResponse {
   processingTime: string;
   sourceUrls: { id: string; label: string; url: string }[];
   freshness: { fetchedAt: string; expiresAt: string; ageHours: number };
+  verification?: ApiRequirementsVerification;
 }
 export function fetchRequirements(destinationCountry?: string) {
   const qs = destinationCountry ? `?country=${encodeURIComponent(destinationCountry)}` : '';

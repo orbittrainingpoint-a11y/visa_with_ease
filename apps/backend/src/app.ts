@@ -638,7 +638,15 @@ export function createApp(services: Services = createServices()) {
       if (!COUNTRY_NAME_RE.test(country)) {
         return res.status(400).json({ error: { code: 'INVALID_PARAM', message: 'Invalid country name' } });
       }
-      const result = await services.requirements.setCountryOverride(country, req.body);
+      // The server, not the client, stamps verification: only an explicit
+      // markVerified from a platform_admin records "checked against the official
+      // sources by <admin> on <now>"; otherwise the previous stamp (if any) is
+      // kept, so editing a typo doesn't silently re-verify or un-verify a country.
+      const { markVerified, ...body } = req.body as typeof req.body & { markVerified?: boolean };
+      const previous = (await services.requirements.listCountryOverrides())[country]?.verification;
+      const verifiedAt = markVerified ? new Date().toISOString() : previous?.verifiedAt ?? null;
+      const verifiedBy = markVerified ? (req.user!.email ?? req.user!.uid) : previous?.verifiedBy ?? null;
+      const result = await services.requirements.setCountryOverride(country, { ...body, verifiedAt, verifiedBy });
       await appendAuditLog({ actor: req.user!.email ?? req.user!.uid, action: 'UPDATE_KNOWLEDGE_BASE', resource: country, ip: req.ip ?? '?' });
       res.json({ country, requirements: result });
     } catch (err) {

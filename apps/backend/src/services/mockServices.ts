@@ -1,4 +1,5 @@
 import { applications, getRequirementsForCountry } from '@visaiq/mock-data';
+import { toClientRequirements, type RequirementsOverrideData } from './verification.js';
 import type { AccessGrantRequest, RequirementsResponse } from '@visaiq/contracts';
 import jwt from 'jsonwebtoken';
 import { createAiProvider } from './aiProviders.js';
@@ -44,7 +45,7 @@ const sessionOptions = [
 // built-in default for that country — this is what lets a platform_admin
 // add or correct a country's visa requirements from the web app without a
 // code deploy.
-const countryOverrides = new Map<string, Omit<RequirementsResponse, 'freshness'>>();
+const countryOverrides = new Map<string, RequirementsOverrideData>();
 
 function currentRequirements(country?: string) {
   const fetchedAt = new Date(Date.now() - 2 * 60 * 1000); // 2 minutes ago (freshly computed)
@@ -52,7 +53,7 @@ function currentRequirements(country?: string) {
   const ageHours = Math.round((Date.now() - fetchedAt.getTime()) / 3600000 * 10) / 10;
   const override = country ? countryOverrides.get(country) : undefined;
   return {
-    ...(override ?? getRequirementsForCountry(country)),
+    ...(override ? toClientRequirements(override) : getRequirementsForCountry(country)),
     freshness: {
       fetchedAt: fetchedAt.toISOString(),
       expiresAt: expiresAt.toISOString(),
@@ -201,7 +202,7 @@ export function createMockServices(): Services {
     },
     async listCountryOverrides() {
       const out: Record<string, RequirementsResponse> = {};
-      for (const [country, data] of countryOverrides) out[country] = currentRequirements(country) as RequirementsResponse & typeof data;
+      for (const [country, data] of countryOverrides) out[country] = currentRequirements(country) as RequirementsResponse;
       return out;
     },
     async setCountryOverride(country, data) {

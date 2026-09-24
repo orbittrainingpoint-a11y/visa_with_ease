@@ -9,6 +9,7 @@ import type {
   VisaApplication,
   VisaContext
 } from '@visaiq/contracts';
+import type { RequirementsOverrideData } from './verification.js';
 
 export type HealthStatus = 'configured' | 'mock';
 
@@ -68,7 +69,7 @@ export interface RequirementsCache {
   listCountryOverrides(): Promise<Record<string, RequirementsResponse>>;
   /** Create or replace the admin-managed data for one country. Takes effect
    *  immediately for both the mobile app and web app — no deploy needed. */
-  setCountryOverride(country: string, data: Omit<RequirementsResponse, 'freshness'>): Promise<RequirementsResponse>;
+  setCountryOverride(country: string, data: RequirementsOverrideData): Promise<RequirementsResponse>;
   /** Remove a country's override, reverting it to the built-in default. */
   deleteCountryOverride(country: string): Promise<void>;
   health(): HealthStatus;

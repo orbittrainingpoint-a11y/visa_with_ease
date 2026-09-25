@@ -217,6 +217,26 @@ export function createBooking(body: {
   return request<ApiBooking>('POST', '/bookings', body);
 }
 
+/** One of the signed-in user's own appointments, with the consultant and destination already joined in. */
+export interface ApiMyBooking {
+  bookingId: string;
+  status: string;
+  consultantId: string;
+  consultantName: string;
+  consultantSpecialty: string;
+  applicationId: string;
+  destinationCountry: string | null;
+  sessionType: string;
+  slotISO: string | null;
+  createdAt: string;
+}
+export function fetchMyBookings() {
+  return request<{ bookings: ApiMyBooking[] }>('GET', '/bookings');
+}
+export function cancelMyBooking(bookingId: string) {
+  return request<{ bookingId: string; status: string }>('POST', `/bookings/${encodeURIComponent(bookingId)}/cancel`, {});
+}
+
 // ── Access grants ────────────────────────────────────────────────────────────
 export function createAccessGrant(body: {
   applicationId: string;

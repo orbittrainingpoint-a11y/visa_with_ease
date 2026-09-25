@@ -112,6 +112,39 @@ test('POST /chat — without an applicationId it still answers about the caller 
   assert.match(body.reply, /France/, 'grounded in the caller own France application, not a generic reply');
 });
 
+test('Bookings — list is scoped to the caller, cancel frees the slot, others cannot cancel', async () => {
+  const reg = async (tag: string) => {
+    const r = await post('/auth/register', { name: `Book ${tag}`, email: `book-${tag}-${Date.now()}@example.com`, password: 'Sup3rSecret!x' });
+    assert.equal(r.res.status, 201);
+    return r.body.token as string;
+  };
+  const alice = await reg('a');
+  const bob = await reg('b');
+  const app1 = await post('/applications', { destinationCountry: 'France', visaType: 'schengen-tourist', intendedFrom: '2026-12-01' }, alice);
+  const slotISO = '2027-03-10T06:00:00.000Z'; // 10:00 AM GST
+  const made = await post('/bookings', { consultantId: 'c-priya', applicationId: app1.body.application.id, sessionType: 'standard', slotISO }, alice);
+  assert.equal(made.res.status, 201);
+
+  const mineA = await get('/bookings', alice);
+  assert.equal(mineA.res.status, 200);
+  assert.equal(mineA.body.bookings.length, 1);
+  assert.equal(mineA.body.bookings[0].consultantName, 'Priya Sharma');
+  assert.equal(mineA.body.bookings[0].destinationCountry, 'France');
+  assert.equal((await get('/bookings', bob)).body.bookings.length, 0, 'another user sees none of the first user bookings');
+  assert.equal((await get('/bookings')).res.status, 401);
+
+  const taken = await get('/booking/slots/c-priya?date=2027-03-10');
+  assert.ok(taken.body.takenSlots.includes('10:00 AM'), 'booked slot is taken');
+
+  assert.equal((await post(`/bookings/${made.body.bookingId}/cancel`, {}, bob)).res.status, 404, 'cannot cancel another user booking');
+  const cancelled = await post(`/bookings/${made.body.bookingId}/cancel`, {}, alice);
+  assert.equal(cancelled.res.status, 200);
+  assert.equal(cancelled.body.status, 'cancelled');
+  assert.equal((await get('/bookings', alice)).body.bookings[0].status, 'cancelled');
+  const freed = await get('/booking/slots/c-priya?date=2027-03-10');
+  assert.ok(!freed.body.takenSlots.includes('10:00 AM'), 'cancelling frees the slot');
+});
+
 test('POST /auth/register — password too short returns 400', async () => {
   const { res, body } = await post('/auth/register', {
     name: 'Test User', email: 'test@example.com', password: 'short'

@@ -89,6 +89,8 @@ export interface ConsultantService {
    *  CRM view. Not scoped to one consultant: the product has no per-consultant
    *  login identity yet, so the console shows the platform-wide real queue. */
   listBookings(): Promise<Array<{ bookingId: string; status: string; consultantId: string; applicationId: string; sessionType: string; userId: string; createdAt: string; slotISO?: string }>>;
+  /** Cancels one of the caller's own bookings. 'not_found' covers both an unknown id and someone else's booking. */
+  cancelBooking(bookingId: string, userId: string): Promise<'cancelled' | 'already_cancelled' | 'not_found'>;
   getConsole(): Promise<{ queue: Array<{ id: string; applicant: string; destination: string; urgency: string; sharedCategories: string[] }>; conversations: Array<{ id: string; applicant: string; lastMessage: string; status: string }>; crm: Array<{ label: string; value: string }> }>;
   /** `user` scopes the view to the calling HR admin's own company (their own
    *  profile.employment.employer) — without it, every hr_admin saw every

@@ -738,6 +738,50 @@ export function createApp(services: Services = createServices()) {
     }
   });
 
+  // The caller's own appointments, newest first, with the consultant's name and the
+  // application's destination joined in so a client can render a card without extra calls.
+  app.get('/bookings', requireAuth, async (req, res, next) => {
+    try {
+      const uid = req.user!.uid;
+      const [all, apps] = await Promise.all([services.consultants.listBookings(), services.applications.listApplications(uid)]);
+      const mine = all.filter((b) => b.userId === uid);
+      const appById = new Map(apps.map((a) => [a.id, a]));
+      const consultantIds = [...new Set(mine.map((b) => b.consultantId))];
+      const consultants = new Map<string, { name: string; specialty: string } | null>();
+      await Promise.all(consultantIds.map(async (id) => {
+        const c = await services.consultants.getConsultant(id);
+        consultants.set(id, c ? { name: c.name, specialty: c.specialty } : null);
+      }));
+      res.json({
+        bookings: mine.map((b) => ({
+          bookingId: b.bookingId,
+          status: b.status,
+          consultantId: b.consultantId,
+          consultantName: consultants.get(b.consultantId)?.name ?? 'Consultant',
+          consultantSpecialty: consultants.get(b.consultantId)?.specialty ?? '',
+          applicationId: b.applicationId,
+          destinationCountry: appById.get(b.applicationId)?.destinationCountry ?? null,
+          sessionType: b.sessionType,
+          slotISO: b.slotISO ?? null,
+          createdAt: b.createdAt
+        }))
+      });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  app.post('/bookings/:bookingId/cancel', requireAuth, async (req, res, next) => {
+    try {
+      const result = await services.consultants.cancelBooking(req.params.bookingId as string, req.user!.uid);
+      if (result === 'not_found') throw notFound('Booking not found');
+      await appendAuditLog({ actor: req.user!.email ?? req.user!.uid, action: 'CANCEL_BOOKING', resource: req.params.bookingId as string, ip: req.ip ?? '?' });
+      res.json({ bookingId: req.params.bookingId, status: 'cancelled' });
+    } catch (err) {
+      next(err);
+    }
+  });
+
   // Real, fixed slot menu — matches apps/mobile/App.tsx's SLOTS_AM/SLOTS_PM
   // exactly (label format included: "9:00 AM", no leading zero). There's no
   // real per-consultant calendar system (Calendly is only referenced as a
@@ -767,7 +811,7 @@ export function createApp(services: Services = createServices()) {
         : gstDateKeyAndLabel(new Date().toISOString())?.dateKey ?? new Date().toISOString().slice(0, 10);
       const bookings = await services.consultants.listBookings();
       const takenSlots = bookings
-        .filter((b) => b.consultantId === consultantId && b.slotISO)
+        .filter((b) => b.consultantId === consultantId && b.slotISO && b.status !== 'cancelled')
         .map((b) => gstDateKeyAndLabel(b.slotISO!))
         .filter((parsed): parsed is { dateKey: string; label: string } => !!parsed && parsed.dateKey === requestedDate)
         .map((parsed) => parsed.label);

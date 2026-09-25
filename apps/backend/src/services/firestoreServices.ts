@@ -260,6 +260,14 @@ export function createFirestoreServices(db: Firestore): Services {
       await db.collection('bookings').doc(bookingId).set(record);
       return { bookingId, status: 'pending_calendly', calendlyUrl: 'https://calendly.com/visawithease', ...input };
     },
+    async cancelBooking(bookingId, userId) {
+      const ref = db.collection('bookings').doc(bookingId);
+      const doc = await ref.get();
+      if (!doc.exists || (doc.data() as { userId?: string }).userId !== userId) return 'not_found';
+      if ((doc.data() as { status?: string }).status === 'cancelled') return 'already_cancelled';
+      await ref.update({ status: 'cancelled' });
+      return 'cancelled';
+    },
     async listBookings() {
       const snap = await db.collection('bookings').orderBy('createdAt', 'desc').get();
       return snap.docs.map((d) => d.data() as { bookingId: string; status: string; consultantId: string; applicationId: string; sessionType: string; userId: string; createdAt: string; slotISO?: string });

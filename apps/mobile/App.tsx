@@ -9,6 +9,7 @@ import {
   createBooking as apiCreateBooking,
   createAccessGrant as apiCreateAccessGrant, fetchMyAccessGrants, revokeAccessGrant,
   fetchNotifications, markNotificationRead, fetchDocuments, fetchAuditResult, fetchExchangeRates,
+  fetchMyBookings, cancelMyBooking, type ApiMyBooking,
   createUploadSlot, enqueueAudit, fetchRequirements, verificationLabel, fetchPartners,
   fetchProfile, updateProfile,
   forgotPassword, verifyEmailOtp, sendVerificationEmail, fetchBookingSlots, fetchVisaWaiver,
@@ -103,6 +104,7 @@ const tabs = [
   { id: 'home',    label: 'Home',    icon: 'home'                as IoniconName, iconOff: 'home-outline'                as IoniconName },
   { id: 'apps',    label: 'Apps',    icon: 'document-text'       as IoniconName, iconOff: 'document-text-outline'       as IoniconName },
   { id: 'docs',    label: 'Docs',    icon: 'folder'              as IoniconName, iconOff: 'folder-outline'              as IoniconName },
+  { id: 'bookings', label: 'Bookings', icon: 'calendar'           as IoniconName, iconOff: 'calendar-outline'           as IoniconName },
   { id: 'chat',    label: 'Chat',    icon: 'chatbubble-ellipses' as IoniconName, iconOff: 'chatbubble-ellipses-outline' as IoniconName },
   { id: 'profile', label: 'Profile', icon: 'person'              as IoniconName, iconOff: 'person-outline'              as IoniconName },
 ] as const;
@@ -353,7 +355,7 @@ function AppInner() {
     });
   }, []);
 
-  const activeTab = route.name === 'tabs' ? route.tab : route.name === 'howTo' ? 'profile' : route.name === 'application' ? 'apps' : route.name === 'newApp' ? 'apps' : route.name === 'upload' ? 'docs' : 'home';
+  const activeTab = route.name === 'tabs' ? route.tab : route.name === 'howTo' ? 'profile' : ['consultants', 'consultant', 'booking', 'calendarPicker', 'consent', 'confirmation'].includes(route.name) ? 'bookings' : route.name === 'application' ? 'apps' : route.name === 'newApp' ? 'apps' : route.name === 'upload' ? 'docs' : 'home';
   const isChatRoute = route.name === 'tabs' && route.tab === 'chat';
   // Tab bar hides while the keyboard is up: it would otherwise sit between the
   // keyboard and the field/button being typed into, eating a fifth of the
@@ -370,6 +372,10 @@ function AppInner() {
     const { y, viewH, contentH } = mainScroll.current;
     setCanScrollDown(contentH > viewH + 24 && y + viewH < contentH - 24);
   }, []);
+
+  useEffect(() => {
+    if (authUser && route.name === 'tabs' && route.tab === 'bookings') void loadBookings();
+  }, [route.name === 'tabs' && route.tab === 'bookings', authUser?.uid]);
 
   const goHome = () => setRoute({ name: 'tabs', tab: 'home' });
   const goChat = () => setRoute({ name: 'tabs', tab: 'chat' });
@@ -417,7 +423,7 @@ function AppInner() {
     } finally {
       setLoadingApps(false);
     }
-    void Promise.all([loadConsultants(), loadSessionOpts(), loadNotifications(), loadDocuments(firstAppId)]);
+    void Promise.all([loadConsultants(), loadSessionOpts(), loadNotifications(), loadDocuments(firstAppId), loadBookings()]);
   }, []);
 
   // Registers this device for real push notifications once signed in.
@@ -466,6 +472,24 @@ function AppInner() {
       setLoadNotificationsError(e?.message ?? 'Failed to load notifications.');
     }
   };
+
+  const [myBookings, setMyBookings] = useState<ApiMyBooking[]>([]);
+  const [bookingsLoading, setBookingsLoading] = useState(false);
+  const [bookingsError, setBookingsError] = useState('');
+  const loadBookings = async () => {
+    setBookingsLoading(true);
+    setBookingsError('');
+    try {
+      const { bookings } = await fetchMyBookings();
+      setMyBookings(bookings);
+    } catch (e: any) {
+      setBookingsError(e?.message ?? 'Could not load your appointments.');
+    } finally {
+      setBookingsLoading(false);
+    }
+  };
+  // When a reschedule is confirmed, the old appointment is cancelled only after the new one exists.
+  const rescheduleOf = useRef<string | null>(null);
 
   const loadDocuments = async (applicationId?: string) => {
     setLoadDocumentsError('');
@@ -531,6 +555,11 @@ function AppInner() {
         });
       }
       setLastBooking(booking);
+      if (rescheduleOf.current) {
+        try { await cancelMyBooking(rescheduleOf.current); } catch { /* the old appointment can still be cancelled from Bookings */ }
+        rescheduleOf.current = null;
+      }
+      void loadBookings();
       setRoute({ name: 'confirmation', consultantId });
     } catch (err) {
       Alert.alert('Could not confirm booking', err instanceof Error ? err.message : 'Please check your connection and try again.');
@@ -757,6 +786,28 @@ function AppInner() {
             openFaceVerification={() => setRoute({ name: 'faceVerification' })}
             newApplication={() => setRoute({ name: 'newApp', step: 0 })}
             retryLoad={loadApplications}
+            nextBooking={myBookings.filter((b) => b.status !== 'cancelled' && b.slotISO && new Date(b.slotISO).getTime() > Date.now()).sort((x, y) => x.slotISO!.localeCompare(y.slotISO!))[0] ?? null}
+            openBookings={() => setRoute({ name: 'tabs', tab: 'bookings' })}
+          />
+        )}
+        {route.name === 'tabs' && route.tab === 'bookings' && (
+          <BookingsScreen
+            bookings={myBookings}
+            loading={bookingsLoading}
+            error={bookingsError}
+            retry={loadBookings}
+            sessionOpts={sessionOpts}
+            findConsultant={() => { rescheduleOf.current = null; setRoute({ name: 'consultants' }); }}
+            openConsultant={(id) => { rescheduleOf.current = null; setRoute({ name: 'consultant', id }); }}
+            reschedule={(b) => { rescheduleOf.current = b.bookingId; setRoute({ name: 'calendarPicker', consultantId: b.consultantId, optionId: b.sessionType }); }}
+            cancelBooking={async (b) => {
+              try {
+                await cancelMyBooking(b.bookingId);
+                await loadBookings();
+              } catch (e: any) {
+                Alert.alert('Could not cancel', e?.message ?? 'Please check your connection and try again.');
+              }
+            }}
           />
         )}
         {route.name === 'tabs' && route.tab === 'apps' && (
@@ -942,6 +993,7 @@ function AppInner() {
             done={goHome}
             score={appList[0]?.readinessScore ?? 0}
             openPartners={() => setRoute({ name: 'ecosystemPartners', score: appList[0]?.readinessScore ?? 0 })}
+            openBookings={() => setRoute({ name: 'tabs', tab: 'bookings' })}
           />
         )}
         {route.name === 'ecosystemPartners' && <EcosystemPartnersScreen back={goHome} score={route.score} />}
@@ -1270,7 +1322,9 @@ function ForgotPasswordScreen({ back }: { back: () => void }) {
 // Banner slides on Home. Each promotes something the app really does and jumps to it.
 type DashboardBanner = { id: string; eyebrow: string; title: string; body: string; cta: string; colors: [string, string]; icon: IoniconName };
 
-function DashboardScreen({ appList, loadingApps, loadAppsError, userName, openApplication, openUpload, openAnalysis, openRequirements, openChat, openConsultants, openCalculator, openFaceVerification, newApplication, retryLoad }: {
+function DashboardScreen({ appList, loadingApps, loadAppsError, userName, openApplication, openUpload, openAnalysis, openRequirements, openChat, openConsultants, openCalculator, openFaceVerification, newApplication, retryLoad, nextBooking, openBookings }: {
+  nextBooking: ApiMyBooking | null;
+  openBookings: () => void;
   appList: ReturnType<typeof normalizeApp>[];
   loadingApps: boolean;
   loadAppsError?: string;
@@ -1419,6 +1473,24 @@ function DashboardScreen({ appList, loadingApps, loadAppsError, userName, openAp
           </Pressable>
         </View>
       )}
+
+      {/* Next appointment — only when a real, future, non-cancelled booking exists */}
+      {nextBooking && (() => {
+        const slot = formatSlot(nextBooking.slotISO);
+        return (
+          <Pressable onPress={openBookings} accessibilityLabel="Next appointment" style={{ backgroundColor: colors.navy900, borderRadius: 18, padding: 16, flexDirection: 'row', alignItems: 'center', gap: 14 }}>
+            <View style={{ width: 46, height: 46, borderRadius: 14, backgroundColor: 'rgba(255,255,255,0.12)', alignItems: 'center', justifyContent: 'center' }}>
+              <Ionicons name="calendar" size={22} color="#fff" />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={{ color: 'rgba(255,255,255,0.65)', fontSize: 11, fontWeight: '800', letterSpacing: 0.8, textTransform: 'uppercase' }}>Next appointment · {relativeSlot(nextBooking.slotISO)}</Text>
+              <Text style={{ color: '#fff', fontWeight: '900', fontSize: 15, marginTop: 2 }} numberOfLines={1}>{nextBooking.consultantName}</Text>
+              <Text style={{ color: 'rgba(255,255,255,0.8)', fontSize: 12.5 }}>{slot ? `${slot.day} · ${slot.time}` : ''}</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color="rgba(255,255,255,0.6)" />
+          </Pressable>
+        );
+      })()}
 
       {/* Book a consultant */}
       <View style={{ backgroundColor: colors.white, borderRadius: 18, borderWidth: 1, borderColor: colors.slate100, padding: 16, flexDirection: 'row', alignItems: 'center', gap: 14 }}>
@@ -2965,7 +3037,8 @@ function ConsentScreen({ consultantId, optionId, back, confirm }: {
   );
 }
 
-function ConfirmationScreen({ consultantId, consultantList, booking, done, score, openPartners }: {
+function ConfirmationScreen({ consultantId, consultantList, booking, done, score, openPartners, openBookings }: {
+  openBookings?: () => void;
   consultantId: string;
   consultantList: ReturnType<typeof normalizeConsultant>[];
   booking: ApiBooking | null;
@@ -3048,7 +3121,8 @@ function ConfirmationScreen({ consultantId, consultantList, booking, done, score
         </View>
       )}
 
-      <Pressable style={styles.primaryButton} onPress={done}><Text style={styles.primaryButtonText}>Back to dashboard</Text></Pressable>
+      {openBookings && <Pressable style={styles.primaryButton} onPress={openBookings}><Text style={styles.primaryButtonText}>View my bookings</Text></Pressable>}
+      <Pressable style={[styles.secondaryButton, { marginTop: 10 }]} onPress={done}><Text style={styles.secondaryButtonText}>Back to dashboard</Text></Pressable>
     </View>
   );
 }
@@ -5986,6 +6060,168 @@ function HowToUseScreen({ back, startTour }: { back: () => void; startTour: () =
           );
         })}
       </Section>
+    </View>
+  );
+}
+
+// ─── Bookings tab ─────────────────────────────────────────────────────────────
+function formatSlot(slotISO: string | null): { day: string; time: string } | null {
+  if (!slotISO) return null;
+  const d = new Date(slotISO);
+  if (isNaN(d.getTime())) return null;
+  return {
+    day: d.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' }),
+    time: d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }),
+  };
+}
+
+function relativeSlot(slotISO: string | null): string {
+  if (!slotISO) return 'Time to be confirmed';
+  const ms = new Date(slotISO).getTime() - Date.now();
+  if (ms < 0) return 'Completed';
+  const mins = Math.round(ms / 60000);
+  if (mins < 60) return `Starts in ${mins} min`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `In ${hours} hour${hours === 1 ? '' : 's'}`;
+  const days = Math.round(hours / 24);
+  return days === 1 ? 'Tomorrow' : `In ${days} days`;
+}
+
+function BookingCard({ booking, sessionLabel, onCancel, onReschedule, onOpenConsultant, cancelling }: {
+  booking: ApiMyBooking;
+  sessionLabel: string;
+  onCancel?: () => void;
+  onReschedule?: () => void;
+  onOpenConsultant: () => void;
+  cancelling?: boolean;
+}) {
+  const slot = formatSlot(booking.slotISO);
+  const cancelled = booking.status === 'cancelled';
+  const past = !cancelled && !!booking.slotISO && new Date(booking.slotISO).getTime() < Date.now();
+  const tone = cancelled ? { bg: '#FEE2E2', fg: '#B91C1C', label: 'Cancelled' }
+    : past ? { bg: colors.slate100, fg: colors.slate600, label: 'Completed' }
+      : slot ? { bg: '#DCFCE7', fg: '#15803D', label: 'Booked' }
+        : { bg: '#FEF3C7', fg: '#B45309', label: 'Awaiting time' };
+  return (
+    <View style={{ backgroundColor: colors.white, borderRadius: 18, borderWidth: 1, borderColor: colors.slate100, padding: 14, gap: 12, opacity: cancelled ? 0.75 : 1 }}>
+      <View style={{ flexDirection: 'row', gap: 12, alignItems: 'center' }}>
+        <View style={{ width: 52, borderRadius: 14, backgroundColor: colors.royal50, alignItems: 'center', paddingVertical: 8 }}>
+          <Text style={{ color: colors.royal600, fontSize: 11, fontWeight: '800', textTransform: 'uppercase' }}>{slot ? slot.day.split(' ')[0] : '—'}</Text>
+          <Text style={{ color: colors.navy900, fontSize: 20, fontWeight: '900' }}>{slot ? slot.day.split(' ')[1] : '?'}</Text>
+        </View>
+        <View style={{ flex: 1 }}>
+          <Text style={{ color: colors.slate900, fontWeight: '800', fontSize: 15 }} numberOfLines={1}>{booking.consultantName}</Text>
+          <Text style={{ color: colors.slate500, fontSize: 12.5 }} numberOfLines={1}>{sessionLabel}{booking.destinationCountry ? ` · ${booking.destinationCountry}` : ''}</Text>
+          <Text style={{ color: colors.slate700, fontSize: 12.5, fontWeight: '700', marginTop: 2 }}>{slot ? `${slot.day} · ${slot.time}` : 'Time to be confirmed'}</Text>
+        </View>
+        <View style={{ backgroundColor: tone.bg, paddingHorizontal: 9, paddingVertical: 4, borderRadius: 10 }}>
+          <Text style={{ color: tone.fg, fontSize: 11, fontWeight: '800' }}>{tone.label}</Text>
+        </View>
+      </View>
+      {!cancelled && !past && <Text style={{ color: colors.royal600, fontSize: 12, fontWeight: '800' }}>{relativeSlot(booking.slotISO)}</Text>}
+      <View style={{ flexDirection: 'row', gap: 8 }}>
+        <Pressable onPress={onOpenConsultant} style={{ flex: 1, alignItems: 'center', paddingVertical: 10, borderRadius: 12, backgroundColor: colors.slate50, borderWidth: 1, borderColor: colors.slate100 }} accessibilityLabel={`View ${booking.consultantName}`}>
+          <Text style={{ color: colors.slate700, fontWeight: '700', fontSize: 13 }}>{cancelled || past ? 'Book again' : 'View expert'}</Text>
+        </Pressable>
+        {onReschedule && (
+          <Pressable onPress={onReschedule} style={{ flex: 1, alignItems: 'center', paddingVertical: 10, borderRadius: 12, backgroundColor: colors.royal50 }} accessibilityLabel="Reschedule appointment">
+            <Text style={{ color: colors.royal600, fontWeight: '800', fontSize: 13 }}>Reschedule</Text>
+          </Pressable>
+        )}
+        {onCancel && (
+          <Pressable onPress={onCancel} disabled={cancelling} style={{ flex: 1, alignItems: 'center', paddingVertical: 10, borderRadius: 12, backgroundColor: '#FEF2F2', opacity: cancelling ? 0.5 : 1 }} accessibilityLabel="Cancel appointment">
+            {cancelling ? <ActivityIndicator size="small" color="#B91C1C" /> : <Text style={{ color: '#B91C1C', fontWeight: '800', fontSize: 13 }}>Cancel</Text>}
+          </Pressable>
+        )}
+      </View>
+    </View>
+  );
+}
+
+function BookingsScreen({ bookings, loading, error, retry, sessionOpts, findConsultant, openConsultant, reschedule, cancelBooking }: {
+  bookings: ApiMyBooking[];
+  loading: boolean;
+  error: string;
+  retry: () => void;
+  sessionOpts: ReturnType<typeof normalizeSessionOption>[];
+  findConsultant: () => void;
+  openConsultant: (consultantId: string) => void;
+  reschedule: (booking: ApiMyBooking) => void;
+  cancelBooking: (booking: ApiMyBooking) => Promise<void>;
+}) {
+  const [cancellingId, setCancellingId] = useState<string | null>(null);
+  const [filter, setFilter] = useState<'upcoming' | 'past'>('upcoming');
+  const now = Date.now();
+  const isPast = (b: ApiMyBooking) => b.status === 'cancelled' || (!!b.slotISO && new Date(b.slotISO).getTime() < now);
+  const upcoming = bookings.filter((b) => !isPast(b)).sort((a, b) => (a.slotISO ?? '9').localeCompare(b.slotISO ?? '9'));
+  const past = bookings.filter(isPast).sort((a, b) => (b.slotISO ?? b.createdAt).localeCompare(a.slotISO ?? a.createdAt));
+  const shown = filter === 'upcoming' ? upcoming : past;
+  const labelFor = (id: string) => sessionOpts.find((o) => o.id === id)?.title ?? id;
+
+  const confirmCancel = (b: ApiMyBooking) => {
+    const slot = formatSlot(b.slotISO);
+    Alert.alert('Cancel this appointment?', `${b.consultantName}${slot ? ` · ${slot.day}, ${slot.time}` : ''}\n\nThe time will be released for others.`, [
+      { text: 'Keep it', style: 'cancel' },
+      { text: 'Cancel appointment', style: 'destructive', onPress: async () => { setCancellingId(b.bookingId); try { await cancelBooking(b); } finally { setCancellingId(null); } } },
+    ]);
+  };
+
+  return (
+    <View style={{ gap: 14 }}>
+      <View style={styles.titleRow}>
+        <View style={styles.flex}>
+          <Text style={styles.eyebrow}>Appointments</Text>
+          <Text style={[styles.title, { marginBottom: 0 }]}>My bookings</Text>
+        </View>
+        <Pressable style={styles.smallButton} onPress={findConsultant} accessibilityLabel="Book a new appointment">
+          <Ionicons name="add" size={16} color="#fff" />
+          <Text style={styles.smallButtonText}>Book</Text>
+        </Pressable>
+      </View>
+
+      <View style={{ flexDirection: 'row', backgroundColor: colors.slate100, borderRadius: 14, padding: 4 }}>
+        {([['upcoming', `Upcoming${upcoming.length ? ` (${upcoming.length})` : ''}`], ['past', 'Past & cancelled']] as const).map(([id, label]) => (
+          <Pressable key={id} onPress={() => setFilter(id)} style={{ flex: 1, alignItems: 'center', paddingVertical: 9, borderRadius: 11, backgroundColor: filter === id ? colors.white : 'transparent' }}>
+            <Text style={{ color: filter === id ? colors.navy900 : colors.slate500, fontWeight: '800', fontSize: 13 }}>{label}</Text>
+          </Pressable>
+        ))}
+      </View>
+
+      {loading && bookings.length === 0 && <View style={{ padding: 30, alignItems: 'center' }}><ActivityIndicator size="large" color={colors.royal600} /></View>}
+
+      {!!error && (
+        <View style={{ backgroundColor: '#FEF2F2', borderRadius: 14, borderWidth: 1, borderColor: '#FECACA', padding: 16, alignItems: 'center', gap: 10 }}>
+          <Ionicons name="alert-circle-outline" size={26} color="#DC2626" />
+          <Text style={{ color: '#991B1B', fontWeight: '700', textAlign: 'center' }}>{error}</Text>
+          <Pressable style={[styles.smallButton, { backgroundColor: '#DC2626' }]} onPress={retry}><Text style={[styles.smallButtonText, { color: '#fff' }]}>Retry</Text></Pressable>
+        </View>
+      )}
+
+      {!loading && !error && shown.length === 0 && (
+        <View style={{ alignItems: 'center', gap: 10, paddingVertical: 30, backgroundColor: colors.white, borderRadius: 18, borderWidth: 1, borderColor: colors.slate100 }}>
+          <View style={{ width: 64, height: 64, borderRadius: 32, backgroundColor: colors.royal50, alignItems: 'center', justifyContent: 'center' }}>
+            <Ionicons name="calendar-outline" size={30} color={colors.royal600} />
+          </View>
+          <Text style={{ color: colors.slate900, fontWeight: '900', fontSize: 16 }}>{filter === 'upcoming' ? 'No upcoming appointments' : 'Nothing here yet'}</Text>
+          <Text style={{ color: colors.slate500, textAlign: 'center', fontSize: 13, paddingHorizontal: 28, lineHeight: 19 }}>
+            {filter === 'upcoming' ? 'Book a verified consultant to review your documents and your case.' : 'Completed and cancelled appointments will appear here.'}
+          </Text>
+          {filter === 'upcoming' && <Pressable style={[styles.primaryButton, { marginTop: 4, paddingHorizontal: 22 }]} onPress={findConsultant}><Text style={styles.primaryButtonText}>Find a consultant</Text></Pressable>}
+        </View>
+      )}
+
+      {shown.map((b) => (
+        <BookingCard
+          key={b.bookingId}
+          booking={b}
+          sessionLabel={labelFor(b.sessionType)}
+          cancelling={cancellingId === b.bookingId}
+          onOpenConsultant={() => openConsultant(b.consultantId)}
+          onCancel={filter === 'upcoming' ? () => confirmCancel(b) : undefined}
+          onReschedule={filter === 'upcoming' ? () => reschedule(b) : undefined}
+        />
+      ))}
+      <Text style={{ color: colors.slate500, fontSize: 11.5, textAlign: 'center' }}>Times are shown in your phone’s time zone.</Text>
     </View>
   );
 }

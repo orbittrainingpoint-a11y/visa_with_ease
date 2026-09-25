@@ -257,6 +257,13 @@ export function createMockServices(): Services {
     async listBookings() {
       return [...bookingStore.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
     },
+    async cancelBooking(bookingId, userId) {
+      const b = bookingStore.get(bookingId);
+      if (!b || b.userId !== userId) return 'not_found';
+      if (b.status === 'cancelled') return 'already_cancelled';
+      bookingStore.set(bookingId, { ...b, status: 'cancelled' });
+      return 'cancelled';
+    },
     async getConsole() {
       const activeGrants = [...grantStore.entries()].filter(([, g]) => g.status === 'active');
       const queue = activeGrants.map(([grantId, g]) => {

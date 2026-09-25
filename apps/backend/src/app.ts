@@ -1,3 +1,4 @@
+import { faqCatalog, getFaq, faqReply, answerFromKnowledge } from './services/chatKnowledge.js';
 import { createHash, randomBytes } from 'node:crypto';
 import cors from 'cors';
 import express from 'express';
@@ -717,8 +718,21 @@ export function createApp(services: Services = createServices()) {
     }
   });
 
+  // The FAQ knowledge base behind the chat's quick-tap questions. Static, reviewed content — no auth needed.
+  app.get('/chat/faq', (_req, res) => { res.json(faqCatalog()); });
+  // A tapped question is answered straight from the knowledge base (no AI call, no rate-limit cost).
+  app.get('/chat/faq/:id', (req, res) => {
+    const entry = getFaq(String(req.params.id));
+    if (!entry) return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Unknown question' } });
+    res.json(faqReply(entry));
+  });
+
   app.post('/chat', requireAuth, chatLimiter, validateBody(chatRequestSchema), async (req, res, next) => {
     try {
+      // Status / upload / FAQ questions are answered from the knowledge base and the user's own applications
+      // first — instant, free and always consistent. Only what they cannot answer goes to the AI model.
+      const known = answerFromKnowledge((req.body as { message: string }).message, await services.applications.listApplications(req.user!.uid));
+      if (known) return res.json(known);
       // Ground the assistant's answer in the caller's own application data (the
       // "given service" data source) when applicationId refers to an application
       // they actually own — never another user's data, and never invented state.

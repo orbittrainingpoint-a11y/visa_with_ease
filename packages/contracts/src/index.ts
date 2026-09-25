@@ -98,7 +98,13 @@ export const chatResponseSchema = z.object({
   escalationReason: z.string().optional(),
   // True when this is the built-in basic answer because the AI model was
   // unavailable (out of credit, outage, not configured) — never presented as AI.
-  degraded: z.boolean().optional()
+  degraded: z.boolean().optional(),
+  // Where the answer came from: the curated FAQ knowledge base, the user's own application data, or the AI model.
+  source: z.enum(['faq', 'application', 'ai']).optional(),
+  // Follow-up questions the user is likely to want next (tap-to-ask chips).
+  related: z.array(z.object({ id: z.string(), question: z.string() })).optional(),
+  // The reply asks the user to upload documents right in the chat.
+  startDocumentFlow: z.boolean().optional()
 });
 
 export const auditRequestSchema = z.object({

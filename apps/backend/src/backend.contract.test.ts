@@ -1652,3 +1652,59 @@ test('Unknown route returns generic 404', async () => {
   // Must not leak stack trace or internal info
   assert.equal(body.error.stack, undefined);
 });
+
+// ─── Chat knowledge base ─────────────────────────────────────────────────────
+
+async function freshUser(tag: string) {
+  const email = `${tag}.${Date.now()}.${Math.floor(Math.random() * 1e6)}@example.com`;
+  const r = await post('/auth/register', { name: 'Chat Tester', email, password: 'ChatTest#2026x' });
+  return r.body.token as string;
+}
+
+test('GET /chat/faq — public catalog with categories and questions', async () => {
+  const { res, body } = await get('/chat/faq');
+  assert.equal(res.status, 200);
+  assert.ok(body.categories.length >= 5);
+  assert.ok(body.questions.length >= 20);
+  assert.ok(body.questions.every((q: { category: string }) => body.categories.some((c: { id: string }) => c.id === q.category)));
+});
+
+test('GET /chat/faq/:id — fixed answer with related questions; unknown id is 404', async () => {
+  const cat = (await get('/chat/faq')).body;
+  const { res, body } = await get(`/chat/faq/${cat.questions[0].id}`);
+  assert.equal(res.status, 200);
+  assert.equal(body.source, 'faq');
+  assert.ok(body.reply.length > 40);
+  assert.ok(body.related.length >= 1);
+  assert.equal((await get('/chat/faq/nope')).res.status, 404);
+});
+
+test('POST /chat — a typed FAQ question is answered from the knowledge base, no AI', async () => {
+  const token = await freshUser('faq');
+  const { body } = await post('/chat', { message: 'How long must my passport be valid?' }, token);
+  assert.equal(body.source, 'faq');
+  assert.ok(/6 months/.test(body.reply));
+  assert.equal(body.degraded, undefined);
+});
+
+test('POST /chat — "status of my Germany visa" reports real preparation status and is honest about the embassy', async () => {
+  const token = await freshUser('status');
+  const none = await post('/chat', { message: 'what is the status of my visa application?' }, token);
+  assert.ok(/do not have a visa application/i.test(none.body.reply));
+  await post('/applications', { destinationCountry: 'Germany', visaType: 'Tourist', intendedFrom: '2026-12-01' }, token);
+  const { body } = await post('/chat', { message: 'status of my Germany visa application' }, token);
+  assert.equal(body.source, 'application');
+  assert.ok(/Germany/.test(body.reply) && /\/100/.test(body.reply));
+  assert.ok(/cannot see the embassy/i.test(body.reply));
+  const other = await post('/chat', { message: 'status of my Japan visa application' }, token);
+  assert.ok(/cannot find an application/i.test(other.body.reply));
+});
+
+test('POST /chat — "upload my documents" starts the in-chat document flow only when an application exists', async () => {
+  const token = await freshUser('flow');
+  const before = await post('/chat', { message: 'I want to upload my documents' }, token);
+  assert.equal(before.body.startDocumentFlow, undefined);
+  await post('/applications', { destinationCountry: 'France', visaType: 'Tourist', intendedFrom: '2026-12-01' }, token);
+  const after = await post('/chat', { message: 'I want to upload my documents' }, token);
+  assert.equal(after.body.startDocumentFlow, true);
+});

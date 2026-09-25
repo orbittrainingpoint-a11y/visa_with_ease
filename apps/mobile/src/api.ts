@@ -337,16 +337,29 @@ export function confirmFaceCheck(body: { similarity: number; liveness: number })
 }
 
 // ── Chat ──────────────────────────────────────────────────────────────────────
+export interface ChatRelated { id: string; question: string }
 export interface ChatReply {
   reply: string;
   escalate?: boolean;
   suggestedActions?: string[];
+  /** 'faq' = curated knowledge base, 'application' = the user's own data, 'ai' = the model. */
+  source?: 'faq' | 'application' | 'ai';
+  /** Follow-up questions to offer as tap-to-ask chips. */
+  related?: ChatRelated[];
+  /** The reply asks the user to upload documents right in the chat. */
+  startDocumentFlow?: boolean;
   /** True when the server could only give its built-in basic answer (AI model unavailable). */
   degraded?: boolean;
 }
 export function sendChatMessage(message: string, applicationId?: string) {
   return request<ChatReply>('POST', '/chat', { message, applicationId });
 }
+export interface ApiFaqCatalog {
+  categories: Array<{ id: string; label: string; icon: string }>;
+  questions: Array<{ id: string; category: string; question: string }>;
+}
+export function fetchFaqCatalog() { return request<ApiFaqCatalog>('GET', '/chat/faq'); }
+export function fetchFaqAnswer(id: string) { return request<ChatReply>('GET', `/chat/faq/${encodeURIComponent(id)}`); }
 
 // ── Document audit ────────────────────────────────────────────────────────────
 export interface ApiAuditResult {

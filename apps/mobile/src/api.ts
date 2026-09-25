@@ -114,6 +114,10 @@ export async function restoreSession(): Promise<AuthSession | null> {
 export function login(email: string, password: string, remember = false) {
   return request<AuthSession>('POST', '/auth/session', { email, password, remember });
 }
+/** The consultant door: only a consultant account gets a session from this. */
+export function consultantLogin(email: string, password: string) {
+  return request<AuthSession>('POST', '/auth/consultant-session', { email, password });
+}
 export function register(name: string, email: string, password: string) {
   return request<AuthSession>('POST', '/auth/register', { name, email, password });
 }

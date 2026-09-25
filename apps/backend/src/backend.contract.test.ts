@@ -1803,3 +1803,57 @@ test('Suspended accounts cannot sign in (password or Google) and their session s
   const login = await post('/auth/session', { email: pwEmail, password: 'Suspend#2026x' });
   assert.equal(login.res.status, 403);
 });
+
+// ─── Consultant sign-in and invitations ──────────────────────────────────────
+
+test('Consultant invite → set password → consultant-only sign-in; a normal client cannot use that door', async () => {
+  const admin = await demoToken('platform_admin');
+  const consultantId = (await get('/consultants')).body.consultants[0].id;
+  const email = `invited.${Date.now()}@partner.example.com`;
+
+  assert.equal((await post('/admin/consultants/invite', { email, name: 'Ivy Invited', consultantId }, await demoToken('consumer'))).res.status, 403, 'only a platform admin can invite');
+  const inv = await post('/admin/consultants/invite', { email, name: 'Ivy Invited', consultantId }, admin);
+  assert.equal(inv.res.status, 201);
+  assert.ok(/reset-password\?token=/.test(inv.body.setupUrl));
+  assert.equal((await post('/admin/consultants/invite', { email, name: 'Ivy Invited', consultantId }, admin)).res.status, 409, 'no duplicate accounts');
+
+  // Nobody can sign in until the invited person chooses a password.
+  assert.equal((await post('/auth/consultant-session', { email, password: 'Whatever#2026x' })).res.status, 401);
+  const setupToken = new URL(inv.body.setupUrl).searchParams.get('token');
+  const reset = await post('/auth/reset-password', { token: setupToken, newPassword: 'Consultant#2026x' });
+  assert.equal(reset.res.status, 200);
+
+  const login = await post('/auth/consultant-session', { email, password: 'Consultant#2026x' });
+  assert.equal(login.res.status, 201);
+  assert.deepEqual(login.body.user.roles, ['consultant'], 'consultant role only — no client role');
+  const me = await get('/consultant/me', login.body.token);
+  assert.equal(me.body.linked, true);
+  assert.equal(me.body.consultantId, consultantId);
+
+  // A normal client account is refused at the consultant door, with a clear reason.
+  const client = await post('/auth/register', { name: 'Just A Client', email: `client.${Date.now()}@example.com`, password: 'ClientOnly#2026x' });
+  const refused = await post('/auth/consultant-session', { email: client.body.user.email, password: 'ClientOnly#2026x' });
+  assert.equal(refused.res.status, 403);
+  assert.equal(refused.body.error.code, 'NOT_A_CONSULTANT');
+});
+
+test('A consultant-only account cannot use client features (applications, documents, chat, face, bookings, grants)', async () => {
+  const admin = await demoToken('platform_admin');
+  const consultantId = (await get('/consultants')).body.consultants[0].id;
+  const email = `locked.${Date.now()}@partner.example.com`;
+  const inv = await post('/admin/consultants/invite', { email, name: 'Lock Down', consultantId }, admin);
+  await post('/auth/reset-password', { token: new URL(inv.body.setupUrl).searchParams.get('token'), newPassword: 'Consultant#2026x' });
+  const t = (await post('/auth/consultant-session', { email, password: 'Consultant#2026x' })).body.token;
+
+  for (const [path, body] of [
+    ['/applications', { destinationCountry: 'France', visaType: 'Tourist', intendedFrom: '2026-12-01' }],
+    ['/chat', { message: 'hello' }],
+    ['/face/enroll', { faceFeature: 'f'.repeat(64), passportSimilarity: 0.9, liveness: 0.9, steps: ['a', 'b'] }],
+    ['/bookings', { consultantId, applicationId: 'x', sessionType: 'x' }],
+  ] as const) {
+    const r = await post(path, body, t);
+    assert.equal(r.res.status, 403, `${path} must be closed to a consultant-only account`);
+    assert.equal(r.body.error.code, 'CONSULTANT_ACCOUNT');
+  }
+  assert.equal((await get('/consultant/appointments', t)).res.status, 200, 'its own workspace still works');
+});

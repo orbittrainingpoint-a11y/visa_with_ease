@@ -2,7 +2,7 @@ import React from 'react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   login as apiLogin, register as apiRegister, googleLogin as apiGoogleLogin,
-  sendChatMessage, setUnauthorizedHandler, setToken, startSession, endSession, restoreSession,
+  sendChatMessage, setUnauthorizedHandler, consultantLogin as apiConsultantLogin, setToken, startSession, endSession, restoreSession,
   fetchApplications, createApplication as apiCreateApplication,
   fetchConsultants as apiFetchConsultants,
   fetchSessionOptions as apiFetchSessionOptions,
@@ -146,6 +146,7 @@ type Route =
   | { name: 'register' }
   | { name: 'verify'; email: string }
   | { name: 'forgotPassword' }
+  | { name: 'consultantLogin' }
   | { name: 'camera'; docType: string; uri?: string; mime?: string }
   | { name: 'liveAnalysis'; docTitle: string }
   | { name: 'profileHub' }
@@ -285,6 +286,11 @@ function AppInner() {
     if (required && !required.some((r) => roles.includes(r))) {
       setRoute({ name: 'tabs', tab: 'profile' });
     }
+    // A consultant-only account is a work login: it only ever sees the consultant workspace.
+    const consultantOnly = roles.includes('consultant') && !roles.includes('consumer') && !roles.includes('platform_admin');
+    if (authUser && consultantOnly && !['ctabs', 'ccase', 'splash', 'welcome', 'consultantLogin', 'forgotPassword', 'register', 'verify'].includes(route.name)) {
+      setRoute({ name: 'ctabs', tab: 'schedule' });
+    }
   }, [route.name, authUser]);
   // Real keyboard height, tracked ourselves: on edge-to-edge Android the window
   // isn't resized for the keyboard, and KeyboardAvoidingView didn't lift the
@@ -307,7 +313,7 @@ function AppInner() {
     if (navigatingBack.current) { navigatingBack.current = false; previousRoute.current = route; return; }
     const prev = previousRoute.current;
     // Auth/transient screens never go on the stack: back from Home must not return to sign-in or a finished analysis.
-    const transient = ['splash', 'welcome', 'register', 'verify', 'forgotPassword', 'liveAnalysis', 'onboarding', 'camera', 'upload'];
+    const transient = ['splash', 'welcome', 'register', 'verify', 'forgotPassword', 'consultantLogin', 'liveAnalysis', 'onboarding', 'camera', 'upload'];
     if (prev !== route && !transient.includes(prev.name)) routeHistory.current = [...routeHistory.current.slice(-29), prev];
     if (route.name === 'welcome') routeHistory.current = [];
     previousRoute.current = route;
@@ -317,7 +323,7 @@ function AppInner() {
       // Keyboard open: back only closes it (Android can deliver the key to the app first).
       if (Keyboard.isVisible()) { Keyboard.dismiss(); return true; }
       if (route.name === 'liveAnalysis') return true; // mid-upload: don't abandon it with a stray swipe
-      if (route.name === 'register' || route.name === 'forgotPassword') { setRoute({ name: 'welcome' }); return true; }
+      if (route.name === 'register' || route.name === 'forgotPassword' || route.name === 'consultantLogin') { setRoute({ name: 'welcome' }); return true; }
       if (route.name === 'camera') { if (chatPending.current) { chatPending.current = null; setRoute({ name: 'tabs', tab: 'chat' }); } else setRoute({ name: 'upload', state: 'select' }); return true; }
       const prev = routeHistory.current[routeHistory.current.length - 1];
       if (prev) {
@@ -410,7 +416,7 @@ function AppInner() {
   // Tab bar hides while the keyboard is up: it would otherwise sit between the
   // keyboard and the field/button being typed into, eating a fifth of the
   // usable screen. It comes straight back when the keyboard closes.
-  const bottomNavVisible = !keyboardVisible && !['camera','liveAnalysis','welcome','splash','register','verify','forgotPassword'].includes(route.name) && route.name !== 'onboarding';
+  const bottomNavVisible = !keyboardVisible && !['camera','liveAnalysis','welcome','splash','register','verify','forgotPassword','consultantLogin'].includes(route.name) && route.name !== 'onboarding';
 
   // "More below" affordance for the main scrolling screen: a chevron button
   // that appears whenever content continues below the fold and jumps down a
@@ -806,6 +812,20 @@ function AppInner() {
     }
   }, [authEmail, authPassword, loginLoading, routeAfterAuth]);
 
+  /** Consultant sign-in: returns an error message, or null when the person is in. */
+  const handleConsultantLogin = async (email: string, password: string): Promise<string | null> => {
+    try {
+      const session = await apiConsultantLogin(email.trim(), password);
+      await startSession(session);
+      setAuthUser(session.user);
+      await routeAfterAuth(false, session.user.roles, session.user.uid);
+      void offerBiometricLock(session.user.uid);
+      return null;
+    } catch (e: any) {
+      return e?.message ?? 'Sign-in failed. Check your connection.';
+    }
+  };
+
   const handleGoogleLogin = async () => {
     if (loginLoading) return;
     setLoginError('');
@@ -990,7 +1010,7 @@ function AppInner() {
   const retryChatDoc = (type: string) => { docFlow.current.handled.delete(type); offerNextDoc(); };
 
   return (
-    <SafeAreaView style={[styles.shell, ['splash','welcome','register','forgotPassword'].includes(route.name) && { backgroundColor: '#fff' }]} edges={['top']}>
+    <SafeAreaView style={[styles.shell, ['splash','welcome','register','forgotPassword','consultantLogin'].includes(route.name) && { backgroundColor: '#fff' }]} edges={['top']}>
       <StatusBar barStyle="dark-content" />
       {locked && <LockScreen userName={(pendingSession.current?.user ?? authUser)?.name} label={bioLabel} onUnlock={unlockWithBiometrics} onPassword={leaveLockToPassword} />}
       {/* Padded by the keyboard's real overlap, which lifts the absolutely-
@@ -1036,8 +1056,8 @@ function AppInner() {
           }}
         />
       )}
-      {!['camera','liveAnalysis'].includes(route.name) && route.name !== 'welcome' && route.name !== 'onboarding' && route.name !== 'splash' && route.name !== 'register' && route.name !== 'verify' && route.name !== 'forgotPassword' && (
-        <Header
+      {!['camera','liveAnalysis'].includes(route.name) && route.name !== 'welcome' && route.name !== 'onboarding' && route.name !== 'splash' && route.name !== 'register' && route.name !== 'verify' && route.name !== 'forgotPassword' && route.name !== 'consultantLogin' && (
+        inConsultantWorkspace ? <ConsultantHeader userName={authUser?.name} /> : <Header
           onSearch={() => setRoute({ name: 'search' })}
           onNotifications={() => setRoute({ name: 'notifications' })}
           userName={authUser?.name}
@@ -1078,7 +1098,7 @@ function AppInner() {
         onLayout={(e) => { mainScroll.current.viewH = e.nativeEvent.layout.height; updateCanScroll(); }}
         onContentSizeChange={(_w, h) => { mainScroll.current.contentH = h; updateCanScroll(); }}
         keyboardShouldPersistTaps="handled"
-        contentContainerStyle={[styles.content, !['welcome','onboarding','splash','register','verify','forgotPassword'].includes(route.name) && { paddingBottom: bottomNavH + 20 }, !!stickyFooter && { paddingBottom: (bottomNavVisible ? bottomNavH + 20 : 28) + STICKY_FOOTER_H }]}>
+        contentContainerStyle={[styles.content, !['welcome','onboarding','splash','register','verify','forgotPassword','consultantLogin'].includes(route.name) && { paddingBottom: bottomNavH + 20 }, !!stickyFooter && { paddingBottom: (bottomNavVisible ? bottomNavH + 20 : 28) + STICKY_FOOTER_H }]}>
         {route.name === 'splash' && (
           <SplashScreen onDone={() => { void (async () => {
             const session = await restoreSession();
@@ -1105,6 +1125,7 @@ function AppInner() {
             onGoogleLogin={handleGoogleLogin}
             onForgot={() => setRoute({ name: 'forgotPassword' })}
             onRegister={() => setRoute({ name: 'register' })}
+            onConsultantLogin={() => setRoute({ name: 'consultantLogin' })}
             loginError={loginError}
             loginLoading={loginLoading}
             setStickyFooter={setStickyFooter}
@@ -1112,6 +1133,9 @@ function AppInner() {
         )}
         {route.name === 'forgotPassword' && (
           <ForgotPasswordScreen back={() => setRoute({ name: 'welcome' })} />
+        )}
+        {route.name === 'consultantLogin' && (
+          <ConsultantSignInScreen back={() => setRoute({ name: 'welcome' })} onSubmit={handleConsultantLogin} onForgot={() => setRoute({ name: 'forgotPassword' })} />
         )}
         {route.name === 'onboarding' && (
           <NewApplicationScreen
@@ -1610,12 +1634,13 @@ function tripCountdown(dateISO: string) {
 }
 
 function WelcomeScreen({
-  accepted, email, password, setEmail, setPassword, toggleAccepted, start, onForgot, onRegister, onGoogleLogin, loginError, loginLoading, setStickyFooter,
+  accepted, email, password, setEmail, setPassword, toggleAccepted, start, onForgot, onRegister, onGoogleLogin, onConsultantLogin, loginError, loginLoading, setStickyFooter,
 }: {
   accepted: boolean; email: string; password: string;
   setEmail: (v: string) => void; setPassword: (v: string) => void;
   toggleAccepted: () => void; start: () => void; onForgot: () => void; onRegister: () => void;
   onGoogleLogin: () => void;
+  onConsultantLogin: () => void;
   loginError?: string; loginLoading?: boolean;
   setStickyFooter: (node: React.ReactNode) => void;
 }) {
@@ -1667,6 +1692,9 @@ function WelcomeScreen({
           </Pressable>
           <Pressable style={{ alignItems: 'center', paddingVertical: 14 }} onPress={() => setShowForm(true)}>
             <Text style={{ color: colors.royal600, fontWeight: '700', fontSize: 14 }}>I already have an account</Text>
+          </Pressable>
+          <Pressable style={{ alignItems: 'center', paddingBottom: 12 }} onPress={onConsultantLogin} accessibilityLabel="Consultant sign in">
+            <Text style={{ color: colors.slate600, fontWeight: '700', fontSize: 12.5 }}>Consultant or partner? <Text style={{ color: colors.royal600 }}>Sign in here</Text></Text>
           </Pressable>
           <Text style={{ color: colors.slate600, fontSize: 11, textAlign: 'center', lineHeight: 17 }}>
             By continuing you agree to our{' '}
@@ -1725,6 +1753,62 @@ function WelcomeScreen({
       <Pressable style={styles.secondaryButton} onPress={onRegister}>
         <Text style={styles.secondaryButtonText}>Create a new account</Text>
       </Pressable>
+    </View>
+  );
+}
+
+/** Slim header for the consultant workspace: no client search or notifications. */
+function ConsultantHeader({ userName }: { userName?: string }) {
+  const initials = userName ? userName.split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2) : '?';
+  return (
+    <View style={[styles.header, { backgroundColor: '#0B1F4B' }]}>
+      <View style={[styles.avatar, { backgroundColor: '#1A56DB' }]}><Text style={styles.avatarText}>{initials}</Text></View>
+      <View style={{ flex: 1 }}>
+        <Text style={{ color: '#fff', fontWeight: '900', fontSize: 15 }}>Consultant workspace</Text>
+        <Text style={{ color: 'rgba(255,255,255,0.65)', fontSize: 11.5 }}>Visa With Ease · Partner</Text>
+      </View>
+      <Ionicons name="briefcase-outline" size={20} color="rgba(255,255,255,0.8)" />
+    </View>
+  );
+}
+
+/** The consultant door: own look, no Google, no sign-up — accounts are created by invitation. */
+function ConsultantSignInScreen({ back, onSubmit, onForgot }: { back: () => void; onSubmit: (email: string, password: string) => Promise<string | null>; onForgot: () => void }) {
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const canSubmit = email.includes('@') && password.length >= 6 && !busy;
+  const submit = async () => {
+    if (!canSubmit) return;
+    setBusy(true);
+    setError('');
+    const problem = await onSubmit(email, password);
+    if (problem) { setError(problem); setBusy(false); }
+  };
+  return (
+    <View style={{ gap: 14, paddingTop: 4, paddingBottom: 12 }}>
+      <Pressable style={{ flexDirection: 'row', alignItems: 'center', gap: 6, alignSelf: 'flex-start', paddingVertical: 6 }} onPress={back}>
+        <Ionicons name="chevron-back" size={18} color={colors.royal600} />
+        <Text style={{ color: colors.royal600, fontWeight: '700' }}>Back</Text>
+      </Pressable>
+      <LinearGradient colors={['#0B1F4B', '#1547C0']} style={{ borderRadius: 20, padding: 20, gap: 6 }}>
+        <Ionicons name="briefcase-outline" size={28} color="#fff" />
+        <Text style={{ color: '#fff', fontSize: 22, fontWeight: '900' }}>Consultant sign in</Text>
+        <Text style={{ color: 'rgba(255,255,255,0.8)', fontSize: 13, lineHeight: 19 }}>For verified partners. See your appointments and, with each client’s permission, the details they choose to share.</Text>
+      </LinearGradient>
+      <View style={styles.stepCard}>
+        <Text style={[styles.rowMeta, { marginBottom: 6 }]}>Work email</Text>
+        <TextInput value={email} onChangeText={setEmail} placeholder="you@yourfirm.com" autoCapitalize="none" keyboardType="email-address" autoCorrect={false} style={styles.searchInput} accessibilityLabel="Consultant email" />
+        <Text style={[styles.rowMeta, { marginBottom: 6, marginTop: 10 }]}>Password</Text>
+        <TextInput value={password} onChangeText={setPassword} placeholder="Password" secureTextEntry autoCapitalize="none" style={styles.searchInput} accessibilityLabel="Consultant password" onSubmitEditing={submit} />
+        <Pressable onPress={onForgot} style={{ alignSelf: 'flex-end', paddingVertical: 8 }}><Text style={{ color: colors.royal600, fontWeight: '700' }}>Forgot password?</Text></Pressable>
+      </View>
+      {!!error && <View style={{ backgroundColor: '#FEF2F2', borderRadius: 12, borderWidth: 1, borderColor: '#FECACA', padding: 12 }}><Text style={{ color: '#991B1B', fontSize: 13, fontWeight: '700' }}>{error}</Text></View>}
+      <Pressable style={[styles.primaryButton, !canSubmit && styles.disabledButton]} disabled={!canSubmit} onPress={submit} accessibilityLabel="Sign in as consultant">
+        {busy ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryButtonText}>Sign in</Text>}
+      </Pressable>
+      <Text style={{ color: colors.slate500, fontSize: 12, lineHeight: 18, textAlign: 'center' }}>Consultant accounts are created by invitation. No account yet? Ask your Visa With Ease administrator to invite you.</Text>
     </View>
   );
 }

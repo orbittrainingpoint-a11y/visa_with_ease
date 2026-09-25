@@ -140,6 +140,16 @@ const chatLimiter = rateLimit({
   message: { error: { code: 'RATE_LIMITED', message: 'Too many messages, please slow down and try again shortly' } }
 });
 
+// A consultant-only login (no client role) is a work account: it has no applications, documents or face check of
+// its own, so the client-side features are closed to it.
+const clientAccountOnly: express.RequestHandler = (req, res, next) => {
+  const roles = req.user?.roles ?? [];
+  if (roles.includes('consultant') && !roles.includes('consumer') && !roles.includes('platform_admin')) {
+    return res.status(403).json({ error: { code: 'CONSULTANT_ACCOUNT', message: 'Consultant accounts cannot use client features.' } });
+  }
+  next();
+};
+
 // Face and call-link routes: cheap, but they touch biometric data and (once configured) create Google Meet rooms.
 const sensitiveLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -233,6 +243,26 @@ export function createApp(services: Services = createServices(), options: AppOpt
     res.status(201).json({ token, user: { uid: record.uid, email: record.email, name: record.name, roles: record.roles }, expiresAt });
   });
 
+  // Consultant sign-in: a separate door for partner (B2B) accounts. Same credentials check, but only an account
+  // that really is a consultant gets in, and its session is short (a working day) because it can reach client data.
+  app.post('/auth/consultant-session', authLimiter, validateBody(authSessionRequestSchema), async (req, res) => {
+    const { email, password } = req.body;
+    const record = await getUserByEmail(email);
+    if (!record || !verifyPassword(password, record.passwordHash)) {
+      return res.status(401).json({ error: { code: 'INVALID_CREDENTIALS', message: 'Incorrect email or password' } });
+    }
+    if (record.status === 'suspended') {
+      return res.status(403).json({ error: { code: 'ACCOUNT_SUSPENDED', message: 'This account has been suspended. Contact support.' } });
+    }
+    if (!record.roles.includes('consultant')) {
+      return res.status(403).json({ error: { code: 'NOT_A_CONSULTANT', message: 'This is not a consultant account. Use the normal sign-in, or ask your administrator for a consultant invitation.' } });
+    }
+    const token = signToken({ uid: record.uid, email: record.email, roles: record.roles }, '1d');
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+    await appendAuditLog({ actor: email, action: 'CONSULTANT_LOGIN', resource: 'auth', ip: req.ip ?? '?' });
+    res.status(201).json({ token, user: { uid: record.uid, email: record.email, name: record.name, roles: record.roles }, expiresAt });
+  });
+
   // Sliding session for the mobile app: called on every app launch with the
   // stored token, returns a fresh 30-day one. As long as the app is opened at
   // least once a month the user stays signed in until they sign out; a deleted
@@ -247,7 +277,8 @@ export function createApp(services: Services = createServices(), options: AppOpt
     if (record.status === 'suspended') {
       return res.status(401).json({ error: { code: 'UNAUTHORIZED', message: 'Session no longer valid' } });
     }
-    const days = 30;
+    // Consultant sessions can reach client data, so they slide for a week at most instead of a month.
+    const days = record.roles.includes('consultant') ? 7 : 30;
     const expiresAt = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
     const token = signToken({ uid: record.uid, email: record.email, roles: record.roles }, `${days}d`);
     res.json({ token, user: { uid: record.uid, email: record.email, name: record.name, roles: record.roles }, expiresAt });
@@ -538,7 +569,7 @@ export function createApp(services: Services = createServices(), options: AppOpt
     }
   });
 
-  app.post('/applications', requireAuth, async (req, res, next) => {
+  app.post('/applications', requireAuth, clientAccountOnly, async (req, res, next) => {
     try {
       const { destinationCountry, visaType, intendedFrom, intendedTo, purpose, nationality, residenceCountry } = req.body ?? {};
       if (!destinationCountry || !visaType || !intendedFrom) {
@@ -646,7 +677,7 @@ export function createApp(services: Services = createServices(), options: AppOpt
     }
   });
 
-  app.post('/audit', requireAuth, auditLimiter, validateBody(auditRequestSchema), async (req, res, next) => {
+  app.post('/audit', requireAuth, clientAccountOnly, auditLimiter, validateBody(auditRequestSchema), async (req, res, next) => {
     try {
       const { applicationId, documentId } = req.body as { applicationId: string; documentId: string };
       if (!SAFE_ID_RE.test(applicationId) || !SAFE_ID_RE.test(documentId)) {
@@ -812,7 +843,7 @@ export function createApp(services: Services = createServices(), options: AppOpt
     res.json(faqReply(entry));
   });
 
-  app.post('/chat', requireAuth, chatLimiter, validateBody(chatRequestSchema), async (req, res, next) => {
+  app.post('/chat', requireAuth, clientAccountOnly, chatLimiter, validateBody(chatRequestSchema), async (req, res, next) => {
     try {
       // Status / upload / FAQ questions are answered from the knowledge base and the user's own applications
       // first — instant, free and always consistent. Only what they cannot answer goes to the AI model.
@@ -871,7 +902,7 @@ export function createApp(services: Services = createServices(), options: AppOpt
     }
   });
 
-  app.post('/bookings', requireAuth, validateBody(bookingRequestSchema), async (req, res, next) => {
+  app.post('/bookings', requireAuth, clientAccountOnly, validateBody(bookingRequestSchema), async (req, res, next) => {
     try {
       // Ownership check: getApplication(id, userId) returns null for an id
       // that exists but belongs to someone else, same as a genuinely unknown
@@ -1101,6 +1132,30 @@ export function createApp(services: Services = createServices(), options: AppOpt
     }
   });
 
+  // Invite a consultant: creates their login (consultant role only — no client features), links it to the
+  // marketplace profile and returns a one-time link to choose a password. Consultants never self-register.
+  app.post('/admin/consultants/invite', requireAuth, requireRole('platform_admin'), async (req, res, next) => {
+    try {
+      const { email, name, consultantId } = (req.body ?? {}) as { email?: unknown; name?: unknown; consultantId?: unknown };
+      if (typeof email !== 'string' || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ error: { code: 'INVALID_EMAIL', message: 'A valid email address is required' } });
+      if (typeof name !== 'string' || !name.trim()) return res.status(400).json({ error: { code: 'INVALID_BODY', message: 'name is required' } });
+      if (typeof consultantId !== 'string' || !(await services.consultants.getConsultant(consultantId))) throw notFound('Consultant profile not found');
+      if (await getUserByEmail(email)) return res.status(409).json({ error: { code: 'EMAIL_TAKEN', message: 'An account with that email already exists. Use the consultant link instead.' } });
+      const uid = `consultant-${createHash('sha256').update(email.toLowerCase()).digest('base64url').slice(0, 16)}`;
+      await createUser({ uid, email, name: name.trim(), passwordHash: hashPassword(randomBytes(32).toString('hex')), roles: ['consultant'] });
+      await setUserConsultantId(email, consultantId);
+      const token = randomBytes(32).toString('hex');
+      await setResetToken(token, { email: email.toLowerCase(), expiresAt: Date.now() + 72 * 3600_000 });
+      const setupUrl = `${process.env.FRONTEND_URL ?? 'http://localhost:5174'}/reset-password?token=${token}`;
+      let emailed = false;
+      if (isEmailConfigured()) { try { await sendPasswordResetEmail(email, setupUrl); emailed = true; } catch { /* the admin still gets the link */ } }
+      await appendAuditLog({ actor: req.user!.email ?? req.user!.uid, action: 'INVITE_CONSULTANT', resource: `${email}:${consultantId}`, ip: req.ip ?? '?' });
+      res.status(201).json({ uid, email, consultantId, setupUrl, emailed, expiresInHours: 72 });
+    } catch (err) {
+      next(err);
+    }
+  });
+
   // ── Face verification ────────────────────────────────────────────────────
   // The face SDK runs on the phone (liveness, face match). The server keeps the one enrolled template per
   // account so a different face can never replace it, and records the outcome. Scores may arrive as 0-1 or
@@ -1142,7 +1197,7 @@ export function createApp(services: Services = createServices(), options: AppOpt
     }
   });
 
-  app.post('/face/enroll', requireAuth, sensitiveLimiter, async (req, res, next) => {
+  app.post('/face/enroll', requireAuth, clientAccountOnly, sensitiveLimiter, async (req, res, next) => {
     try {
       const b = (req.body ?? {}) as { faceFeature?: unknown; passportSimilarity?: unknown; liveness?: unknown; steps?: unknown };
       if (typeof b.faceFeature !== 'string' || b.faceFeature.length < 16 || b.faceFeature.length > 20000) return res.status(400).json({ error: { code: 'INVALID_BODY', message: 'faceFeature is required' } });
@@ -1512,7 +1567,7 @@ export function createApp(services: Services = createServices(), options: AppOpt
     }
   });
 
-  app.post('/access-grants', requireAuth, validateBody(accessGrantRequestSchema), async (req, res, next) => {
+  app.post('/access-grants', requireAuth, clientAccountOnly, validateBody(accessGrantRequestSchema), async (req, res, next) => {
     try {
       // Same ownership check as /bookings above — without it, any signed-in
       // user could grant a consultant access (including documents,

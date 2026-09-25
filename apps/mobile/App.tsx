@@ -307,7 +307,7 @@ function AppInner() {
       if (Keyboard.isVisible()) { Keyboard.dismiss(); return true; }
       if (route.name === 'liveAnalysis') return true; // mid-upload: don't abandon it with a stray swipe
       if (route.name === 'register' || route.name === 'forgotPassword') { setRoute({ name: 'welcome' }); return true; }
-      if (route.name === 'camera') { setRoute({ name: 'upload', state: 'select' }); return true; }
+      if (route.name === 'camera') { if (chatPending.current) { chatPending.current = null; setRoute({ name: 'tabs', tab: 'chat' }); } else setRoute({ name: 'upload', state: 'select' }); return true; }
       const prev = routeHistory.current[routeHistory.current.length - 1];
       if (prev) {
         routeHistory.current = routeHistory.current.slice(0, -1);
@@ -338,6 +338,8 @@ function AppInner() {
   // Documents the assistant has already asked for in this chat session, so "next document" never repeats one.
   const docFlow = useRef<{ handled: Set<string> }>({ handled: new Set() });
   const documentsRef = useRef<ApiDocument[]>([]);
+  // Set while the guided scanner is open on behalf of the chat: its capture goes back to the chat, not the full-screen analysis.
+  const chatPending = useRef<{ msgId: string; card: NonNullable<ChatMsg['docCard']> } | null>(null);
 
   // Real data state
   const [appList, setAppList] = useState<ReturnType<typeof normalizeApp>[]>([]);
@@ -789,7 +791,7 @@ function AppInner() {
     }
     flow.handled.add(next.type);
     pushAi({
-      text: next.status === 'Audited' ? `${next.title} scored ${next.score} last time — a clearer upload will raise your readiness.` : `Next: ${next.title}`,
+      text: next.status === 'Audited' ? `Scored ${next.score} last time — a clearer upload will raise your readiness.` : '',
       docCard: { type: next.type, title: next.title, icon: (next.icon as IoniconName) ?? 'document-outline', tip: CHAT_DOC_TIPS[next.type] ?? 'Make sure the whole page is sharp and readable.', state: 'open' },
     });
   };
@@ -811,56 +813,61 @@ function AppInner() {
     offerNextDoc();
   };
 
-  const uploadChatDoc = async (msgId: string, source: 'camera' | 'gallery' | 'file') => {
+  /** Sends a captured/picked document: the card closes, a progress card appears, the next document is asked for
+   *  straight away, and the check runs in the background. */
+  const submitChatDoc = (msgId: string, card: NonNullable<ChatMsg['docCard']>, payload: { extractedText?: string; imageBase64?: string; mime: string }) => {
     const app = appList[0];
-    const card = sessionMessages.find(m => m.id === msgId)?.docCard;
-    if (!app || !card) return;
-    try {
-      let uri: string; let mime: string; let isImage: boolean;
-      if (source === 'file') {
-        const r = await DocumentPicker.getDocumentAsync({ type: ['application/pdf', 'image/jpeg', 'image/png'], copyToCacheDirectory: true });
-        if (r.canceled || !r.assets?.[0]) return;
-        const asset = r.assets[0];
-        isImage = /\.(jpe?g|png|heic)$/i.test(asset.name ?? '') || (asset.mimeType?.startsWith('image/') ?? false);
-        uri = asset.uri; mime = asset.mimeType || (isImage ? 'image/jpeg' : 'application/pdf');
-      } else {
-        if (source === 'camera') {
-          const perm = await ImagePicker.requestCameraPermissionsAsync();
-          if (!perm.granted) { pushAi({ text: 'I need camera access to take a photo — allow it in settings, or choose a file instead.' }); return; }
-        }
-        const r = source === 'camera'
-          ? await ImagePicker.launchCameraAsync({ quality: 0.9 })
-          : await ImagePicker.launchImageLibraryAsync({ mediaTypes: ImagePicker.MediaTypeOptions.Images, quality: 0.9 });
-        if (r.canceled || !r.assets?.[0]) return;
-        uri = r.assets[0].uri; mime = r.assets[0].mimeType || 'image/jpeg'; isImage = true;
+    if (!app) return;
+    patchMsg(msgId, m => (m.docCard ? { ...m, docCard: { ...m.docCard, state: 'sent' } } : m));
+    const documentId = `doc-${card.type}-${Date.now()}`;
+    const progressId = `a-${uid()}`;
+    setSessionMessages(prev => [...prev, { id: progressId, role: 'ai', text: '', progress: { title: card.title, type: card.type, state: 'running', documentId } }]);
+    offerNextDoc();
+    void (async () => {
+      try {
+        await createUploadSlot({ applicationId: app.id, documentId });
+        const { result } = await enqueueAudit({ applicationId: app.id, documentId, documentType: card.type, extractedText: payload.extractedText, imageBase64: payload.imageBase64, mimeType: payload.mime });
+        setAuditData(prev => ({ ...prev, [documentId]: result }));
+        patchMsg(progressId, m => (m.progress ? { ...m, progress: { ...m.progress, state: 'done', result } } : m));
+        void loadDocuments(app.id);
+        void loadApplications();
+      } catch (e: any) {
+        patchMsg(progressId, m => (m.progress ? { ...m, progress: { ...m.progress, state: 'error', error: e?.message ?? 'The check failed.' } } : m));
       }
-      // Sent: the card closes, a progress card appears, and the next document is requested right away.
-      patchMsg(msgId, m => (m.docCard ? { ...m, docCard: { ...m.docCard, state: 'sent' } } : m));
-      const documentId = `doc-${card.type}-${Date.now()}`;
-      const progressId = `a-${uid()}`;
-      setSessionMessages(prev => [...prev, { id: progressId, role: 'ai', text: '', progress: { title: card.title, type: card.type, state: 'running', documentId } }]);
-      offerNextDoc();
-      void (async () => {
-        try {
-          let extractedText: string | undefined;
-          if (isImage) {
-            try {
-              const { default: TextRecognition } = await import('@react-native-ml-kit/text-recognition');
-              extractedText = (await TextRecognition.recognize(uri))?.text?.trim() || undefined;
-            } catch { /* the audit works from the image alone */ }
-          }
-          let imageBase64: string | undefined;
-          try { imageBase64 = await FileSystem.readAsStringAsync(uri, { encoding: FileSystem.EncodingType.Base64 }); } catch { /* honest "couldn't verify" fallback applies */ }
-          await createUploadSlot({ applicationId: app.id, documentId });
-          const { result } = await enqueueAudit({ applicationId: app.id, documentId, documentType: card.type, extractedText, imageBase64, mimeType: mime });
-          setAuditData(prev => ({ ...prev, [documentId]: result }));
-          patchMsg(progressId, m => (m.progress ? { ...m, progress: { ...m.progress, state: 'done', result } } : m));
-          void loadDocuments(app.id);
-          void loadApplications();
-        } catch (e: any) {
-          patchMsg(progressId, m => (m.progress ? { ...m, progress: { ...m.progress, state: 'error', error: e?.message ?? 'The check failed.' } } : m));
-        }
-      })();
+    })();
+  };
+
+  /** Scan opens the guided scanner (document guide, auto-capture, quality checks). Files and gallery images go through
+   *  the same review screen; PDFs are sent straight to the check. */
+  const uploadChatDoc = async (msgId: string, source: 'scan' | 'gallery' | 'file') => {
+    const card = sessionMessages.find(m => m.id === msgId)?.docCard;
+    if (!appList[0] || !card) return;
+    try {
+      if (source === 'scan') {
+        chatPending.current = { msgId, card };
+        setRoute({ name: 'camera', docType: card.type });
+        return;
+      }
+      if (source === 'gallery') {
+        const r = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ImagePicker.MediaTypeOptions.Images, quality: 0.9 });
+        if (r.canceled || !r.assets?.[0]) return;
+        chatPending.current = { msgId, card };
+        setRoute({ name: 'camera', docType: card.type, uri: r.assets[0].uri, mime: r.assets[0].mimeType || 'image/jpeg' });
+        return;
+      }
+      const r = await DocumentPicker.getDocumentAsync({ type: ['application/pdf', 'image/jpeg', 'image/png'], copyToCacheDirectory: true });
+      if (r.canceled || !r.assets?.[0]) return;
+      const asset = r.assets[0];
+      const isImage = /\.(jpe?g|png|heic)$/i.test(asset.name ?? '') || (asset.mimeType?.startsWith('image/') ?? false);
+      const mime = asset.mimeType || (isImage ? 'image/jpeg' : 'application/pdf');
+      if (isImage) {
+        chatPending.current = { msgId, card };
+        setRoute({ name: 'camera', docType: card.type, uri: asset.uri, mime });
+        return;
+      }
+      let imageBase64: string | undefined;
+      try { imageBase64 = await FileSystem.readAsStringAsync(asset.uri, { encoding: FileSystem.EncodingType.Base64 }); } catch { /* honest "couldn't verify" fallback applies */ }
+      submitChatDoc(msgId, card, { imageBase64, mime });
     } catch {
       pushAi({ text: 'I could not read that file. Try again, or choose a different one.' });
     }
@@ -880,8 +887,15 @@ function AppInner() {
           docType={route.docType}
           initialUri={route.uri}
           initialMime={route.mime}
-          back={() => setRoute({ name: 'upload', state: 'select' })}
+          back={() => { if (chatPending.current) { chatPending.current = null; setRoute({ name: 'tabs', tab: 'chat' }); } else setRoute({ name: 'upload', state: 'select' }); }}
           onCapture={(extractedText, imageBase64, mimeType) => {
+            const fromChat = chatPending.current;
+            if (fromChat) {
+              chatPending.current = null;
+              submitChatDoc(fromChat.msgId, fromChat.card, { extractedText, imageBase64, mime: mimeType ?? 'image/jpeg' });
+              setRoute({ name: 'tabs', tab: 'chat' });
+              return;
+            }
             setPendingDocumentId(`doc-passport-${Date.now()}`);
             setPendingDocType(route.docType);
             setPendingExtractedText(extractedText);
@@ -2882,118 +2896,109 @@ function RequirementList({ documents, destinationCountry }: { documents: ApiDocu
   );
 }
 
-/** Tap-to-ask FAQ: categories as chips, the chosen category's questions listed underneath. */
-function FaqPanel({ faq, askFaq, compact }: { faq: ApiFaqCatalog | null; askFaq: (id: string, q: string) => void; compact?: boolean }) {
+/** Tap-to-ask FAQ: category chips, then that category's questions as small tappable rows. */
+function FaqPanel({ faq, askFaq, limit = 4 }: { faq: ApiFaqCatalog | null; askFaq: (id: string, q: string) => void; limit?: number }) {
   const [cat, setCat] = useState<string | null>(null);
+  const [all, setAll] = useState(false);
   if (!faq || faq.categories.length === 0) return null;
   const active = cat ?? faq.categories[0].id;
   const questions = faq.questions.filter(q => q.category === active);
+  const shown = all ? questions : questions.slice(0, limit);
   return (
-    <View style={{ gap: 10 }}>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} keyboardShouldPersistTaps="handled" contentContainerStyle={{ gap: 8 }}>
+    <View style={{ gap: 6 }}>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} keyboardShouldPersistTaps="handled" contentContainerStyle={{ gap: 6 }}>
         {faq.categories.map(c => {
           const on = c.id === active;
           return (
-            <Pressable key={c.id} onPress={() => setCat(c.id)} accessibilityLabel={`FAQ category ${c.label}`} style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 18, backgroundColor: on ? colors.royal600 : colors.white, borderWidth: 1, borderColor: on ? colors.royal600 : colors.slate200 }}>
-              <Ionicons name={c.icon as IoniconName} size={14} color={on ? '#fff' : colors.royal600} />
-              <Text style={{ fontSize: 12.5, fontWeight: '700', color: on ? '#fff' : colors.slate700 }}>{c.label}</Text>
+            <Pressable key={c.id} onPress={() => { setCat(c.id); setAll(false); }} accessibilityLabel={`FAQ category ${c.label}`} style={{ paddingHorizontal: 11, paddingVertical: 6, borderRadius: 14, backgroundColor: on ? colors.royal600 : colors.white, borderWidth: 1, borderColor: on ? colors.royal600 : colors.slate200 }}>
+              <Text style={{ fontSize: 12, fontWeight: '700', color: on ? '#fff' : colors.slate700 }}>{c.label}</Text>
             </Pressable>
           );
         })}
       </ScrollView>
-      <View style={{ gap: 6 }}>
-        {questions.slice(0, compact ? 4 : 8).map(q => (
-          <Pressable key={q.id} onPress={() => askFaq(q.id, q.question)} accessibilityLabel={`Ask: ${q.question}`} style={{ flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: colors.white, borderRadius: 12, borderWidth: 1, borderColor: colors.slate100, paddingHorizontal: 12, paddingVertical: 11 }}>
-            <Ionicons name="help-circle-outline" size={18} color={colors.royal600} />
-            <Text style={{ flex: 1, fontSize: 13.5, color: colors.slate800, fontWeight: '600' }}>{q.question}</Text>
-            <Ionicons name="chevron-forward" size={16} color={colors.slate300} />
-          </Pressable>
-        ))}
-      </View>
-    </View>
-  );
-}
-
-function ChatDocCard({ msg, uploadDoc, skipDoc }: { msg: ChatMsg; uploadDoc: (id: string, source: 'camera' | 'gallery' | 'file') => void; skipDoc: (id: string) => void }) {
-  const card = msg.docCard!;
-  const open = card.state === 'open';
-  return (
-    <View style={{ alignSelf: 'flex-start', width: '92%', backgroundColor: colors.white, borderRadius: 16, borderWidth: 1, borderColor: open ? colors.royal600 : colors.slate100, padding: 14, gap: 10, opacity: open ? 1 : 0.75 }}>
-      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-        <View style={{ width: 38, height: 38, borderRadius: 10, backgroundColor: colors.royal50, alignItems: 'center', justifyContent: 'center' }}>
-          <Ionicons name={card.icon} size={20} color={colors.royal600} />
-        </View>
-        <View style={{ flex: 1 }}>
-          <Text style={{ fontSize: 11, fontWeight: '800', color: colors.royal600, letterSpacing: 1 }}>{open ? 'PLEASE UPLOAD' : card.state === 'sent' ? 'SENT — CHECKING' : 'SKIPPED'}</Text>
-          <Text style={{ fontSize: 15, fontWeight: '800', color: colors.slate900 }}>{card.title}</Text>
-        </View>
-      </View>
-      {open && <Text style={{ fontSize: 12.5, color: colors.slate600, lineHeight: 18 }}>{card.tip}</Text>}
-      {open && (
-        <>
-          <View style={{ flexDirection: 'row', gap: 8 }}>
-            <Pressable onPress={() => uploadDoc(msg.id, 'camera')} accessibilityLabel={`Take photo of ${card.title}`} style={{ flex: 1, flexDirection: 'row', gap: 6, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.royal600, borderRadius: 10, paddingVertical: 11 }}>
-              <Ionicons name="camera-outline" size={17} color="#fff" />
-              <Text style={{ color: '#fff', fontWeight: '800', fontSize: 13 }}>Take photo</Text>
-            </Pressable>
-            <Pressable onPress={() => uploadDoc(msg.id, 'file')} accessibilityLabel={`Choose file for ${card.title}`} style={{ flex: 1, flexDirection: 'row', gap: 6, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.royal50, borderRadius: 10, paddingVertical: 11 }}>
-              <Ionicons name="document-attach-outline" size={17} color={colors.royal600} />
-              <Text style={{ color: colors.royal600, fontWeight: '800', fontSize: 13 }}>Choose file</Text>
-            </Pressable>
-          </View>
-          <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
-            <Pressable onPress={() => uploadDoc(msg.id, 'gallery')} accessibilityLabel="Choose from gallery"><Text style={{ color: colors.slate600, fontSize: 12.5, fontWeight: '700' }}>From gallery</Text></Pressable>
-            <Pressable onPress={() => skipDoc(msg.id)} accessibilityLabel={`Skip ${card.title}`}><Text style={{ color: colors.slate500, fontSize: 12.5, fontWeight: '700' }}>Skip for now</Text></Pressable>
-          </View>
-        </>
+      {shown.map(q => (
+        <Pressable key={q.id} onPress={() => askFaq(q.id, q.question)} accessibilityLabel={`Ask: ${q.question}`} style={{ flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 7, paddingHorizontal: 10, backgroundColor: colors.white, borderRadius: 10, borderWidth: 1, borderColor: colors.slate100 }}>
+          <Text style={{ flex: 1, fontSize: 13, color: colors.slate800, fontWeight: '600' }} numberOfLines={1}>{q.question}</Text>
+          <Ionicons name="chevron-forward" size={14} color={colors.slate300} />
+        </Pressable>
+      ))}
+      {!all && questions.length > limit && (
+        <Pressable onPress={() => setAll(true)} accessibilityLabel="Show more questions"><Text style={{ fontSize: 12, fontWeight: '700', color: colors.royal600, paddingVertical: 2 }}>More questions ({questions.length - limit})</Text></Pressable>
       )}
     </View>
   );
 }
 
+/** "Please upload X": one slim row. Scan opens the guided scanner; File/Gallery use the review screen. */
+function ChatDocCard({ msg, uploadDoc, skipDoc }: { msg: ChatMsg; uploadDoc: (id: string, source: 'scan' | 'gallery' | 'file') => void; skipDoc: (id: string) => void }) {
+  const card = msg.docCard!;
+  const open = card.state === 'open';
+  const btn = { flexDirection: 'row' as const, alignItems: 'center' as const, gap: 5, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 9 };
+  return (
+    <View style={{ alignSelf: 'stretch', backgroundColor: colors.white, borderRadius: 12, borderWidth: 1, borderColor: open ? colors.royal600 : colors.slate100, paddingHorizontal: 12, paddingVertical: 10, gap: 8, opacity: open ? 1 : 0.7 }}>
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+        <Ionicons name={open ? card.icon : card.state === 'sent' ? 'checkmark-circle' : 'remove-circle-outline'} size={20} color={open ? colors.royal600 : card.state === 'sent' ? '#16A34A' : colors.slate500} />
+        <View style={{ flex: 1 }}>
+          <Text style={{ fontSize: 14, fontWeight: '800', color: colors.slate900 }} numberOfLines={1}>{card.title}</Text>
+          <Text style={{ fontSize: 11.5, color: colors.slate500 }} numberOfLines={open ? 2 : 1}>{open ? (msg.text || card.tip) : card.state === 'sent' ? 'Sent — checking in the background' : 'Skipped'}</Text>
+        </View>
+      </View>
+      {open && (
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+          <Pressable onPress={() => uploadDoc(msg.id, 'scan')} accessibilityLabel={`Scan ${card.title}`} style={[btn, { backgroundColor: colors.royal600 }]}>
+            <Ionicons name="scan-outline" size={16} color="#fff" />
+            <Text style={{ color: '#fff', fontWeight: '800', fontSize: 12.5 }}>Scan</Text>
+          </Pressable>
+          <Pressable onPress={() => uploadDoc(msg.id, 'file')} accessibilityLabel={`Choose file for ${card.title}`} style={[btn, { backgroundColor: colors.royal50 }]}>
+            <Ionicons name="document-attach-outline" size={16} color={colors.royal600} />
+            <Text style={{ color: colors.royal600, fontWeight: '800', fontSize: 12.5 }}>File</Text>
+          </Pressable>
+          <Pressable onPress={() => uploadDoc(msg.id, 'gallery')} accessibilityLabel="Choose from gallery" style={[btn, { backgroundColor: colors.royal50 }]}>
+            <Ionicons name="images-outline" size={16} color={colors.royal600} />
+            <Text style={{ color: colors.royal600, fontWeight: '800', fontSize: 12.5 }}>Gallery</Text>
+          </Pressable>
+          <View style={{ flex: 1 }} />
+          <Pressable onPress={() => skipDoc(msg.id)} accessibilityLabel={`Skip ${card.title}`} hitSlop={8}><Text style={{ color: colors.slate500, fontSize: 12, fontWeight: '700' }}>Skip</Text></Pressable>
+        </View>
+      )}
+    </View>
+  );
+}
+
+/** Result of a background check, as one slim row (spinner → score + top finding). */
 function ChatProgressCard({ msg, openReport, retryDoc }: { msg: ChatMsg; openReport: (docId: string) => void; retryDoc: (type: string) => void }) {
   const pr = msg.progress!;
   const r = pr.result;
-  const tone = r?.status === 'excellent' ? { c: '#15803D', bg: '#DCFCE7', t: 'Passed all checks' } : r?.status === 'attention_needed' ? { c: '#B45309', bg: '#FEF3C7', t: 'Needs attention' } : { c: '#B91C1C', bg: '#FEE2E2', t: 'Issues found' };
-  const sev = (s: string): { n: IoniconName; c: string } => s === 'pass' ? { n: 'checkmark-circle', c: '#16A34A' } : s === 'red_flag' ? { n: 'close-circle', c: '#DC2626' } : s === 'warn' ? { n: 'warning', c: '#D97706' } : { n: 'information-circle', c: '#2563EB' };
+  const tone = r?.status === 'excellent' ? { c: '#15803D', bg: '#DCFCE7', t: 'Passed' } : r?.status === 'attention_needed' ? { c: '#B45309', bg: '#FEF3C7', t: 'Needs attention' } : { c: '#B91C1C', bg: '#FEE2E2', t: 'Issues found' };
+  const top = r?.findings.find(f => f.severity === 'red_flag' || f.severity === 'warn') ?? r?.findings[0];
   return (
-    <View style={{ alignSelf: 'flex-start', width: '92%', backgroundColor: colors.white, borderRadius: 16, borderWidth: 1, borderColor: colors.slate100, padding: 14, gap: 8 }}>
+    <View style={{ alignSelf: 'stretch', backgroundColor: colors.white, borderRadius: 12, borderWidth: 1, borderColor: colors.slate100, paddingHorizontal: 12, paddingVertical: 10, flexDirection: 'row', alignItems: 'center', gap: 10 }}>
       {pr.state === 'running' && (
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+        <>
           <ActivityIndicator size="small" color={colors.royal600} />
-          <View style={{ flex: 1 }}>
-            <Text style={{ fontSize: 14, fontWeight: '800', color: colors.slate900 }}>Checking {pr.title}…</Text>
-            <Text style={{ fontSize: 12, color: colors.slate500 }}>Working in the background — carry on with the next one.</Text>
-          </View>
-        </View>
+          <Text style={{ flex: 1, fontSize: 13, color: colors.slate700, fontWeight: '600' }} numberOfLines={1}>Checking {pr.title}…</Text>
+        </>
       )}
       {pr.state === 'error' && (
         <>
-          <Text style={{ fontSize: 14, fontWeight: '800', color: '#B91C1C' }}>{pr.title} could not be checked</Text>
-          <Text style={{ fontSize: 12.5, color: colors.slate600 }}>{pr.error}</Text>
-          <Pressable onPress={() => retryDoc(pr.type)} accessibilityLabel={`Upload ${pr.title} again`} style={{ alignSelf: 'flex-start', backgroundColor: colors.royal600, borderRadius: 10, paddingHorizontal: 14, paddingVertical: 9 }}>
-            <Text style={{ color: '#fff', fontWeight: '800', fontSize: 13 }}>Upload again</Text>
-          </Pressable>
+          <Ionicons name="alert-circle" size={20} color="#DC2626" />
+          <View style={{ flex: 1 }}>
+            <Text style={{ fontSize: 13, fontWeight: '800', color: '#B91C1C' }} numberOfLines={1}>{pr.title} could not be checked</Text>
+            <Text style={{ fontSize: 11.5, color: colors.slate500 }} numberOfLines={1}>{pr.error}</Text>
+          </View>
+          <Pressable onPress={() => retryDoc(pr.type)} accessibilityLabel={`Upload ${pr.title} again`} hitSlop={8}><Text style={{ color: colors.royal600, fontWeight: '800', fontSize: 12.5 }}>Retry</Text></Pressable>
         </>
       )}
       {pr.state === 'done' && r && (
         <>
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-            <View style={{ width: 46, height: 46, borderRadius: 23, backgroundColor: tone.bg, alignItems: 'center', justifyContent: 'center' }}>
-              <Text style={{ fontSize: 17, fontWeight: '900', color: tone.c }}>{r.score}</Text>
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text style={{ fontSize: 14, fontWeight: '800', color: colors.slate900 }}>{pr.title}</Text>
-              <Text style={{ fontSize: 12.5, fontWeight: '700', color: tone.c }}>{tone.t}</Text>
-            </View>
+          <View style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: tone.bg, alignItems: 'center', justifyContent: 'center' }}>
+            <Text style={{ fontSize: 14, fontWeight: '900', color: tone.c }}>{r.score}</Text>
           </View>
-          {r.findings.slice(0, 2).map(f => (
-            <View key={f.id} style={{ flexDirection: 'row', gap: 8 }}>
-              <Ionicons name={sev(f.severity).n} size={16} color={sev(f.severity).c} style={{ marginTop: 1 }} />
-              <Text style={{ flex: 1, fontSize: 12.5, color: colors.slate700, lineHeight: 17 }}>{f.title}</Text>
-            </View>
-          ))}
-          <Pressable onPress={() => openReport(pr.documentId)} accessibilityLabel={`View report for ${pr.title}`}><Text style={{ color: colors.royal600, fontWeight: '800', fontSize: 12.5 }}>View full report →</Text></Pressable>
+          <View style={{ flex: 1 }}>
+            <Text style={{ fontSize: 13, fontWeight: '800', color: colors.slate900 }} numberOfLines={1}>{pr.title} · <Text style={{ color: tone.c }}>{tone.t}</Text></Text>
+            {!!top && <Text style={{ fontSize: 11.5, color: colors.slate500 }} numberOfLines={1}>{top.title}</Text>}
+          </View>
+          <Pressable onPress={() => openReport(pr.documentId)} accessibilityLabel={`View report for ${pr.title}`} hitSlop={8}><Text style={{ color: colors.royal600, fontWeight: '800', fontSize: 12.5 }}>Report</Text></Pressable>
         </>
       )}
     </View>
@@ -3015,7 +3020,7 @@ function ChatScreen({ message, setMessage, sessionMessages, isTyping, sendMessag
   askText: (text: string) => void;
   runAction: (label: string) => void;
   startDocFlow: () => void;
-  uploadDoc: (msgId: string, source: 'camera' | 'gallery' | 'file') => void;
+  uploadDoc: (msgId: string, source: 'scan' | 'gallery' | 'file') => void;
   skipDoc: (msgId: string) => void;
   retryDoc: (type: string) => void;
   openReport: (docId: string) => void;
@@ -3028,8 +3033,8 @@ function ChatScreen({ message, setMessage, sessionMessages, isTyping, sendMessag
   // Newest message (or the typing dots) always comes into view.
   useEffect(() => { scrollToEnd(); }, [sessionMessages.length, isTyping, scrollToEnd]);
   const missingDocs = activeApp ? Math.max(activeApp.documentsRequired - activeApp.documentsUploaded, 0) : 0;
-  const chipStyle = { flexDirection: 'row' as const, alignItems: 'center' as const, gap: 6, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 18, backgroundColor: colors.royal50 };
-  const chipText = { fontSize: 12.5, fontWeight: '700' as const, color: colors.royal600 };
+  const chip = { flexDirection: 'row' as const, alignItems: 'center' as const, gap: 5, paddingHorizontal: 11, paddingVertical: 7, borderRadius: 16, backgroundColor: colors.royal50 };
+  const chipText = { fontSize: 12, fontWeight: '700' as const, color: colors.royal600 };
   const lastAiIdx = (() => { for (let i = sessionMessages.length - 1; i >= 0; i--) if (sessionMessages[i].role === 'ai') return i; return -1; })();
   return (
     // Fixed column: scrolling conversation on top, composer pinned underneath
@@ -3041,7 +3046,7 @@ function ChatScreen({ message, setMessage, sessionMessages, isTyping, sendMessag
         style={{ flex: 1 }}
         persistentScrollbar
         keyboardShouldPersistTaps="handled"
-        contentContainerStyle={[styles.chatScreen, { padding: 18, paddingBottom: 12 }]}
+        contentContainerStyle={[styles.chatScreen, { padding: 16, paddingBottom: 10, gap: 8 }]}
         scrollEventThrottle={64}
         onContentSizeChange={() => { if (atBottom) scrollToEnd(false); }}
         onScroll={(e) => {
@@ -3049,51 +3054,36 @@ function ChatScreen({ message, setMessage, sessionMessages, isTyping, sendMessag
           setAtBottom(contentOffset.y + layoutMeasurement.height >= contentSize.height - 40);
         }}
       >
-        <Text style={styles.eyebrow}>Visa With Ease Assistant</Text>
-        <Text style={styles.title}>Ask, upload, done</Text>
-        {activeApp && (
-          <View style={styles.contextRow}>
-            <Badge tone="neutral" label={activeApp.destinationCountry} />
-            <Badge tone="neutral" label={`${activeApp.documentsUploaded}/${activeApp.documentsRequired} docs`} />
-            {activeApp.issuesCount > 0 && <Badge tone="warn" label={`${activeApp.issuesCount} issues`} />}
-          </View>
-        )}
         {sessionMessages.length === 0 && (
           <>
-            <View style={styles.aiBubble}>
-              <Text style={styles.bodyText}>{activeApp ? `I can see your ${activeApp.destinationCountry} ${activeApp.visaType} application (score ${activeApp.readinessScore}). Ask me anything, tap a question below, or let me collect your documents one by one.` : "Hello! I'm your Visa With Ease assistant. Tap a question below or ask me anything about visa requirements, documents, or your application."}</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+              <Text style={{ flex: 1, fontSize: 20, fontWeight: '900', color: colors.slate900 }}>Assistant</Text>
+              {activeApp && <Badge tone="neutral" label={`${activeApp.destinationCountry} · ${activeApp.documentsUploaded}/${activeApp.documentsRequired} docs`} />}
             </View>
-            {activeApp && missingDocs > 0 && (
-              <Pressable onPress={startDocFlow} accessibilityLabel="Upload my documents" style={{ flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: colors.royal600, borderRadius: 14, padding: 14 }}>
-                <Ionicons name="cloud-upload-outline" size={24} color="#fff" />
-                <View style={{ flex: 1 }}>
-                  <Text style={{ color: '#fff', fontWeight: '800', fontSize: 15 }}>Upload my documents</Text>
-                  <Text style={{ color: 'rgba(255,255,255,0.8)', fontSize: 12 }}>{missingDocs} still needed — I check each one while you add the next.</Text>
-                </View>
-                <Ionicons name="arrow-forward" size={18} color="#fff" />
-              </Pressable>
-            )}
+            <Text style={{ fontSize: 13.5, color: colors.slate600, lineHeight: 19 }}>
+              {activeApp ? `Ask anything about your ${activeApp.destinationCountry} application, tap a question, or add your documents here.` : 'Ask anything about visa requirements and documents, or tap a question.'}
+            </Text>
             {activeApp && (
-              <Pressable onPress={() => askText(`What is the status of my ${activeApp.destinationCountry} visa application?`)} accessibilityLabel="Visa status" style={{ flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: colors.white, borderRadius: 14, borderWidth: 1, borderColor: colors.slate100, padding: 14 }}>
-                <Ionicons name="pulse-outline" size={22} color={colors.royal600} />
-                <View style={{ flex: 1 }}>
-                  <Text style={{ fontWeight: '800', fontSize: 14.5, color: colors.slate900 }}>Status of my {activeApp.destinationCountry} visa</Text>
-                  <Text style={{ fontSize: 12, color: colors.slate500 }}>Score, documents and open issues</Text>
-                </View>
-                <Ionicons name="chevron-forward" size={16} color={colors.slate300} />
-              </Pressable>
+              <View style={{ flexDirection: 'row', gap: 8 }}>
+                {missingDocs > 0 && (
+                  <Pressable onPress={startDocFlow} accessibilityLabel="Upload my documents" style={[chip, { backgroundColor: colors.royal600, paddingVertical: 9 }]}>
+                    <Ionicons name="cloud-upload-outline" size={16} color="#fff" />
+                    <Text style={{ color: '#fff', fontWeight: '800', fontSize: 12.5 }}>Add documents ({missingDocs})</Text>
+                  </Pressable>
+                )}
+                <Pressable onPress={() => askText(`What is the status of my ${activeApp.destinationCountry} visa application?`)} accessibilityLabel="Visa status" style={[chip, { paddingVertical: 9 }]}>
+                  <Ionicons name="pulse-outline" size={16} color={colors.royal600} />
+                  <Text style={chipText}>Visa status</Text>
+                </Pressable>
+              </View>
             )}
-            <Text style={[styles.eyebrow, { marginTop: 6 }]}>Common questions</Text>
             <FaqPanel faq={faq} askFaq={askFaq} />
           </>
         )}
         {sessionMessages.map((item, idx) => (
-          <View key={item.id} style={{ gap: 8 }}>
+          <View key={item.id} style={{ gap: 6 }}>
             {item.docCard ? (
-              <>
-                <View style={styles.aiBubble}><Text style={styles.bodyText}>{item.text}</Text></View>
-                <ChatDocCard msg={item} uploadDoc={uploadDoc} skipDoc={skipDoc} />
-              </>
+              <ChatDocCard msg={item} uploadDoc={uploadDoc} skipDoc={skipDoc} />
             ) : item.progress ? (
               <ChatProgressCard msg={item} openReport={openReport} retryDoc={retryDoc} />
             ) : (
@@ -3103,25 +3093,20 @@ function ChatScreen({ message, setMessage, sessionMessages, isTyping, sendMessag
               </View>
             )}
             {/* Quick actions and follow-up questions belong to the latest answer only, so old ones don't pile up. */}
-            {idx === lastAiIdx && !!item.actions?.length && (
-              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
-                {item.actions.map(a => (
-                  <Pressable key={a} onPress={() => runAction(a)} accessibilityLabel={a} style={chipStyle}>
-                    <Text style={chipText}>{a}</Text>
+            {idx === lastAiIdx && (!!item.actions?.length || !!item.related?.length) && (
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} keyboardShouldPersistTaps="handled" contentContainerStyle={{ gap: 6 }}>
+                {item.actions?.map(a => (
+                  <Pressable key={a} onPress={() => runAction(a)} accessibilityLabel={a} style={[chip, { backgroundColor: colors.royal600 }]}>
+                    <Text style={[chipText, { color: '#fff' }]}>{a}</Text>
                   </Pressable>
                 ))}
-              </View>
-            )}
-            {idx === lastAiIdx && !!item.related?.length && (
-              <View style={{ gap: 6 }}>
-                <Text style={{ fontSize: 11, fontWeight: '800', color: colors.slate500, letterSpacing: 1 }}>YOU MAY ALSO ASK</Text>
-                {item.related.map(q => (
-                  <Pressable key={q.id} onPress={() => askFaq(q.id, q.question)} accessibilityLabel={`Ask: ${q.question}`} style={{ flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: colors.white, borderRadius: 12, borderWidth: 1, borderColor: colors.slate100, paddingHorizontal: 12, paddingVertical: 10 }}>
-                    <Ionicons name="help-circle-outline" size={17} color={colors.royal600} />
-                    <Text style={{ flex: 1, fontSize: 13, color: colors.slate800, fontWeight: '600' }}>{q.question}</Text>
+                {item.related?.map(q => (
+                  <Pressable key={q.id} onPress={() => askFaq(q.id, q.question)} accessibilityLabel={`Ask: ${q.question}`} style={chip}>
+                    <Ionicons name="help-circle-outline" size={14} color={colors.royal600} />
+                    <Text style={chipText}>{q.question}</Text>
                   </Pressable>
                 ))}
-              </View>
+              </ScrollView>
             )}
           </View>
         ))}
@@ -3144,48 +3129,44 @@ function ChatScreen({ message, setMessage, sessionMessages, isTyping, sendMessag
         <Pressable
           accessibilityLabel="Scroll to latest message"
           onPress={() => scrollToEnd()}
-          style={{ position: 'absolute', right: 14, bottom: 118 + bottomInset, width: 38, height: 38, borderRadius: 19, backgroundColor: colors.royal600, alignItems: 'center', justifyContent: 'center', elevation: 6, shadowColor: '#000', shadowOpacity: 0.25, shadowRadius: 6 }}
+          style={{ position: 'absolute', right: 14, bottom: 104 + bottomInset, width: 36, height: 36, borderRadius: 18, backgroundColor: colors.royal600, alignItems: 'center', justifyContent: 'center', elevation: 6, shadowColor: '#000', shadowOpacity: 0.25, shadowRadius: 6 }}
         >
           <Ionicons name="chevron-down" size={22} color="#fff" />
         </Pressable>
       )}
-      <View style={{ paddingHorizontal: 18, paddingTop: 8, paddingBottom: bottomInset + 8, gap: 8, backgroundColor: colors.slate50, borderTopWidth: 1, borderTopColor: colors.slate100 }}>
+      <View style={{ paddingHorizontal: 16, paddingTop: 6, paddingBottom: bottomInset + 6, gap: 6, backgroundColor: colors.slate50, borderTopWidth: 1, borderTopColor: colors.slate100 }}>
         {showFaq && (
-          <View style={{ maxHeight: 250 }}>
+          <View style={{ maxHeight: 210 }}>
             <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
-              <FaqPanel faq={faq} compact askFaq={(id, q) => { setShowFaq(false); askFaq(id, q); }} />
+              <FaqPanel faq={faq} limit={3} askFaq={(id, q) => { setShowFaq(false); askFaq(id, q); }} />
             </ScrollView>
           </View>
         )}
         {sessionMessages.length > 0 && (
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} keyboardShouldPersistTaps="handled" contentContainerStyle={{ gap: 8 }}>
-            <Pressable onPress={() => setShowFaq(v => !v)} accessibilityLabel="FAQs" style={[chipStyle, showFaq && { backgroundColor: colors.royal600 }]}>
-              <Ionicons name="help-circle-outline" size={15} color={showFaq ? '#fff' : colors.royal600} />
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} keyboardShouldPersistTaps="handled" contentContainerStyle={{ gap: 6 }}>
+            <Pressable onPress={() => setShowFaq(v => !v)} accessibilityLabel="FAQs" style={[chip, showFaq && { backgroundColor: colors.royal600 }]}>
+              <Ionicons name="help-circle-outline" size={14} color={showFaq ? '#fff' : colors.royal600} />
               <Text style={[chipText, showFaq && { color: '#fff' }]}>FAQs</Text>
             </Pressable>
             {activeApp && (
-              <Pressable onPress={() => askText(`What is the status of my ${activeApp.destinationCountry} visa application?`)} accessibilityLabel="Visa status" style={chipStyle}>
-                <Ionicons name="pulse-outline" size={15} color={colors.royal600} />
+              <Pressable onPress={() => askText(`What is the status of my ${activeApp.destinationCountry} visa application?`)} accessibilityLabel="Visa status" style={chip}>
+                <Ionicons name="pulse-outline" size={14} color={colors.royal600} />
                 <Text style={chipText}>Visa status</Text>
               </Pressable>
             )}
             {activeApp && (
-              <Pressable onPress={startDocFlow} accessibilityLabel="Upload my documents" style={chipStyle}>
-                <Ionicons name="cloud-upload-outline" size={15} color={colors.royal600} />
-                <Text style={chipText}>Upload documents</Text>
+              <Pressable onPress={startDocFlow} accessibilityLabel="Upload my documents" style={chip}>
+                <Ionicons name="cloud-upload-outline" size={14} color={colors.royal600} />
+                <Text style={chipText}>Documents</Text>
               </Pressable>
             )}
-            <Pressable onPress={openConsultants} accessibilityLabel="Consultants" style={chipStyle}>
-              <Ionicons name="people-outline" size={15} color={colors.royal600} />
+            <Pressable onPress={openConsultants} accessibilityLabel="Consultants" style={chip}>
+              <Ionicons name="people-outline" size={14} color={colors.royal600} />
               <Text style={chipText}>Consultant</Text>
             </Pressable>
           </ScrollView>
         )}
-        {/* Non-dismissible disclaimer — always visible, kept to one compact line */}
-        <View style={{ flexDirection: 'row', gap: 6, alignItems: 'center' }}>
-          <Ionicons name="shield-checkmark-outline" size={13} color="#92400E" />
-          <Text style={[styles.disclaimerText, { flex: 1, textAlign: 'left', fontSize: 10.5 }]} numberOfLines={2}>AI guidance — not legal advice. Verify with the official embassy or consulate.</Text>
-        </View>
+        <Text style={{ fontSize: 10, color: '#92400E' }} numberOfLines={1}>AI guidance — not legal advice. Verify with the official embassy.</Text>
         <View style={styles.composer}>
           <TextInput value={message} onChangeText={setMessage} placeholder="Ask about your application" style={styles.input} returnKeyType="send" onSubmitEditing={sendMessage} />
           <Pressable style={styles.send} onPress={sendMessage} accessibilityLabel="Send message">

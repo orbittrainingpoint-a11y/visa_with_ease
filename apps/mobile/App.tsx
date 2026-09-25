@@ -9,7 +9,7 @@ import {
   createBooking as apiCreateBooking,
   createAccessGrant as apiCreateAccessGrant, fetchMyAccessGrants, revokeAccessGrant,
   fetchNotifications, markNotificationRead, fetchDocuments, fetchAuditResult, fetchExchangeRates,
-  fetchMyBookings, cancelMyBooking, type ApiMyBooking,
+  fetchMyBookings, cancelMyBooking, deleteApplication as apiDeleteApplication, type ApiMyBooking,
   createUploadSlot, enqueueAudit, fetchRequirements, verificationLabel, fetchPartners,
   fetchProfile, updateProfile,
   forgotPassword, verifyEmailOtp, sendVerificationEmail, fetchBookingSlots, fetchVisaWaiver,
@@ -66,6 +66,7 @@ for (const Comp of [Text, TextInput] as any[]) {
 import { getCacheSnapshot, clearCache } from './src/offlineCache';
 import { loadPreferences, savePreferences, DEFAULT_PREFERENCES, type SettingsPreferences } from './src/preferences';
 import { colors, scoreColor } from './src/theme';
+import { PLAN_ENFORCED, canUse, tierOf, type FeatureId } from './src/plan';
 import { HOW_TO_SECTIONS, TOUR_STEPS, hasSeenTour, markTourSeen, type TourTarget } from './src/tour';
 import { DOC_GUIDES, DOC_KIND_LABEL, judge, liveChecks, monthsUntil, parsePassportMrz, recognise, similarity, tokensOf, type DocKind, type FaceLike, type LiveCheck, type MrzResult, type OcrLike, type Verdict } from './src/documentRecognition';
 
@@ -566,6 +567,22 @@ function AppInner() {
     }
   };
 
+  // Deleting an application removes it for good, and the server also cancels its upcoming
+  // appointments and revokes any consultant access granted for it.
+  const handleDeleteApplication = async (id: string) => {
+    try {
+      const result = await apiDeleteApplication(id);
+      const { applications } = await fetchApplications();
+      setAppList(applications.map(normalizeApp));
+      await Promise.all([loadBookings(), loadDocuments(applications[0]?.id)]);
+      setRoute({ name: 'tabs', tab: 'apps' });
+      const extras = [result.cancelledBookings ? `${result.cancelledBookings} appointment${result.cancelledBookings === 1 ? '' : 's'} cancelled` : '', result.revokedGrants ? 'consultant access removed' : ''].filter(Boolean).join(' · ');
+      Alert.alert('Application deleted', extras || 'It has been removed from your account.');
+    } catch (e: any) {
+      Alert.alert('Could not delete', e?.message ?? 'Please check your connection and try again.');
+    }
+  };
+
   // useCallback is load-bearing here, not just tidiness: WelcomeScreen's
   // sticky-footer effect lists this function in its own dependency array
   // and calls a setState (setStickyFooter) that lives in this component —
@@ -776,6 +793,9 @@ function AppInner() {
             loadingApps={loadingApps}
             loadAppsError={loadAppsError}
             userName={authUser?.name}
+            roles={authUser?.roles ?? []}
+            documents={documentList}
+            navigate={setRoute}
             openApplication={openApplication}
             openUpload={() => setRoute({ name: 'upload', state: 'select' })}
             openAnalysis={() => setRoute({ name: 'analysis' })}
@@ -816,6 +836,7 @@ function AppInner() {
             loadingApps={loadingApps}
             openApplication={openApplication}
             newApplication={() => setRoute({ name: 'newApp', step: 0 })}
+            onDelete={handleDeleteApplication}
           />
         )}
         {route.name === 'tabs' && route.tab === 'docs' && (
@@ -873,6 +894,7 @@ function AppInner() {
             openAnalysis={() => setRoute({ name: 'analysis' })}
             openBooking={() => openBooking()}
             documents={documentList}
+            onDelete={() => handleDeleteApplication(route.id)}
           />
         )}
         {route.name === 'newApp' && (
@@ -1324,9 +1346,38 @@ function ForgotPasswordScreen({ back }: { back: () => void }) {
 // Banner slides on Home. Each promotes something the app really does and jumps to it.
 type DashboardBanner = { id: string; eyebrow: string; title: string; body: string; cta: string; colors: [string, string]; icon: IoniconName };
 
-function DashboardScreen({ appList, loadingApps, loadAppsError, userName, openApplication, openUpload, openAnalysis, openRequirements, openChat, openConsultants, openCalculator, openFaceVerification, newApplication, retryLoad, nextBooking, openBookings }: {
+/** The "what should I do next" list — every item is derived from the user's real data, never canned. */
+type NextStep = { id: string; icon: IoniconName; tone: 'urgent' | 'todo' | 'good'; title: string; body: string; cta: string; go: () => void };
+
+function ProChip() {
+  return (
+    <View style={{ backgroundColor: '#FEF3C7', borderRadius: 6, paddingHorizontal: 5, paddingVertical: 1 }}>
+      <Text style={{ color: '#B45309', fontSize: 8.5, fontWeight: '900', letterSpacing: 0.4 }}>PRO</Text>
+    </View>
+  );
+}
+
+function Card({ children, style, onPress, label }: { children: React.ReactNode; style?: object; onPress?: () => void; label?: string }) {
+  const base = { backgroundColor: colors.white, borderRadius: 18, borderWidth: 1, borderColor: colors.slate100 };
+  return onPress
+    ? <Pressable onPress={onPress} accessibilityLabel={label} style={[base, style]}>{children}</Pressable>
+    : <View style={[base, style]}>{children}</View>;
+}
+function SectionHead({ title, action, onAction }: { title: string; action?: string; onAction?: () => void }) {
+  return (
+    <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+      <Text style={{ color: colors.slate900, fontWeight: '900', fontSize: 16 }}>{title}</Text>
+      {action && <Pressable onPress={onAction} hitSlop={8}><Text style={{ color: colors.royal600, fontWeight: '700', fontSize: 13 }}>{action}</Text></Pressable>}
+    </View>
+  );
+}
+
+function DashboardScreen({ appList, loadingApps, loadAppsError, userName, roles, documents, navigate, openApplication, openUpload, openAnalysis, openRequirements, openChat, openConsultants, openCalculator, openFaceVerification, newApplication, retryLoad, nextBooking, openBookings }: {
   nextBooking: ApiMyBooking | null;
   openBookings: () => void;
+  roles: string[];
+  documents: ApiDocument[];
+  navigate: (route: Route) => void;
   appList: ReturnType<typeof normalizeApp>[];
   loadingApps: boolean;
   loadAppsError?: string;
@@ -1347,8 +1398,17 @@ function DashboardScreen({ appList, loadingApps, loadAppsError, userName, openAp
   const countdown = app ? tripCountdown(app.intendedFrom) : '';
   const firstName = userName ? userName.split(' ')[0] : null;
   const [showMore, setShowMore] = useState(false);
+  const isCompany = roles.includes('hr_admin') || roles.includes('platform_admin');
+  const isConsultant = roles.includes('consultant') || roles.includes('platform_admin');
 
-  // Banner carousel: one slide per real feature, paged, auto-advancing, with dots.
+  // Opening a tool goes through the plan check: with PLAN_ENFORCED off (testing) it always opens;
+  // once plans are enforced, a pro-only tool sends free users to the upgrade screen instead.
+  const open = (feature: FeatureId, action: () => void) => () => {
+    if (canUse(feature)) action();
+    else navigate({ name: 'proTier' });
+  };
+
+  // ── Banner carousel: one slide per real feature, paged, auto-advancing, with dots.
   const bannerW = winW - 36;
   const banners: DashboardBanner[] = [
     { id: 'scan', eyebrow: 'New', title: 'Scan documents in seconds', body: 'The camera reads each page, checks it and captures automatically.', cta: 'Start scanning', colors: ['#0B1F4B', '#1A56DB'], icon: 'scan-outline' },
@@ -1371,18 +1431,43 @@ function DashboardScreen({ appList, loadingApps, loadAppsError, userName, openAp
     return () => clearInterval(timer);
   }, [bannerW, banners.length]);
 
-  const quick: Array<{ icon: IoniconName; label: string; bg: string; color: string; onPress: () => void }> = [
-    { icon: 'cloud-upload-outline', label: 'Upload', bg: '#EFF6FF', color: colors.royal600, onPress: openUpload },
-    { icon: 'analytics-outline', label: 'Analyze', bg: '#EDE9FE', color: colors.purple600, onPress: openAnalysis },
-    { icon: 'chatbubble-ellipses-outline', label: 'Ask AI', bg: '#E0F2FE', color: colors.teal500, onPress: openChat },
-    { icon: 'add-circle-outline', label: 'New application', bg: '#D1FAE5', color: colors.green500, onPress: newApplication },
-    { icon: 'calculator-outline', label: 'Score calculator', bg: '#EDE9FE', color: colors.purple600, onPress: openCalculator },
-    { icon: 'scan-outline', label: 'Face verify', bg: '#CCFBF1', color: colors.teal500, onPress: openFaceVerification },
+  // ── Next steps, from real state.
+  const uploaded = documents.filter((d) => d.status !== 'Missing');
+  const missing = documents.filter((d) => d.status === 'Missing');
+  const failing = uploaded.filter((d) => (d.score ?? 0) < 50);
+  const passportDone = uploaded.some((d) => d.type?.toLowerCase() === 'passport' && (d.score ?? 0) >= 50);
+  const daysLeft = app ? daysUntil(app.intendedFrom) : null;
+  const steps: NextStep[] = [];
+  if (app) {
+    if (!passportDone) steps.push({ id: 'passport', icon: 'id-card-outline', tone: 'urgent', title: failing.some((d) => d.type?.toLowerCase() === 'passport') ? 'Re-scan your passport' : 'Start with your passport', body: 'Every other check is compared against it. The scanner reads it in seconds.', cta: 'Scan passport', go: openUpload });
+    if (failing.length > 0 && passportDone) steps.push({ id: 'fix', icon: 'alert-circle-outline', tone: 'urgent', title: `Fix ${failing.length} document${failing.length === 1 ? '' : 's'}`, body: `${failing.map((d) => d.title).slice(0, 2).join(' and ')} didn’t pass its check — open the report to see why.`, cta: 'Open documents', go: () => navigate({ name: 'tabs', tab: 'docs' }) });
+    if (missing.length > 0 && passportDone) steps.push({ id: 'missing', icon: 'cloud-upload-outline', tone: 'todo', title: `Upload ${missing.length} more document${missing.length === 1 ? '' : 's'}`, body: `${missing.map((d) => d.title).slice(0, 2).join(', ')}${missing.length > 2 ? ` and ${missing.length - 2} more` : ''} still needed for ${app.destinationCountry}.`, cta: 'Upload', go: openUpload });
+    if (daysLeft !== null && daysLeft >= 0 && daysLeft <= 45 && app.readinessScore < 80) steps.push({ id: 'time', icon: 'time-outline', tone: 'urgent', title: `Travel in ${daysLeft} day${daysLeft === 1 ? '' : 's'}`, body: 'Visa processing takes time — an expert can help you finish faster.', cta: 'Book an expert', go: openConsultants });
+    if (!nextBooking && app.readinessScore < 80 && uploaded.length > 0) steps.push({ id: 'expert', icon: 'ribbon-outline', tone: 'todo', title: 'Get an expert review', body: 'A verified consultant checks your documents and your case before you submit.', cta: 'Find a consultant', go: openConsultants });
+    if (steps.length === 0) steps.push({ id: 'good', icon: 'checkmark-circle-outline', tone: 'good', title: 'You’re in good shape', body: 'Nothing urgent. Review your requirements one last time before you submit.', cta: 'See requirements', go: openRequirements });
+  }
+  const stepTone = { urgent: { bg: '#FEF2F2', fg: '#B91C1C' }, todo: { bg: colors.royal50, fg: colors.royal600 }, good: { bg: '#ECFDF5', fg: '#047857' } };
+
+  // ── Tools: one list, each with a plan tier (see src/plan.ts).
+  const tools: Array<{ feature: FeatureId; icon: IoniconName; label: string; bg: string; color: string; onPress: () => void }> = [
+    { feature: 'upload', icon: 'cloud-upload-outline', label: 'Upload', bg: '#EFF6FF', color: colors.royal600, onPress: openUpload },
+    { feature: 'analyze', icon: 'analytics-outline', label: 'Analyze', bg: '#EDE9FE', color: colors.purple600, onPress: openAnalysis },
+    { feature: 'askAi', icon: 'chatbubble-ellipses-outline', label: 'Ask AI', bg: '#E0F2FE', color: colors.teal500, onPress: openChat },
+    { feature: 'newApplication', icon: 'add-circle-outline', label: 'New application', bg: '#D1FAE5', color: colors.green500, onPress: newApplication },
+    { feature: 'scoreCalculator', icon: 'calculator-outline', label: 'Score calculator', bg: '#EDE9FE', color: colors.purple600, onPress: openCalculator },
+    { feature: 'timeline', icon: 'time-outline', label: 'Timeline', bg: '#F3E8FF', color: colors.purple600, onPress: () => navigate({ name: 'timelineTracker' }) },
+    { feature: 'embassyFinder', icon: 'business-outline', label: 'Embassy finder', bg: '#E0E7FF', color: colors.navy900, onPress: () => navigate({ name: 'embassyFinder' }) },
+    { feature: 'waiverChecker', icon: 'checkmark-done-outline', label: 'Visa-free check', bg: '#CCFBF1', color: colors.teal500, onPress: () => navigate({ name: 'visaWaiver' }) },
+    { feature: 'compareCountries', icon: 'git-compare-outline', label: 'Compare countries', bg: '#FEF3C7', color: colors.gold500, onPress: () => navigate({ name: 'countryComparison' }) },
+    { feature: 'bankEstimator', icon: 'wallet-outline', label: 'Bank balance', bg: '#D1FAE5', color: colors.green500, onPress: () => navigate({ name: 'bankBalance' }) },
+    { feature: 'rejectionAnalyzer', icon: 'document-text-outline', label: 'Rejection analyzer', bg: '#FEE2E2', color: '#DC2626', onPress: () => navigate({ name: 'rejectionAnalyzer' }) },
+    { feature: 'faceVerify', icon: 'scan-outline', label: 'Face verify', bg: '#CCFBF1', color: colors.teal500, onPress: openFaceVerification },
   ];
-  const visibleQuick = showMore ? quick : quick.slice(0, 4);
+  const visibleTools = showMore ? tools : tools.slice(0, 6);
+  const cardW = (winW - 36 - 10) / 2;
 
   return (
-    <View style={{ gap: 18 }}>
+    <View style={{ gap: 20 }}>
       <View>
         <Text style={[styles.eyebrow, { marginBottom: 2 }]}>{firstName ? `Hi, ${firstName}` : 'Welcome'}</Text>
         <Text style={[styles.title, { marginBottom: 0, fontSize: 26 }]}>{app ? 'Your visa journey' : 'Get started'}</Text>
@@ -1441,38 +1526,73 @@ function DashboardScreen({ appList, loadingApps, loadAppsError, userName, openAp
       ) : null}
 
       {!loadingApps && !app && (
-        <View style={{ backgroundColor: colors.white, borderRadius: 18, borderWidth: 1, borderColor: colors.slate100, padding: 22, alignItems: 'center', gap: 10 }}>
+        <Card style={{ padding: 22, alignItems: 'center', gap: 10 }}>
           <Ionicons name="document-text-outline" size={38} color={colors.royal600} />
           <Text style={[styles.rowTitle, { textAlign: 'center' }]}>No applications yet</Text>
           <Text style={[styles.rowMeta, { textAlign: 'center' }]}>Create your first visa application to get a readiness score and a personal document checklist.</Text>
           <Pressable style={[styles.primaryButton, { alignSelf: 'stretch' }]} onPress={newApplication}>
             <Text style={styles.primaryButtonText}>+ Create application</Text>
           </Pressable>
+        </Card>
+      )}
+
+      {/* Score + status: two compact portrait tiles */}
+      {!loadingApps && app && (
+        <View style={{ gap: 12 }}>
+          <View style={{ flexDirection: 'row', gap: 12 }}>
+            <Card onPress={() => openApplication(app.id)} label="Application readiness score" style={{ flex: 1, padding: 14, alignItems: 'center', gap: 6, minHeight: 176, justifyContent: 'center' }}>
+              <ScoreRing value={app.readinessScore} size={84} />
+              <Text style={{ color: colors.slate900, fontWeight: '800', fontSize: 14 }}>Readiness</Text>
+              <Text style={{ color: colors.slate500, fontSize: 12 }} numberOfLines={1}>{app.destinationFlag} {app.destinationCountry}</Text>
+            </Card>
+            <Card onPress={() => openApplication(app.id)} label="Application status" style={{ flex: 1, padding: 14, gap: 8, minHeight: 176, justifyContent: 'space-between' }}>
+              <View style={{ gap: 6 }}>
+                <Text style={{ color: colors.slate500, fontSize: 11, fontWeight: '800', letterSpacing: 0.8, textTransform: 'uppercase' }}>Status</Text>
+                <View style={[styles.statusPill, { backgroundColor: `${app.statusColor}18`, alignSelf: 'flex-start' }]}>
+                  <View style={[styles.statusDot, { backgroundColor: app.statusColor }]} />
+                  <Text style={[styles.statusText, { color: app.statusColor }]}>{app.status}</Text>
+                </View>
+                <Text style={{ color: colors.slate600, fontSize: 12 }} numberOfLines={1}>{app.visaType}</Text>
+              </View>
+              <View style={{ gap: 4 }}>
+                <Text style={{ color: colors.slate900, fontWeight: '800', fontSize: 14 }}>{app.documentsUploaded}/{app.documentsRequired} documents</Text>
+                <Text style={{ color: app.issuesCount > 0 ? '#B45309' : colors.slate500, fontSize: 12 }}>{app.issuesCount} issue{app.issuesCount === 1 ? '' : 's'} · {countdown.toLowerCase()}</Text>
+              </View>
+            </Card>
+          </View>
+          {/* Document progress */}
+          <Card onPress={() => navigate({ name: 'tabs', tab: 'docs' })} label="Document progress" style={{ padding: 14, gap: 8 }}>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+              <Text style={{ color: colors.slate900, fontWeight: '800', fontSize: 14 }}>Document progress</Text>
+              <Text style={{ color: colors.slate500, fontSize: 12.5, fontWeight: '700' }}>{uploaded.length} of {documents.length || app.documentsRequired} uploaded</Text>
+            </View>
+            <View style={{ height: 8, borderRadius: 4, backgroundColor: colors.slate100, overflow: 'hidden' }}>
+              <View style={{ height: 8, borderRadius: 4, width: `${Math.min(100, Math.round((uploaded.length / Math.max(1, documents.length || app.documentsRequired)) * 100))}%`, backgroundColor: colors.royal600 }} />
+            </View>
+          </Card>
         </View>
       )}
 
-      {/* Score + status: two compact portrait tiles, not one wide hero */}
-      {!loadingApps && app && (
-        <View style={{ flexDirection: 'row', gap: 12 }}>
-          <Pressable onPress={() => openApplication(app.id)} accessibilityLabel="Application readiness score" style={{ flex: 1, backgroundColor: colors.white, borderRadius: 18, borderWidth: 1, borderColor: colors.slate100, padding: 14, alignItems: 'center', gap: 6, minHeight: 176, justifyContent: 'center' }}>
-            <ScoreRing value={app.readinessScore} size={84} />
-            <Text style={{ color: colors.slate900, fontWeight: '800', fontSize: 14 }}>Readiness</Text>
-            <Text style={{ color: colors.slate500, fontSize: 12 }} numberOfLines={1}>{app.destinationFlag} {app.destinationCountry}</Text>
-          </Pressable>
-          <Pressable onPress={() => openApplication(app.id)} accessibilityLabel="Application status" style={{ flex: 1, backgroundColor: colors.white, borderRadius: 18, borderWidth: 1, borderColor: colors.slate100, padding: 14, gap: 8, minHeight: 176, justifyContent: 'space-between' }}>
-            <View style={{ gap: 6 }}>
-              <Text style={{ color: colors.slate500, fontSize: 11, fontWeight: '800', letterSpacing: 0.8, textTransform: 'uppercase' }}>Status</Text>
-              <View style={[styles.statusPill, { backgroundColor: `${app.statusColor}18`, alignSelf: 'flex-start' }]}>
-                <View style={[styles.statusDot, { backgroundColor: app.statusColor }]} />
-                <Text style={[styles.statusText, { color: app.statusColor }]}>{app.status}</Text>
-              </View>
-              <Text style={{ color: colors.slate600, fontSize: 12 }} numberOfLines={1}>{app.visaType}</Text>
-            </View>
-            <View style={{ gap: 4 }}>
-              <Text style={{ color: colors.slate900, fontWeight: '800', fontSize: 14 }}>{app.documentsUploaded}/{app.documentsRequired} documents</Text>
-              <Text style={{ color: app.issuesCount > 0 ? '#B45309' : colors.slate500, fontSize: 12 }}>{app.issuesCount} issue{app.issuesCount === 1 ? '' : 's'} · {countdown.toLowerCase()}</Text>
-            </View>
-          </Pressable>
+      {/* What to do next — derived from real state */}
+      {!loadingApps && app && steps.length > 0 && (
+        <View>
+          <SectionHead title="What to do next" />
+          <View style={{ gap: 10 }}>
+            {steps.slice(0, 3).map((st) => (
+              <Card key={st.id} style={{ padding: 14, flexDirection: 'row', gap: 12, alignItems: 'center' }}>
+                <View style={{ width: 42, height: 42, borderRadius: 13, backgroundColor: stepTone[st.tone].bg, alignItems: 'center', justifyContent: 'center' }}>
+                  <Ionicons name={st.icon} size={22} color={stepTone[st.tone].fg} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={{ color: colors.slate900, fontWeight: '800', fontSize: 14 }}>{st.title}</Text>
+                  <Text style={{ color: colors.slate500, fontSize: 12, lineHeight: 17, marginTop: 1 }}>{st.body}</Text>
+                </View>
+                <Pressable onPress={st.go} accessibilityLabel={st.cta} style={{ backgroundColor: stepTone[st.tone].bg, paddingVertical: 8, paddingHorizontal: 12, borderRadius: 11 }}>
+                  <Text style={{ color: stepTone[st.tone].fg, fontWeight: '800', fontSize: 12.5 }}>{st.cta}</Text>
+                </Pressable>
+              </Card>
+            ))}
+          </View>
         </View>
       )}
 
@@ -1495,7 +1615,7 @@ function DashboardScreen({ appList, loadingApps, loadAppsError, userName, openAp
       })()}
 
       {/* Book a consultant */}
-      <View style={{ backgroundColor: colors.white, borderRadius: 18, borderWidth: 1, borderColor: colors.slate100, padding: 16, flexDirection: 'row', alignItems: 'center', gap: 14 }}>
+      <Card style={{ padding: 16, flexDirection: 'row', alignItems: 'center', gap: 14 }}>
         <View style={{ width: 46, height: 46, borderRadius: 14, backgroundColor: '#FEF3C7', alignItems: 'center', justifyContent: 'center' }}>
           <Ionicons name="ribbon-outline" size={24} color={colors.gold500} />
         </View>
@@ -1506,32 +1626,59 @@ function DashboardScreen({ appList, loadingApps, loadAppsError, userName, openAp
         <Pressable onPress={openConsultants} accessibilityLabel="Book a consultant" style={{ backgroundColor: colors.royal600, paddingVertical: 10, paddingHorizontal: 14, borderRadius: 12 }}>
           <Text style={{ color: '#fff', fontWeight: '800', fontSize: 13 }}>Book</Text>
         </Pressable>
-      </View>
+      </Card>
 
-      {/* Other options — minimal grid, the rest behind "More" */}
-      <View>
-        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
-          <Text style={{ color: colors.slate900, fontWeight: '900', fontSize: 16 }}>Quick actions</Text>
-          <Pressable onPress={() => setShowMore((v) => !v)} hitSlop={8} accessibilityLabel={showMore ? 'Show fewer actions' : 'Show more actions'} style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-            <Text style={{ color: colors.royal600, fontWeight: '700', fontSize: 13 }}>{showMore ? 'Less' : 'More'}</Text>
-            <Ionicons name={showMore ? 'chevron-up' : 'chevron-down'} size={15} color={colors.royal600} />
-          </Pressable>
+      {/* Workspace: company and consultant tools, shown only to the roles that can use them */}
+      {(isCompany || isConsultant) && (
+        <View>
+          <SectionHead title="Your workspace" />
+          <View style={{ gap: 10 }}>
+            {isCompany && (
+              <Card onPress={open('teamWorkspace', () => navigate({ name: 'hrPortal' }))} label="Company team workspace" style={{ padding: 14, flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+                <View style={{ width: 42, height: 42, borderRadius: 13, backgroundColor: '#E0E7FF', alignItems: 'center', justifyContent: 'center' }}><Ionicons name="people-circle-outline" size={24} color={colors.navy900} /></View>
+                <View style={{ flex: 1 }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}><Text style={{ color: colors.slate900, fontWeight: '800', fontSize: 14 }}>Team & cases</Text>{tierOf('teamWorkspace') === 'pro' && <ProChip />}</View>
+                  <Text style={{ color: colors.slate500, fontSize: 12, marginTop: 1 }}>Employee applications, bulk uploads and team reports.</Text>
+                </View>
+                <Ionicons name="chevron-forward" size={18} color={colors.slate300} />
+              </Card>
+            )}
+            {isConsultant && (
+              <Card onPress={() => navigate({ name: 'consultantConsole' })} label="Consultant console" style={{ padding: 14, flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+                <View style={{ width: 42, height: 42, borderRadius: 13, backgroundColor: '#FEF3C7', alignItems: 'center', justifyContent: 'center' }}><Ionicons name="briefcase-outline" size={22} color={colors.gold500} /></View>
+                <View style={{ flex: 1 }}>
+                  <Text style={{ color: colors.slate900, fontWeight: '800', fontSize: 14 }}>Client queue</Text>
+                  <Text style={{ color: colors.slate500, fontSize: 12, marginTop: 1 }}>Cases shared with you, by urgency.</Text>
+                </View>
+                <Ionicons name="chevron-forward" size={18} color={colors.slate300} />
+              </Card>
+            )}
+          </View>
         </View>
+      )}
+
+      {/* Tools — everything, with the intended plan tier marked */}
+      <View>
+        <SectionHead title="Tools" action={showMore ? 'Less' : `All ${tools.length}`} onAction={() => setShowMore((v) => !v)} />
         <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10 }}>
-          {visibleQuick.map((q) => (
-            <Pressable key={q.label} onPress={q.onPress} style={{ width: (winW - 36 - 10) / 2, flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: colors.white, borderRadius: 14, borderWidth: 1, borderColor: colors.slate100, padding: 12 }}>
+          {visibleTools.map((q) => (
+            <Pressable key={q.label} onPress={open(q.feature, q.onPress)} style={{ width: cardW, flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: colors.white, borderRadius: 14, borderWidth: 1, borderColor: colors.slate100, padding: 12 }}>
               <View style={{ width: 34, height: 34, borderRadius: 10, backgroundColor: q.bg, alignItems: 'center', justifyContent: 'center' }}>
                 <Ionicons name={q.icon} size={18} color={q.color} />
               </View>
-              <Text style={{ flex: 1, color: colors.slate800, fontWeight: '700', fontSize: 13 }} numberOfLines={1}>{q.label}</Text>
+              <View style={{ flex: 1, gap: 2 }}>
+                <Text style={{ color: colors.slate800, fontWeight: '700', fontSize: 13 }} numberOfLines={1}>{q.label}</Text>
+                {tierOf(q.feature) === 'pro' && <View style={{ alignSelf: 'flex-start' }}><ProChip /></View>}
+              </View>
             </Pressable>
           ))}
         </View>
+        {!PLAN_ENFORCED && <Text style={{ color: colors.slate500, fontSize: 11.5, marginTop: 10 }}>Test mode: every tool is unlocked. “PRO” marks what will become a paid feature.</Text>}
       </View>
 
       {!loadingApps && appList.length > 1 && (
         <View>
-          <Text style={{ color: colors.slate900, fontWeight: '900', fontSize: 16, marginBottom: 10 }}>Other applications</Text>
+          <SectionHead title="Other applications" action="See all" onAction={() => navigate({ name: 'tabs', tab: 'apps' })} />
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 10 }}>
             {appList.slice(1).map((a) => (
               <Pressable key={a.id} onPress={() => openApplication(a.id)} style={{ width: 130, backgroundColor: colors.white, borderRadius: 16, borderWidth: 1, borderColor: colors.slate100, padding: 12, alignItems: 'center', gap: 6 }}>
@@ -1551,7 +1698,8 @@ function DashboardScreen({ appList, loadingApps, loadAppsError, userName, openAp
   );
 }
 
-function ApplicationsScreen({ appList, loadingApps, openApplication, newApplication }: {
+function ApplicationsScreen({ appList, loadingApps, openApplication, newApplication, onDelete }: {
+  onDelete: (id: string) => Promise<void>;
   appList: ReturnType<typeof normalizeApp>[];
   loadingApps: boolean;
   openApplication: (id: string) => void;
@@ -1596,13 +1744,25 @@ function ApplicationsScreen({ appList, loadingApps, openApplication, newApplicat
             </View>
           </View>
           <ScoreRing value={app.readinessScore} />
+          <Pressable
+            hitSlop={10}
+            accessibilityLabel={`Delete ${app.destinationCountry} application`}
+            onPress={() => Alert.alert('Delete this application?', `${app.destinationCountry} · ${app.visaType} will be removed permanently. Upcoming appointments for it are cancelled.`, [
+              { text: 'Keep it', style: 'cancel' },
+              { text: 'Delete application', style: 'destructive', onPress: () => { void onDelete(app.id); } },
+            ])}
+            style={{ padding: 6 }}
+          >
+            <Ionicons name="trash-outline" size={19} color="#B91C1C" />
+          </Pressable>
         </Pressable>
       ))}
     </View>
   );
 }
 
-function ApplicationDetailScreen({ id, appList, tab, setTab, back, upload, openAudit, openAnalysis, openBooking, documents }: {
+function ApplicationDetailScreen({ id, appList, tab, setTab, back, upload, openAudit, openAnalysis, openBooking, documents, onDelete }: {
+  onDelete: () => Promise<void>;
   id: string;
   appList: ReturnType<typeof normalizeApp>[];
   tab: DetailTab;
@@ -1661,6 +1821,25 @@ function ApplicationDetailScreen({ id, appList, tab, setTab, back, upload, openA
       {tab === 'documents' && <DocumentList upload={upload} openAudit={openAudit} grid documents={documents} />}
       {tab === 'requirements' && <RequirementList documents={documents} destinationCountry={app.destinationCountry} />}
       {tab === 'chat' && <MiniChat openBooking={openBooking} documents={documents} />}
+
+      <View style={{ marginTop: 24, borderTopWidth: 1, borderTopColor: colors.slate100, paddingTop: 16, gap: 8 }}>
+        <Text style={{ color: colors.slate500, fontSize: 11, fontWeight: '800', letterSpacing: 0.8, textTransform: 'uppercase' }}>Manage</Text>
+        <Pressable
+          accessibilityLabel="Delete application"
+          onPress={() => Alert.alert(
+            'Delete this application?',
+            `${app.destinationCountry} · ${app.visaType} (${app.refCode}) will be removed permanently.\n\nUpcoming appointments for it are cancelled and any consultant access you granted is removed.`,
+            [
+              { text: 'Keep it', style: 'cancel' },
+              { text: 'Delete application', style: 'destructive', onPress: () => { void onDelete(); } },
+            ]
+          )}
+          style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, paddingVertical: 13, borderRadius: 14, backgroundColor: '#FEF2F2', borderWidth: 1, borderColor: '#FECACA' }}
+        >
+          <Ionicons name="trash-outline" size={18} color="#B91C1C" />
+          <Text style={{ color: '#B91C1C', fontWeight: '800', fontSize: 14 }}>Delete application</Text>
+        </Pressable>
+      </View>
     </View>
   );
 }

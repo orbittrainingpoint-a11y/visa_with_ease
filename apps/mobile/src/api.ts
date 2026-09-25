@@ -115,6 +115,9 @@ export function fetchApplications() {
 export function fetchApplication(id: string) {
   return request<{ application: ApiApplication }>('GET', `/applications/${id}`);
 }
+export function deleteApplication(id: string) {
+  return request<{ id: string; deleted: boolean; cancelledBookings: number; revokedGrants: number }>('DELETE', `/applications/${encodeURIComponent(id)}`);
+}
 export function createApplication(body: {
   destinationCountry: string;
   visaType: string;

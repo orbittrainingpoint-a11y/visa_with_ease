@@ -498,6 +498,30 @@ export function createApp(services: Services = createServices()) {
     }
   });
 
+  // Deleting an application also ends everything that hangs off it: the caller's
+  // upcoming appointments for it are cancelled and any consultant access they granted
+  // for it is revoked — otherwise a deleted application could still be visible to an expert.
+  app.delete('/applications/:id', requireAuth, async (req, res, next) => {
+    try {
+      const uid = req.user!.uid;
+      const id = req.params.id as string;
+      const owned = await services.applications.getApplication(id, uid);
+      if (!owned) throw notFound('Application not found');
+
+      const bookings = (await services.consultants.listBookings()).filter((b) => b.userId === uid && b.applicationId === id && b.status !== 'cancelled');
+      await Promise.all(bookings.map((b) => services.consultants.cancelBooking(b.bookingId, uid)));
+      const grants = (await services.accessGrants.listActiveGrants()).filter((g) => g.applicationId === id && g.grantedBy === uid);
+      await Promise.all(grants.map((g) => services.accessGrants.revokeGrant(g.grantId, uid)));
+
+      const deleted = await services.applications.deleteApplication(id, uid);
+      if (!deleted) throw notFound('Application not found');
+      await appendAuditLog({ actor: req.user!.email ?? uid, action: 'DELETE_APPLICATION', resource: id, ip: req.ip ?? '?' });
+      res.json({ id, deleted: true, cancelledBookings: bookings.length, revokedGrants: grants.length });
+    } catch (err) {
+      next(err);
+    }
+  });
+
   const SAFE_ID_RE = /^[a-zA-Z0-9_-]+$/;
 
   app.post('/upload-slots', requireAuth, validateBody(auditRequestSchema), async (req, res, next) => {

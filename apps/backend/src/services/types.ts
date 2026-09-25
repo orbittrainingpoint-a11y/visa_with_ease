@@ -27,6 +27,8 @@ export interface AuthService {
 export interface ApplicationRepository {
   listApplications(userId?: string): Promise<VisaApplication[]>;
   getApplication(id: string, userId?: string): Promise<VisaApplication | null>;
+  /** Deletes one of the caller's own applications. false = not found / not theirs. */
+  deleteApplication(id: string, userId: string): Promise<boolean>;
   createApplication(input: { destinationCountry: string; visaType: string; intendedFrom: string; applicantName: string; purpose?: string; nationality?: string; residenceCountry?: string }, userId?: string): Promise<VisaApplication>;
 }
 

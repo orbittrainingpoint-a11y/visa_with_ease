@@ -68,6 +68,13 @@ export function createFirestoreServices(db: Firestore): Services {
         return rest as VisaApplication;
       });
     },
+    async deleteApplication(id, userId) {
+      const ref = db.collection('applications').doc(id);
+      const doc = await ref.get();
+      if (!doc.exists || (doc.data() as StoredVisaApplication).ownerId !== userId) return false;
+      await ref.delete();
+      return true;
+    },
     async getApplication(id, userId) {
       const doc = await db.collection('applications').doc(id).get();
       if (!doc.exists) return null;

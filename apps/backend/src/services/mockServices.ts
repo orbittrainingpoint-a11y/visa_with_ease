@@ -137,6 +137,13 @@ export function createMockServices(): Services {
     async getApplication(id, userId) {
       return getAppsForUser(userId).find((item) => item.id === id) ?? null;
     },
+    async deleteApplication(id, userId) {
+      const list = getAppsForUser(userId);
+      const index = list.findIndex((item) => item.id === id);
+      if (index < 0) return false;
+      list.splice(index, 1);
+      return true;
+    },
     async createApplication(input, userId) {
       const uid = userId ?? 'anonymous';
       const list = getAppsForUser(uid);

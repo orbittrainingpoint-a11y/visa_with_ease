@@ -145,6 +145,35 @@ test('Bookings — list is scoped to the caller, cancel frees the slot, others c
   assert.ok(!freed.body.takenSlots.includes('10:00 AM'), 'cancelling frees the slot');
 });
 
+test('DELETE /applications/:id — owner only; cancels its bookings and revokes its access grants', async () => {
+  const reg = async (tag: string) => {
+    const r = await post('/auth/register', { name: `Del ${tag}`, email: `del-${tag}-${Date.now()}@example.com`, password: 'Sup3rSecret!x' });
+    assert.equal(r.res.status, 201);
+    return r.body.token as string;
+  };
+  const owner = await reg('o');
+  const other = await reg('x');
+  const made = await post('/applications', { destinationCountry: 'France', visaType: 'schengen-tourist', intendedFrom: '2026-12-01' }, owner);
+  const id = made.body.application.id as string;
+  const keep = await post('/applications', { destinationCountry: 'Germany', visaType: 'schengen-tourist', intendedFrom: '2027-01-01' }, owner);
+  await post('/bookings', { consultantId: 'c-priya', applicationId: id, sessionType: 'standard', slotISO: '2027-04-10T06:00:00.000Z' }, owner);
+  await post('/access-grants', { applicationId: id, consultantId: 'c-priya', categories: ['profile'], expiresAt: '2027-05-01T00:00:00.000Z' }, owner);
+
+  assert.equal((await del(`/applications/${id}`)).res.status, 401, 'needs auth');
+  assert.equal((await del(`/applications/${id}`, other)).res.status, 404, 'another user cannot delete it');
+  assert.equal((await get(`/applications/${id}`, owner)).res.status, 200, 'still there after the failed attempt');
+
+  const res = await del(`/applications/${id}`, owner);
+  assert.equal(res.res.status, 200);
+  assert.equal(res.body.cancelledBookings, 1);
+  assert.equal(res.body.revokedGrants, 1);
+  assert.equal((await get(`/applications/${id}`, owner)).res.status, 404, 'gone');
+  const list = await get('/applications', owner);
+  assert.deepEqual(list.body.applications.map((a: { id: string }) => a.id), [keep.body.application.id], 'only the other application remains');
+  assert.equal((await get('/bookings', owner)).body.bookings[0].status, 'cancelled', 'its appointment was cancelled');
+  assert.equal((await del(`/applications/${id}`, owner)).res.status, 404, 'deleting twice is a clean 404');
+});
+
 test('POST /auth/register — password too short returns 400', async () => {
   const { res, body } = await post('/auth/register', {
     name: 'Test User', email: 'test@example.com', password: 'short'

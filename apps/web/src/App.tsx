@@ -1764,6 +1764,22 @@ function Requirements() {
 
 function ApplicationDetail() {
   const { id = fallbackApplications[0].id } = useParams();
+  const navigateAway = useNavigate();
+  const [deleting, setDeleting] = useState(false);
+  async function deleteApplication(label: string) {
+    if (!window.confirm(`Delete ${label}?\n\nIt is removed permanently. Upcoming appointments for it are cancelled and any consultant access you granted is removed.`)) return;
+    setDeleting(true);
+    try {
+      const result = await postJson<{ cancelledBookings: number; revokedGrants: number }>(`/applications/${encodeURIComponent(id)}`, {}, 'DELETE');
+      const extras = [result.cancelledBookings ? `${result.cancelledBookings} appointment(s) cancelled` : '', result.revokedGrants ? 'consultant access removed' : ''].filter(Boolean).join(' · ');
+      showToast(`Application deleted${extras ? ` — ${extras}` : ''}`, 'success');
+      navigateAway('/applications');
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Could not delete the application', 'error');
+    } finally {
+      setDeleting(false);
+    }
+  }
   const fallbackApplication = fallbackApplications.find((item) => item.id === id) ?? fallbackApplications[0];
   const { data: appData } = useApi<{ application: VisaApplication }>(`/applications/${id}`, { application: fallbackApplication });
   const docId = `${id}-passport`;
@@ -1901,6 +1917,16 @@ function ApplicationDetail() {
             <Link to="/consultants">Find consultant</Link>
           </div>
         </article>
+      </div>
+      <div style={{ marginTop: 24, paddingTop: 16, borderTop: '1px solid #E2E8F0' }}>
+        <button
+          type="button"
+          onClick={() => deleteApplication(`${application.destinationCountry} · ${application.visaType}`)}
+          disabled={deleting}
+          style={{ display: 'inline-flex', alignItems: 'center', gap: 8, padding: '10px 16px', borderRadius: 10, border: '1px solid #FECACA', background: '#FEF2F2', color: '#B91C1C', fontWeight: 700, fontSize: 14, cursor: 'pointer', opacity: deleting ? 0.6 : 1 }}
+        >
+          <Trash2 size={16} /> {deleting ? 'Deleting…' : 'Delete application'}
+        </button>
       </div>
     </section>
   );

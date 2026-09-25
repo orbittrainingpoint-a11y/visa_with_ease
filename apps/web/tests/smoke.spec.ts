@@ -224,6 +224,32 @@ test.describe('Guides', () => {
   });
 });
 
+// ─── Delete application ───────────────────────────────────────────────────────
+
+test.describe('Delete application', () => {
+  test('a user can delete an application from its detail page and it disappears', async ({ page, request }) => {
+    await loginAsDemo(page, 'consumer');
+    const token = await page.evaluate(() => { const raw = localStorage.getItem('visaiq.session'); return raw ? (JSON.parse(raw).token as string) : ''; });
+    const apiBase = 'http://127.0.0.1:3001';
+    const created = await request.post(`${apiBase}/applications`, {
+      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      data: { destinationCountry: 'Spain', visaType: 'spain-schengen', intendedFrom: '2027-02-01' },
+    });
+    expect(created.status()).toBe(201);
+    const id = (await created.json()).application.id as string;
+
+    page.on('dialog', (d) => d.accept());
+    await page.goto(`/applications/${id}`);
+    const decline = page.getByRole('button', { name: /decline non-essential/i });
+    if (await decline.isVisible().catch(() => false)) await decline.click(); // cookie banner sits over the page bottom
+    await page.getByRole('button', { name: /delete application/i }).click();
+    await expect(page).toHaveURL(/\/applications$/, { timeout: 15_000 });
+
+    const after = await request.get(`${apiBase}/applications/${id}`, { headers: { authorization: `Bearer ${token}` } });
+    expect(after.status()).toBe(404);
+  });
+});
+
 // ─── Chat ─────────────────────────────────────────────────────────────────────
 
 test.describe('Chat', () => {

@@ -20,8 +20,9 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   if (!res.ok) {
     const text = await res.text().catch(() => res.statusText);
     let msg = text;
-    try { msg = JSON.parse(text)?.error?.message ?? text; } catch { /* raw text */ }
-    throw Object.assign(new Error(msg || `${method} ${path} → ${res.status}`), { status: res.status });
+    let code: string | undefined;
+    try { const parsed = JSON.parse(text)?.error; msg = parsed?.message ?? text; code = parsed?.code; } catch { /* raw text */ }
+    throw Object.assign(new Error(msg || `${method} ${path} → ${res.status}`), { status: res.status, code });
   }
   return res.json() as Promise<T>;
 }

@@ -2398,23 +2398,35 @@ function AuditReport() {
   );
 }
 
-const BOOKING_SLOTS_AM = ['9:00', '9:30', '10:00', '10:30', '11:00', '11:30'];
-const BOOKING_SLOTS_PM = ['14:00', '14:30', '15:00', '15:30', '16:00', '16:30'];
+// Same labels the backend returns/validates (GST, UTC+4) — a different format meant booked slots never showed as taken.
+const BOOKING_SLOTS_AM = ['9:00 AM', '9:30 AM', '10:00 AM', '10:30 AM', '11:00 AM', '11:30 AM'];
+const BOOKING_SLOTS_PM = ['2:00 PM', '2:30 PM', '3:00 PM', '3:30 PM', '4:00 PM', '4:30 PM'];
+function slotLabelTo24h(label: string): { h: number; m: number } {
+  const match = /^(\d{1,2}):(\d{2})\s*(AM|PM)$/i.exec(label.trim());
+  if (!match) return { h: 0, m: 0 };
+  let h = Number(match[1]) % 12;
+  if (match[3].toUpperCase() === 'PM') h += 12;
+  return { h, m: Number(match[2]) };
+}
 function Booking() {
   const { consultantId } = useParams<{ consultantId?: string }>();
   const { data: applicationData } = useApi<{ applications: VisaApplication[] }>('/applications', { applications: fallbackApplications });
   const active = applicationData.applications[0] ?? fallbackApplications[0];
   const { data: consultantData } = useApi<{ consultants: ConsultantData[] }>('/consultants', { consultants: FALLBACK_CONSULTANTS });
   const consultant = consultantData.consultants.find(c => c.id === consultantId) ?? consultantData.consultants[0] ?? FALLBACK_CONSULTANTS[0];
+  const slotDate = new Date();
+  const [selectedDayForSlots, setSelectedDayForSlots] = useState(slotDate.getDate());
+  const slotDateKey = `${slotDate.getFullYear()}-${String(slotDate.getMonth() + 1).padStart(2, '0')}-${String(selectedDayForSlots).padStart(2, '0')}`;
   const { data: slotData } = useApi<{ slots: string[]; takenSlots: string[] }>(
-    `/booking/slots/${encodeURIComponent(consultant.id)}`, { slots: [...BOOKING_SLOTS_AM, ...BOOKING_SLOTS_PM], takenSlots: [] }
+    `/booking/slots/${encodeURIComponent(consultant.id)}?date=${slotDateKey}`, { slots: [...BOOKING_SLOTS_AM, ...BOOKING_SLOTS_PM], takenSlots: [] }
   );
   const initials = consultant.name.split(' ').map(p => p[0]).join('');
   const [selected, setSelected] = useState('deep-dive');
   const now = new Date();
   const [selectedDay, setSelectedDay] = useState(now.getDate());
-  const [selectedSlot, setSelectedSlot] = useState('11:00');
-  const [share, setShare] = useState({ requirements: true, audit_findings: true, documents: false, ai_messages: false, contact: false });
+  const [selectedSlot, setSelectedSlot] = useState('11:00 AM');
+  const [acceptedTerms, setAcceptedTerms] = useState(false);
+  const [share, setShare] = useState({ profile: true, requirements: true, audit_findings: true, documents: true, ai_messages: false, contact: false });
   const [bookingStatus, setBookingStatus] = useState<string | null>(null);
   const [bookingError, setBookingError] = useState<string | null>(null);
   const [step, setStep] = useState<'session' | 'slot' | 'consent' | 'done'>('session');
@@ -2437,13 +2449,14 @@ function Booking() {
     setBookingError(null);
     setBookingStatus('Creating booking…');
     try {
-      const [hh, mm] = selectedSlot.split(':').map(Number);
-      const slotISO = new Date(now.getFullYear(), now.getMonth(), selectedDay, hh, mm).toISOString();
+      // Slots are quoted in GST (UTC+4, no DST): build the real instant, not the browser's local time.
+      const { h: hh, m: mm } = slotLabelTo24h(selectedSlot);
+      const slotISO = new Date(Date.UTC(now.getFullYear(), now.getMonth(), selectedDay, hh, mm) - 4 * 3600 * 1000).toISOString();
       const booking = await postJson<{ bookingId: string; calendlyUrl: string }>('/bookings', {
         consultantId: consultant.id, applicationId: active.id, sessionType: selected, slotISO
       });
       const categories = Object.entries(share).filter(([,e]) => e).map(([k]) => k);
-      await postJson('/access-grants', { applicationId: active.id, consultantId: consultant.id, categories, expiresAt: new Date(Date.now() + 7 * 86400000).toISOString() });
+      await postJson('/access-grants', { applicationId: active.id, consultantId: consultant.id, categories, expiresAt: new Date(Date.now() + 7 * 86400000).toISOString(), acceptedTerms: true });
       setBookingStatus(`Confirmed! Booking ${booking.bookingId} · ${selectedDateLabel} at ${selectedSlot} GST`);
       showToast(`Booking confirmed! ${consultant.name} will be in touch.`, 'success');
       setStep('done');
@@ -2545,7 +2558,7 @@ function Booking() {
                   {days.map(d => {
                     const past = d < today; const sel = d === selectedDay; const isToday = d === today;
                     return (
-                      <button key={d} onClick={() => !past && setSelectedDay(d)} disabled={past}
+                      <button key={d} onClick={() => { if (!past) { setSelectedDay(d); setSelectedDayForSlots(d); } }} disabled={past}
                         style={{ padding: '8px 0', borderRadius: 8, border: 'none', cursor: past ? 'default' : 'pointer', fontWeight: sel || isToday ? 900 : 500, fontSize: 13, background: sel ? '#1A56DB' : 'transparent',
                           color: sel ? '#fff' : past ? '#E2E8F0' : isToday ? '#1A56DB' : '#0F172A' }}>{d}</button>
                     );
@@ -2576,7 +2589,7 @@ function Booking() {
                 <h2>Choose what to share</h2>
                 <p style={{ fontSize: 13, color: '#64748B', marginTop: 4 }}>{consultant.name} will only see the categories you select. You can revoke access anytime.</p>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginTop: 16 }}>
-                  {[['requirements','Requirements snapshot','Official checklist match for your visa context'],['audit_findings','Audit findings','Document scores and AI findings (not raw files)'],['documents','Original documents','Encrypted files — off by default'],['ai_messages','Chat history','Selected AI conversation messages'],['contact','Contact details','Your email and phone number']].map(([k,label,desc]) => (
+                  {[['profile','Profile & identity check','Name, nationality, destination, readiness score and whether your face was verified'],['documents','Documents & passport details','Which documents you uploaded and the passport details read from it — original files are never shared'],['audit_findings','Audit findings','Document scores and AI findings'],['requirements','Requirements checklist','Which requirements you have met and which are missing'],['ai_messages','Chat history','Your assistant conversation about this application'],['contact','Contact details','How to reach you through the platform']].map(([k,label,desc]) => (
                     <label key={k} style={{ display: 'flex', gap: 14, alignItems: 'flex-start', padding: '12px 14px', borderRadius: 10, border: '1px solid #F1F5F9', cursor: 'pointer', background: share[k as keyof typeof share] ? '#EFF6FF' : '#fff' }}>
                       <input type="checkbox" checked={share[k as keyof typeof share]} onChange={e => setShare(s => ({...s, [k]: e.target.checked}))} style={{ marginTop: 3, width: 16, height: 16 }} />
                       <div>
@@ -2590,10 +2603,16 @@ function Booking() {
               <div style={{ padding: '10px 14px', borderRadius: 10, background: '#FEF3C7', fontSize: 12, color: '#92400E', fontWeight: 600 }}>
                 Access is time-limited (7 days) and can be revoked from Settings → Privacy & Access.
               </div>
+              <label style={{ display: 'flex', gap: 12, alignItems: 'flex-start', padding: '12px 14px', borderRadius: 10, border: '1px solid #E2E8F0', background: '#F8FAFC', cursor: 'pointer' }}>
+                <input type="checkbox" checked={acceptedTerms} onChange={(e) => setAcceptedTerms(e.target.checked)} style={{ marginTop: 3, width: 16, height: 16 }} />
+                <span style={{ fontSize: 13, color: '#334155', lineHeight: 1.6 }}>
+                  I accept the data-sharing terms and grant {consultant.name} access to the items I selected. Access ends automatically after 7 days, I can revoke it any time, and every view is recorded. Nothing I did not select is shared.
+                </span>
+              </label>
               {bookingError && <div className="action-status error">{bookingError}</div>}
               <div style={{ display: 'flex', gap: 10 }}>
                 <button className="secondary-button" onClick={() => setStep('slot')}>← Back</button>
-                <button className="gold-button" style={{ flex: 1 }} onClick={confirmBooking}>Confirm booking · ${selectedOption.priceUsd}</button>
+                <button className="gold-button" style={{ flex: 1, opacity: acceptedTerms ? 1 : 0.5 }} disabled={!acceptedTerms} onClick={confirmBooking}>Confirm booking · ${selectedOption.priceUsd}</button>
               </div>
             </>
           )}

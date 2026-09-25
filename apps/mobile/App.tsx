@@ -11,6 +11,7 @@ import {
   fetchNotifications, markNotificationRead, fetchDocuments, fetchAuditResult, fetchExchangeRates,
   fetchMyBookings, cancelMyBooking, deleteApplication as apiDeleteApplication, type ApiMyBooking,
   fetchConsultantMe, fetchConsultantAppointments, fetchConsultantCase, joinBookingCall,
+  fetchFaceStatus, fetchFaceTemplate, enrollFace, confirmFaceCheck, type ApiFaceStatus,
   type ApiCallInfo, type ApiConsultantMe, type ApiConsultantAppointment, type ApiConsultantCase, type ApiPassportData, type ApiAccessGrant,
   createUploadSlot, enqueueAudit, fetchRequirements, verificationLabel, fetchPartners,
   fetchProfile, updateProfile,
@@ -69,6 +70,7 @@ import { getCacheSnapshot, clearCache } from './src/offlineCache';
 import { loadPreferences, savePreferences, DEFAULT_PREFERENCES, type SettingsPreferences } from './src/preferences';
 import { colors, scoreColor } from './src/theme';
 import { PLAN_ENFORCED, canUse, tierOf, type FeatureId } from './src/plan';
+import { faceSdkAvailable, passportFaceId, accountFaceId, enrolPassportFace, liveVerify, captureAccountFace, loadAccountTemplate, forgetPassportFace } from './src/faceSdk';
 import { HOW_TO_SECTIONS, TOUR_STEPS, hasSeenTour, markTourSeen, type TourTarget } from './src/tour';
 import { DOC_GUIDES, DOC_KIND_LABEL, judge, liveChecks, monthsUntil, parsePassportMrz, recognise, similarity, tokensOf, type DocKind, type FaceLike, type LiveCheck, type MrzResult, type OcrLike, type Verdict } from './src/documentRecognition';
 
@@ -435,7 +437,7 @@ function AppInner() {
     } finally {
       setLoadingApps(false);
     }
-    void Promise.all([loadConsultants(), loadSessionOpts(), loadNotifications(), loadDocuments(firstAppId), loadBookings(), loadGrants(), ...(roles.includes('consultant') ? [loadConsultantData()] : [])]);
+    void Promise.all([loadConsultants(), loadSessionOpts(), loadNotifications(), loadDocuments(firstAppId), loadBookings(), loadGrants(), loadFaceStatus(), ...(roles.includes('consultant') ? [loadConsultantData()] : [])]);
   }, []);
 
   // Registers this device for real push notifications once signed in.
@@ -499,6 +501,10 @@ function AppInner() {
     } finally {
       setBookingsLoading(false);
     }
+  };
+  const [faceStatus, setFaceStatus] = useState<ApiFaceStatus | null>(null);
+  const loadFaceStatus = async () => {
+    try { setFaceStatus(await fetchFaceStatus()); } catch { /* the app works without it; the badge just won't show */ }
   };
   const [myGrants, setMyGrants] = useState<ApiAccessGrant[]>([]);
   const loadGrants = async () => {
@@ -620,6 +626,7 @@ function AppInner() {
     setMyGrants([]);
     setConsultantMe(null);
     setConsultantAppts([]);
+    setFaceStatus(null);
     setRoute({ name: 'welcome' });
   };
 
@@ -747,6 +754,7 @@ function AppInner() {
           imageBase64={pendingImageBase64}
           mimeType={pendingMimeType}
           applicationId={appList[0]?.id}
+          onVerifyFace={() => setRoute({ name: 'faceVerification' })}
           onDone={(result) => {
             setAuditData(prev => ({ ...prev, [pendingDocumentId]: result }));
             setRoute({ name: 'auditReport', docId: pendingDocumentId });
@@ -874,6 +882,7 @@ function AppInner() {
             openFaceVerification={() => setRoute({ name: 'faceVerification' })}
             newApplication={() => setRoute({ name: 'newApp', step: 0 })}
             retryLoad={loadApplications}
+            faceStatus={faceStatus}
             nextBooking={myBookings.filter((b) => b.status !== 'cancelled' && b.slotISO && new Date(b.slotISO).getTime() > Date.now()).sort((x, y) => x.slotISO!.localeCompare(y.slotISO!))[0] ?? null}
             openBookings={() => setRoute({ name: 'tabs', tab: 'bookings' })}
           />
@@ -1120,7 +1129,7 @@ function AppInner() {
         {route.name === 'visaCalculator' && <VisaCalculatorScreen back={goHome} />}
         {route.name === 'bankBalance' && <BankBalanceScreen back={goHome} />}
         {route.name === 'embassyFinder' && <EmbassyFinderScreen back={goHome} residenceCountry={newAppResidence} />}
-        {route.name === 'faceVerification' && <FaceVerificationScreen back={goHome} />}
+        {route.name === 'faceVerification' && <FaceVerifyScreen back={goHome} uid={authUser?.uid ?? ''} status={faceStatus} reload={loadFaceStatus} openScanner={() => setRoute({ name: 'upload', state: 'select' })} />}
         {route.name === 'timelineTracker' && (
           <TimelineTrackerScreen
             back={goHome}
@@ -1436,7 +1445,8 @@ function SectionHead({ title, action, onAction }: { title: string; action?: stri
   );
 }
 
-function DashboardScreen({ appList, loadingApps, loadAppsError, userName, roles, documents, navigate, openApplication, openUpload, openAnalysis, openRequirements, openChat, openConsultants, openCalculator, openFaceVerification, newApplication, retryLoad, nextBooking, openBookings }: {
+function DashboardScreen({ appList, loadingApps, loadAppsError, userName, roles, documents, navigate, openApplication, openUpload, openAnalysis, openRequirements, openChat, openConsultants, openCalculator, openFaceVerification, newApplication, retryLoad, nextBooking, openBookings, faceStatus }: {
+  faceStatus: ApiFaceStatus | null;
   nextBooking: ApiMyBooking | null;
   openBookings: () => void;
   roles: string[];
@@ -1502,6 +1512,8 @@ function DashboardScreen({ appList, loadingApps, loadAppsError, userName, roles,
   const passportDone = uploaded.some((d) => d.type?.toLowerCase() === 'passport' && (d.score ?? 0) >= 50);
   const daysLeft = app ? daysUntil(app.intendedFrom) : null;
   const steps: NextStep[] = [];
+  if (app && faceStatus && !faceStatus.enrolled) steps.push({ id: 'face', icon: 'shield-checkmark-outline', tone: faceStatus.requiredForAnalysis ? 'urgent' : 'todo', title: 'Verify it’s you', body: 'A quick live check matched to your passport photo gives you the “Face verified” badge and locks this account to you.', cta: 'Verify now', go: openFaceVerification });
+  if (app && faceStatus?.enrolled && !faceStatus.sessionFresh && faceStatus.requiredForAnalysis) steps.push({ id: 'face-recheck', icon: 'shield-outline', tone: 'urgent', title: 'Confirm it’s still you', body: 'A quick face check is needed before you can analyse documents.', cta: 'Check now', go: openFaceVerification });
   if (app) {
     if (!passportDone) steps.push({ id: 'passport', icon: 'id-card-outline', tone: 'urgent', title: failing.some((d) => d.type?.toLowerCase() === 'passport') ? 'Re-scan your passport' : 'Start with your passport', body: 'Every other check is compared against it. The scanner reads it in seconds.', cta: 'Scan passport', go: openUpload });
     if (failing.length > 0 && passportDone) steps.push({ id: 'fix', icon: 'alert-circle-outline', tone: 'urgent', title: `Fix ${failing.length} document${failing.length === 1 ? '' : 's'}`, body: `${failing.map((d) => d.title).slice(0, 2).join(' and ')} didn’t pass its check — open the report to see why.`, cta: 'Open documents', go: () => navigate({ name: 'tabs', tab: 'docs' }) });
@@ -1535,6 +1547,12 @@ function DashboardScreen({ appList, loadingApps, loadAppsError, userName, roles,
       <View>
         <Text style={[styles.eyebrow, { marginBottom: 2 }]}>{firstName ? `Hi, ${firstName}` : 'Welcome'}</Text>
         <Text style={[styles.title, { marginBottom: 0, fontSize: 26 }]}>{app ? 'Your visa journey' : 'Get started'}</Text>
+        {faceStatus?.enrolled && (
+          <Pressable onPress={openFaceVerification} accessibilityLabel="Face verified" style={{ alignSelf: 'flex-start', flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#DCFCE7', paddingHorizontal: 10, paddingVertical: 5, borderRadius: 12, marginTop: 8 }}>
+            <Ionicons name="shield-checkmark" size={14} color="#15803D" />
+            <Text style={{ color: '#15803D', fontSize: 12, fontWeight: '800' }}>Face verified{faceStatus.passportSimilarity !== null ? ` · ${Math.round(faceStatus.passportSimilarity * 100)}% match` : ''}</Text>
+          </Pressable>
+        )}
       </View>
 
       {/* Banner carousel */}
@@ -5509,167 +5527,224 @@ function EmbassyFinderScreen({ back, residenceCountry }: { back: () => void; res
 // at all, that's surfaced as its own "unavailable" state rather than a fake pass.
 type FaceVerifyStage = 'intro' | 'camera' | 'checking' | 'pass' | 'fail' | 'unavailable';
 
-function FaceVerificationScreen({ back }: { back: () => void }) {
+// ─── Face verification ────────────────────────────────────────────────────────
+type FaceStage = 'intro' | 'passport' | 'ready' | 'live' | 'saving' | 'done' | 'fail';
+
+/** Finds the (largest) face in a passport photo and returns it cropped, ready for the matcher. */
+async function cropPassportFace(uri: string): Promise<{ base64: string; previewUri: string } | { error: string }> {
+  try {
+    const { default: FaceDetection } = await import('@react-native-ml-kit/face-detection');
+    const faces = await FaceDetection.detect(uri, { performanceMode: 'accurate', minFaceSize: 0.03 });
+    if (faces.length === 0) return { error: 'No face was found in that photo. Photograph the passport photo page flat, in good light, with the picture sharp.' };
+    const face = [...faces].sort((a, b) => b.frame.width * b.frame.height - a.frame.width * a.frame.height)[0];
+    const { manipulateAsync, SaveFormat } = await import('expo-image-manipulator');
+    // Pad the detected box so hair/chin are included, but never past the picture's edges.
+    const size = await new Promise<{ width: number; height: number }>((resolve, reject) => Image.getSize(uri, (width, height) => resolve({ width, height }), reject));
+    const pad = Math.max(face.frame.width, face.frame.height) * 0.45;
+    const originX = Math.max(0, Math.round(face.frame.left - pad));
+    const originY = Math.max(0, Math.round(face.frame.top - pad));
+    const width = Math.min(size.width - originX, Math.round(face.frame.width + pad * 2));
+    const height = Math.min(size.height - originY, Math.round(face.frame.height + pad * 2));
+    const out = await manipulateAsync(uri, [{ crop: { originX, originY, width, height } }, { resize: { width: 480 } }], { compress: 0.92, format: SaveFormat.JPEG, base64: true });
+    if (!out.base64) return { error: 'Could not prepare the passport photo. Try again.' };
+    return { base64: out.base64, previewUri: out.uri };
+  } catch {
+    return { error: 'Could not read that photo. Try again in better light.' };
+  }
+}
+
+function FaceVerifyScreen({ back, uid, status, reload, openScanner }: {
+  back: () => void;
+  uid: string;
+  status: ApiFaceStatus | null;
+  reload: () => Promise<void>;
+  openScanner: () => void;
+}) {
   const insets = useSafeAreaInsets();
-  const [permission, requestPermission] = useCameraPermissions();
-  const [stage, setStage] = useState<FaceVerifyStage>('intro');
-  const [captured, setCaptured] = useState<string | null>(null);
-  const [detail, setDetail] = useState('');
-  const cameraRef = useRef<CameraView>(null);
+  const available = faceSdkAvailable();
+  const thresholds = status?.thresholds ?? { similarity: 0.7, liveness: 0.6 };
+  const [stage, setStage] = useState<FaceStage>(status?.enrolled ? 'done' : 'intro');
+  const [preview, setPreview] = useState<string | null>(null);
+  const [message, setMessage] = useState('');
+  const [score, setScore] = useState<number | null>(status?.passportSimilarity ?? null);
+  const [working, setWorking] = useState(false);
 
-  const analyze = async (uri: string) => {
-    setStage('checking');
+  const enrolled = !!status?.enrolled;
+  const stale = enrolled && !status?.sessionFresh;
+
+  const pickPassport = async (source: 'camera' | 'library') => {
+    setMessage('');
     try {
-      const { default: FaceDetection } = await import('@react-native-ml-kit/face-detection');
-      const faces = await FaceDetection.detect(uri, { performanceMode: 'accurate', classificationMode: 'all' });
-      if (faces.length === 0) {
-        setDetail('No face detected. Make sure your face is centered and well lit.');
-        setStage('fail');
-        return;
-      }
-      if (faces.length > 1) {
-        setDetail(`${faces.length} faces detected. Only you should be in frame.`);
-        setStage('fail');
-        return;
-      }
-      const face = faces[0];
-      const leftOpen = face.leftEyeOpenProbability ?? 1;
-      const rightOpen = face.rightEyeOpenProbability ?? 1;
-      if (leftOpen < 0.35 || rightOpen < 0.35) {
-        setDetail('Eyes appear closed. Keep your eyes open and try again.');
-        setStage('fail');
-        return;
-      }
-      setDetail('One face detected, eyes open — identity check passed.');
-      setStage('pass');
-    } catch {
-      setDetail('On-device face check is unavailable on this device right now.');
-      setStage('unavailable');
+      const perm = source === 'camera' ? await ImagePicker.requestCameraPermissionsAsync() : { granted: true };
+      if (!perm.granted) { setMessage('Camera permission is needed to photograph your passport.'); return; }
+      const result = source === 'camera'
+        ? await ImagePicker.launchCameraAsync({ quality: 0.95 })
+        : await ImagePicker.launchImageLibraryAsync({ mediaTypes: ImagePicker.MediaTypeOptions.Images, quality: 0.95 });
+      if (result.canceled || !result.assets?.[0]) return;
+      setWorking(true);
+      const cropped = await cropPassportFace(result.assets[0].uri);
+      if ('error' in cropped) { setMessage(cropped.error); return; }
+      const r = await enrolPassportFace(uid, cropped.base64);
+      if (!r.faceFeature) { setMessage(r.message || 'The matcher could not use that face. Try a sharper photo.'); return; }
+      setPreview(cropped.previewUri);
+      setStage('ready');
+    } catch (e: any) {
+      setMessage(e?.message ?? 'Something went wrong reading the passport photo.');
+    } finally {
+      setWorking(false);
     }
   };
 
-  const capturePhoto = async () => {
-    if (!cameraRef.current) return;
+  const runLiveCheck = async () => {
+    setMessage('');
+    setWorking(true);
+    setStage('live');
     try {
-      const photo = await cameraRef.current.takePictureAsync({ quality: 0.85, base64: false });
-      const uri = photo?.uri ?? null;
-      if (!uri) { setDetail('Capture failed — try again.'); setStage('fail'); return; }
-      setCaptured(uri);
-      await analyze(uri);
-    } catch {
-      setDetail('Capture failed — try again.');
+      const check = await liveVerify(passportFaceId(uid), thresholds);
+      if (check.liveness < thresholds.liveness) { setMessage('The liveness check did not pass. Follow each instruction on screen, in good light, without glasses or a hat.'); setStage('fail'); return; }
+      if (check.similarity < thresholds.similarity) { setScore(check.similarity); setMessage(`Your face doesn’t match the passport photo closely enough (${Math.round(check.similarity * 100)}%). Make sure it’s your own passport and try again.`); setStage('fail'); return; }
+      // The live face template is what locks this account to one person.
+      let feature = check.faceFeature;
+      if (!feature) {
+        const captured = await captureAccountFace(uid);
+        feature = captured.faceFeature;
+      }
+      if (!feature) { setMessage('Could not save your face template. Try again.'); setStage('fail'); return; }
+      setStage('saving');
+      await enrollFace({ faceFeature: feature, passportSimilarity: check.similarity, liveness: check.liveness, steps: ['blink', 'mouth', 'nod', 'turn'] });
+      await forgetPassportFace(uid);
+      setScore(check.similarity);
+      await reload();
+      setStage('done');
+    } catch (e: any) {
+      setMessage(e?.message ?? 'Face verification failed. Try again.');
       setStage('fail');
+    } finally {
+      setWorking(false);
     }
   };
 
-  const retry = () => { setCaptured(null); setDetail(''); setStage('camera'); };
-
-  if (stage === 'intro') {
-    return (
-      <View>
-        <BackButton label="Profile" onPress={back} />
-        <Text style={styles.eyebrow}>Identity check</Text>
-        <Text style={styles.title}>Face Verification</Text>
-        <LinearGradient colors={['#0B1F4B', '#1547C0']} style={[styles.reportHero, { marginBottom: 16 }]}>
-          <Ionicons name="scan-outline" size={36} color="#fff" />
-          <Text style={{ color: '#fff', fontSize: 16, fontWeight: '900', textAlign: 'center' }}>Confirm it's really you</Text>
-        </LinearGradient>
-        <Section title="How it works">
-          <Finding title="On-device only" meta="The photo is analyzed on your phone using Google ML Kit — it is not uploaded anywhere for this check." />
-          <Finding title="One face, eyes open" meta="We check that exactly one face is visible and both eyes are open, similar to a passport-photo liveness check." />
-          <Finding title="Good lighting helps" meta="Face a light source and remove sunglasses or a mask for best results." />
-        </Section>
-        <Pressable style={styles.primaryButton} onPress={async () => {
-          if (!permission?.granted) { const r = await requestPermission(); if (!r.granted) return; }
-          setStage('camera');
-        }}>
-          <Text style={styles.primaryButtonText}>Start verification</Text>
-        </Pressable>
-      </View>
-    );
-  }
-
-  if (!permission?.granted) {
-    return (
-      <View style={{ flex: 1, backgroundColor: colors.navy900, padding: 32, alignItems: 'center', justifyContent: 'center', gap: 20 }}>
-        <Ionicons name="camera-outline" size={64} color="rgba(255,255,255,0.4)" />
-        <Text style={{ color: '#fff', fontSize: 20, fontWeight: '900', textAlign: 'center' }}>Camera access needed</Text>
-        <Pressable style={[styles.primaryButton, { width: '100%' }]} onPress={requestPermission}>
-          <Text style={styles.primaryButtonText}>Allow camera</Text>
-        </Pressable>
-        <Pressable onPress={back}><Text style={{ color: 'rgba(255,255,255,0.5)', fontWeight: '700' }}>Cancel</Text></Pressable>
-      </View>
-    );
-  }
-  // The CameraView's native preview surface is composited by Android
-  // outside the normal view-drawing order — unmounting it the instant a
-  // photo is captured can leave a stale frame visibly on top of whatever
-  // renders next. It stays mounted (deactivated via `active`) through the
-  // checking/pass/fail/unavailable stages below, and the result UI is
-  // drawn as an opaque sibling over it instead of replacing it outright.
-  const statusMeta: Record<Exclude<FaceVerifyStage, 'intro' | 'camera'>, { icon: IoniconName; color: string; label: string }> = {
-    checking:    { icon: 'sync-outline',            color: colors.royal600, label: 'Checking…' },
-    pass:        { icon: 'checkmark-circle',        color: colors.green500, label: 'Verified' },
-    fail:        { icon: 'close-circle',            color: '#DC2626',       label: 'Not verified' },
-    unavailable: { icon: 'alert-circle-outline',    color: colors.slate500, label: 'Unavailable' },
+  // Returning check on this or a new phone: the person must still match the face locked to the account.
+  const recheck = async () => {
+    setMessage('');
+    setWorking(true);
+    try {
+      const { faceFeature } = await fetchFaceTemplate();
+      await loadAccountTemplate(uid, faceFeature);
+      const check = await liveVerify(accountFaceId(uid), thresholds);
+      if (!check.ok) { setMessage(check.liveness < thresholds.liveness ? 'The liveness check did not pass. Try again.' : 'This face does not match the verified face on this account.'); return; }
+      await confirmFaceCheck({ similarity: check.similarity, liveness: check.liveness });
+      await reload();
+      Alert.alert('Verified', 'Thanks — you’re confirmed as the account holder.');
+    } catch (e: any) {
+      setMessage(e?.message ?? 'Could not complete the check.');
+    } finally {
+      setWorking(false);
+    }
   };
-  const resultStage = stage === 'checking' || stage === 'pass' || stage === 'fail' || stage === 'unavailable' ? stage : null;
-  const meta = resultStage ? statusMeta[resultStage] : null;
+
+  const Step = ({ n, title, body, done }: { n: number; title: string; body: string; done?: boolean }) => (
+    <View style={{ flexDirection: 'row', gap: 12, alignItems: 'flex-start' }}>
+      <View style={{ width: 28, height: 28, borderRadius: 14, backgroundColor: done ? colors.green500 : colors.royal50, alignItems: 'center', justifyContent: 'center' }}>
+        {done ? <Ionicons name="checkmark" size={16} color="#fff" /> : <Text style={{ color: colors.royal600, fontWeight: '900', fontSize: 13 }}>{n}</Text>}
+      </View>
+      <View style={{ flex: 1 }}>
+        <Text style={{ color: colors.slate900, fontWeight: '800', fontSize: 14 }}>{title}</Text>
+        <Text style={{ color: colors.slate500, fontSize: 12.5, lineHeight: 18, marginTop: 1 }}>{body}</Text>
+      </View>
+    </View>
+  );
+
   return (
-    <View style={{ flex: 1, backgroundColor: '#000' }}>
-      <StatusBar barStyle="light-content" />
-      <CameraView ref={cameraRef} style={{ flex: 1 }} facing="front" active={!resultStage}>
-        <View style={{ flexDirection: 'row', alignItems: 'center', padding: 16 }}>
-          <Pressable onPress={back} style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(0,0,0,0.4)', alignItems: 'center', justifyContent: 'center' }}>
-            <Ionicons name="arrow-back" size={22} color="#fff" />
-          </Pressable>
-          <View style={{ flex: 1, alignItems: 'center' }}>
-            <Text style={{ color: '#fff', fontWeight: '900', fontSize: 15 }}>Face Verification</Text>
-            <Text style={{ color: 'rgba(255,255,255,0.6)', fontSize: 11, marginTop: 2 }}>Center your face in the oval</Text>
+    <View style={{ gap: 16, paddingBottom: insets.bottom }}>
+      <BackButton label="Back" onPress={back} />
+      <View>
+        <Text style={styles.eyebrow}>Identity check</Text>
+        <Text style={[styles.title, { marginBottom: 4 }]}>Verify it’s really you</Text>
+        <Text style={[styles.rowMeta, { lineHeight: 19 }]}>Like a bank app: a live check confirms a real person, and your face is matched to your passport photo. One person per account.</Text>
+      </View>
+
+      {!available && (
+        <View style={{ backgroundColor: '#FEF3C7', borderRadius: 14, padding: 14, gap: 6 }}>
+          <Text style={{ color: '#92400E', fontWeight: '900' }}>Needs a physical phone</Text>
+          <Text style={{ color: '#92400E', fontSize: 12.5, lineHeight: 18 }}>The face engine uses your phone’s camera and processor and can’t run on an emulator or an unsupported device. Open the app on a real Android phone to verify.</Text>
+        </View>
+      )}
+
+      {enrolled && (
+        <View style={{ backgroundColor: '#ECFDF5', borderRadius: 18, padding: 16, gap: 10, borderWidth: 1, borderColor: '#A7F3D0' }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+            <View style={{ width: 52, height: 52, borderRadius: 26, backgroundColor: '#10B981', alignItems: 'center', justifyContent: 'center' }}>
+              <Ionicons name="shield-checkmark" size={28} color="#fff" />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={{ color: '#065F46', fontWeight: '900', fontSize: 16 }}>Face verified</Text>
+              <Text style={{ color: '#047857', fontSize: 12.5 }}>{score !== null ? `${Math.round(score * 100)}% match to your passport photo` : 'Matched to your passport photo'}{status?.enrolledAt ? ` · ${new Date(status.enrolledAt).toLocaleDateString()}` : ''}</Text>
+            </View>
           </View>
-          <View style={{ width: 40 }} />
-        </View>
-        <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
-          <View style={{ width: SCAN_BOX * 0.65, height: SCAN_BOX * 0.85, borderRadius: SCAN_BOX, borderWidth: 3, borderColor: '#0EA5E9' }} />
-        </View>
-        <View style={{ paddingBottom: 48 + insets.bottom, alignItems: 'center', gap: 16 }}>
-          <Pressable onPress={capturePhoto} style={{ width: 72, height: 72, borderRadius: 36, backgroundColor: '#fff', borderWidth: 4, borderColor: 'rgba(255,255,255,0.4)', alignItems: 'center', justifyContent: 'center' }}>
-            <View style={{ width: 56, height: 56, borderRadius: 28, backgroundColor: '#fff' }} />
-          </Pressable>
-          <Text style={{ color: 'rgba(255,255,255,0.6)', fontSize: 12 }}>Tap to capture</Text>
-        </View>
-      </CameraView>
-      {meta && (
-        <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: '#000', alignItems: 'center', justifyContent: 'center', padding: 32, gap: 16 }}>
-          {captured && <Image source={{ uri: captured }} style={StyleSheet.absoluteFill} resizeMode="cover" />}
-          {/* Solid scrim independent of the captured photo's brightness —
-              a bright/white capture would otherwise wash out the white
-              status text and make it unreadable. */}
-          <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.55)' }} />
-          {stage === 'checking' ? (
-            <ActivityIndicator size="large" color="#fff" />
-          ) : (
-            <Ionicons name={meta.icon} size={64} color={meta.color} />
+          <Text style={{ color: '#065F46', fontSize: 12.5, lineHeight: 18 }}>This account is locked to your face. Only you can run analysis here, and a different face can’t be added.</Text>
+          {stale && (
+            <Pressable disabled={!available || working} onPress={recheck} accessibilityLabel="Re-check my face" style={[styles.primaryButton, { marginTop: 4 }, (!available || working) && styles.disabledButton]}>
+              {working ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryButtonText}>Quick face check</Text>}
+            </Pressable>
           )}
-          <Text style={{ color: '#fff', fontSize: 22, fontWeight: '900', textAlign: 'center' }}>{meta.label}</Text>
-          {!!detail && <Text style={{ color: 'rgba(255,255,255,0.75)', textAlign: 'center', lineHeight: 20 }}>{detail}</Text>}
-          {stage !== 'checking' && (
-            <View style={{ flexDirection: 'row', gap: 12, marginTop: 12, width: '100%' }}>
-              {stage !== 'pass' && (
-                <Pressable onPress={retry} style={{ flex: 1, height: 52, borderRadius: 14, backgroundColor: 'rgba(255,255,255,0.15)', alignItems: 'center', justifyContent: 'center' }}>
-                  <Text style={{ color: '#fff', fontWeight: '700' }}>Try again</Text>
-                </Pressable>
-              )}
-              <Pressable onPress={back} style={{ flex: 1, height: 52, borderRadius: 14, backgroundColor: colors.royal600, alignItems: 'center', justifyContent: 'center' }}>
-                <Text style={{ color: '#fff', fontWeight: '700' }}>Done</Text>
+          {!stale && <Text style={{ color: '#047857', fontSize: 12, fontWeight: '700' }}>Checked recently — no action needed.</Text>}
+        </View>
+      )}
+
+      {!enrolled && (
+        <View style={{ gap: 14 }}>
+          <View style={{ backgroundColor: colors.white, borderRadius: 18, borderWidth: 1, borderColor: colors.slate100, padding: 16, gap: 14 }}>
+            <Step n={1} title="Photograph your passport photo page" body="We cut out just the face to compare with. The picture isn’t kept." done={stage === 'ready' || stage === 'live' || stage === 'saving' || stage === 'done'} />
+            <Step n={2} title="Do the live check" body="Follow the on-screen prompts: blink, open your mouth, nod and turn your head. This proves a real person is there." done={stage === 'saving' || stage === 'done'} />
+            <Step n={3} title="Get your badge" body="Your face is matched to the passport photo and locked to this account." done={stage === 'done'} />
+          </View>
+
+          {preview && (
+            <View style={{ alignItems: 'center', gap: 6 }}>
+              <Image source={{ uri: preview }} style={{ width: 96, height: 96, borderRadius: 16, backgroundColor: colors.slate100 }} />
+              <Text style={{ color: colors.slate500, fontSize: 12 }}>Face found in your passport photo</Text>
+            </View>
+          )}
+
+          {(stage === 'intro' || stage === 'passport' || stage === 'fail') && !preview && (
+            <View style={{ gap: 10 }}>
+              <Pressable disabled={!available || working} onPress={() => pickPassport('camera')} accessibilityLabel="Photograph passport" style={[styles.primaryButton, { marginTop: 0, flexDirection: 'row', gap: 8 }, (!available || working) && styles.disabledButton]}>
+                {working ? <ActivityIndicator color="#fff" /> : <><Ionicons name="camera-outline" size={18} color="#fff" /><Text style={styles.primaryButtonText}>Photograph passport photo page</Text></>}
+              </Pressable>
+              <Pressable disabled={!available || working} onPress={() => pickPassport('library')} style={[styles.secondaryButton, (!available || working) && { opacity: 0.5 }]}>
+                <Text style={styles.secondaryButtonText}>Choose a photo of my passport</Text>
               </Pressable>
             </View>
           )}
+
+          {(stage === 'ready' || (stage === 'fail' && preview)) && (
+            <Pressable disabled={!available || working} onPress={runLiveCheck} accessibilityLabel="Start live check" style={[styles.primaryButton, { marginTop: 0, flexDirection: 'row', gap: 8 }, (!available || working) && styles.disabledButton]}>
+              {working ? <ActivityIndicator color="#fff" /> : <><Ionicons name="scan-circle-outline" size={20} color="#fff" /><Text style={styles.primaryButtonText}>{stage === 'fail' ? 'Try the live check again' : 'Start live check'}</Text></>}
+            </Pressable>
+          )}
+          {stage === 'live' && <Text style={{ color: colors.slate600, textAlign: 'center' }}>Follow the prompts on screen…</Text>}
+          {stage === 'saving' && <View style={{ alignItems: 'center', gap: 8 }}><ActivityIndicator color={colors.royal600} /><Text style={{ color: colors.slate600 }}>Locking your face to this account…</Text></View>}
+
+          <View style={{ backgroundColor: colors.slate50, borderRadius: 14, padding: 14, gap: 6 }}>
+            <Text style={{ color: colors.slate500, fontSize: 11, fontWeight: '800', letterSpacing: 0.8, textTransform: 'uppercase' }}>For a clean check</Text>
+            {['Good, even light on your face', 'No glasses, hat or mask', 'Only you in the frame', 'Use your own current passport'].map((t) => (
+              <View key={t} style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}><Ionicons name="checkmark-circle" size={15} color={colors.green500} /><Text style={{ color: colors.slate700, fontSize: 13 }}>{t}</Text></View>
+            ))}
+          </View>
         </View>
       )}
+
+      {!!message && (
+        <View style={{ backgroundColor: '#FEF2F2', borderRadius: 14, borderWidth: 1, borderColor: '#FECACA', padding: 14 }}>
+          <Text style={{ color: '#991B1B', fontWeight: '700', fontSize: 13, lineHeight: 19 }}>{message}</Text>
+        </View>
+      )}
+      <Text style={{ color: colors.slate500, fontSize: 11.5, lineHeight: 17 }}>Your face template stays on your phone and on your account only to confirm it’s you. It is never shared with consultants — they only see the “Face verified” badge, and only if you share your profile.</Text>
     </View>
   );
 }
+
 
 // ─── Timeline Tracker ─────────────────────────────────────────────────────────
 // Each stage's "done" status is derived from real app state (uploaded
@@ -6898,7 +6973,8 @@ const AI_STAGES = [
   { label: 'Preparing your report' },
 ];
 
-function LiveAnalysisScreen({ docTitle, documentId, documentType, extractedText, imageBase64, mimeType, applicationId, onDone }: {
+function LiveAnalysisScreen({ docTitle, documentId, documentType, extractedText, imageBase64, mimeType, applicationId, onDone, onVerifyFace }: {
+  onVerifyFace?: () => void;
   docTitle: string;
   documentId: string;
   documentType?: string;
@@ -7054,9 +7130,15 @@ function LiveAnalysisScreen({ docTitle, documentId, documentType, extractedText,
               <Text style={{ color: '#F87171', fontWeight: '900', marginBottom: 4 }}>Audit failed</Text>
               <Text style={{ color: 'rgba(255,255,255,0.6)', fontSize: 12, lineHeight: 18 }}>{error}</Text>
             </View>
-            <Pressable style={[styles.primaryButton, { marginTop: 14 }]} onPress={() => setAttempt(a => a + 1)}>
-              <Text style={styles.primaryButtonText}>Try again</Text>
-            </Pressable>
+            {onVerifyFace && /face/i.test(error) ? (
+              <Pressable style={[styles.primaryButton, { marginTop: 14 }]} onPress={onVerifyFace} accessibilityLabel="Verify my face">
+                <Text style={styles.primaryButtonText}>Verify my face</Text>
+              </Pressable>
+            ) : (
+              <Pressable style={[styles.primaryButton, { marginTop: 14 }]} onPress={() => setAttempt(a => a + 1)}>
+                <Text style={styles.primaryButtonText}>Try again</Text>
+              </Pressable>
+            )}
           </>
         )}
         <View style={[styles.disclaimer, { marginTop: 16 }]}>

@@ -780,14 +780,16 @@ function AppInner() {
   // ── Uploading documents inside the chat: ask for one, check it in the background, ask for the next ──
   const offerNextDoc = () => {
     const flow = docFlow.current;
-    const next = documentsRef.current.find(d => d.status === 'Missing' && !flow.handled.has(d.type));
+    // Missing documents first, then any that were checked but scored poorly (worth re-uploading).
+    const docs = documentsRef.current;
+    const next = docs.find(d => d.status === 'Missing' && !flow.handled.has(d.type)) ?? docs.find(d => d.status === 'Audited' && d.score < 60 && !flow.handled.has(d.type));
     if (!next) {
       pushAi({ text: flow.handled.size > 0 ? 'That is every document I needed. Results for the last ones appear here as they finish — nothing more to do meanwhile.' : 'All your required documents are already uploaded.', actions: ['Find a consultant'] });
       return;
     }
     flow.handled.add(next.type);
     pushAi({
-      text: `Next: ${next.title}`,
+      text: next.status === 'Audited' ? `${next.title} scored ${next.score} last time — a clearer upload will raise your readiness.` : `Next: ${next.title}`,
       docCard: { type: next.type, title: next.title, icon: (next.icon as IoniconName) ?? 'document-outline', tip: CHAT_DOC_TIPS[next.type] ?? 'Make sure the whole page is sharp and readable.', state: 'open' },
     });
   };

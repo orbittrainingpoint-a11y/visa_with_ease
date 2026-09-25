@@ -861,6 +861,10 @@ export function createApp(services: Services = createServices()) {
     }
   });
 
+  type ActiveGrant = Awaited<ReturnType<typeof services.accessGrants.listActiveGrants>>[number];
+  function pickGrant(grants: ActiveGrant[], consultantId: string, applicationId: string) {
+    return grants.find((g) => g.consultantId === consultantId && g.applicationId === applicationId && Date.parse(g.expiresAt) > Date.now()) ?? null;
+  }
   async function activeGrantFor(consultantId: string, applicationId: string) {
     const grants = await services.accessGrants.listActiveGrants();
     return grants.find((g) => g.consultantId === consultantId && g.applicationId === applicationId && Date.parse(g.expiresAt) > Date.now()) ?? null;
@@ -870,11 +874,14 @@ export function createApp(services: Services = createServices()) {
     try {
       const consultantId = await consultantIdFor(req);
       if (!consultantId) return res.status(403).json({ error: { code: 'NOT_LINKED', message: 'This login is not linked to a consultant profile yet. Ask a platform admin to link it.' } });
-      const [all, sessionOptions] = await Promise.all([services.consultants.listBookings(), services.consultants.listSessionOptions()]);
+      // One read of the grants and one lookup per distinct application — not one of each per appointment.
+      const [all, sessionOptions, grants] = await Promise.all([services.consultants.listBookings(), services.consultants.listSessionOptions(), services.accessGrants.listActiveGrants()]);
       const mine = all.filter((b) => b.consultantId === consultantId);
+      const appIds = [...new Set(mine.map((b) => b.applicationId))];
+      const apps = new Map(await Promise.all(appIds.map(async (id) => [id, await services.applications.getApplicationForStaff(id)] as const)));
       const rows = await Promise.all(mine.map(async (b) => {
-        const application = await services.applications.getApplicationForStaff(b.applicationId);
-        const grant = await activeGrantFor(consultantId, b.applicationId);
+        const application = apps.get(b.applicationId) ?? null;
+        const grant = pickGrant(grants, consultantId, b.applicationId);
         return {
           bookingId: b.bookingId,
           status: b.status,
@@ -918,6 +925,10 @@ export function createApp(services: Services = createServices()) {
         shared: grant.categories,
         access: { expiresAt: grant.expiresAt, termsAcceptedAt: grant.termsAcceptedAt ?? null, termsVersion: grant.termsVersion ?? null }
       };
+      // Independent reads run together rather than one after another.
+      const facePromise = has('profile') ? getFaceProfile(booking.userId) : Promise.resolve(null);
+      const passportPromise = has('documents') ? getPassportDataForApplication(booking.applicationId) : Promise.resolve(null);
+      const reqsPromise = has('requirements') ? services.requirements.getRequirementsForCountry(application.destinationCountry) : Promise.resolve(null);
       const documentIds = has('documents') || has('audit_findings') || has('requirements') ? await listAuditOwnerDocumentIds(booking.applicationId) : [];
       const results = documentIds.length ? await services.auditQueue.getAuditResultsByIds(documentIds) : [];
       const latestByType = new Map<string, (typeof results)[number]>();
@@ -928,7 +939,7 @@ export function createApp(services: Services = createServices()) {
       }
 
       if (has('profile')) {
-        const face = await getFaceProfile(booking.userId);
+        const face = await facePromise;
         out.profile = {
           applicantName: application.applicantName,
           destinationCountry: application.destinationCountry,
@@ -944,13 +955,13 @@ export function createApp(services: Services = createServices()) {
       }
       if (has('documents')) {
         out.documents = [...latestByType.values()].map((r) => ({ type: r.documentType, score: r.score, status: r.status, checkedAt: r.generatedAt }));
-        out.passportData = await getPassportDataForApplication(booking.applicationId);
+        out.passportData = await passportPromise;
       }
       if (has('audit_findings')) {
         out.auditFindings = [...latestByType.values()].map((r) => ({ type: r.documentType, score: r.score, status: r.status, findings: r.findings }));
       }
       if (has('requirements')) {
-        const reqs = await services.requirements.getRequirementsForCountry(application.destinationCountry);
+        const reqs = (await reqsPromise)!;
         const uploaded = (...types: string[]) => types.some((t) => (latestByType.get(t)?.score ?? 0) >= 50);
         out.requirements = reqs.requirements.map((r) => {
           const text = `${r.id} ${r.title}`.toLowerCase();
@@ -964,8 +975,8 @@ export function createApp(services: Services = createServices()) {
         });
       }
       if (has('contact')) {
-        const owner = booking.userId;
-        out.contact = { note: 'Contact details are shared through the platform.', clientId: owner };
+        // Contact goes through the platform's messaging; no personal identifiers are handed over.
+        out.contact = { note: 'The client agreed to be contacted through the platform. Reach them from the appointment.' };
       }
       if (has('ai_messages')) out.aiMessages = [];
       await appendAuditLog({ actor: req.user!.email ?? req.user!.uid, action: 'CONSULTANT_VIEW_CASE', resource: booking.applicationId, ip: req.ip ?? '?' });

@@ -22,3 +22,4 @@ apps/backend/firebase-service-account*.json
 apps/mobile/*.apk
 apps/web/lighthouse-reports/
 *.tsbuildinfo
+apps/mobile/e2e/shots/

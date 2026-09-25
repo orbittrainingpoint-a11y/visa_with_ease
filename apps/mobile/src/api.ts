@@ -1,4 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as SecureStore from 'expo-secure-store';
 
 // Central API client — all calls go through here
 export const BASE_URL: string =
@@ -53,13 +54,37 @@ export interface AuthSession {
 // returns to the sign-in screen.
 const SESSION_KEY = 'visaiq.session.v1';
 
+// The session token lives in the Android Keystore (SecureStore), not in plain app storage. A session saved by an
+// older version in AsyncStorage is moved across on first read.
+async function readSavedSession(): Promise<string | null> {
+  try {
+    const secure = await SecureStore.getItemAsync(SESSION_KEY);
+    if (secure) return secure;
+  } catch { /* fall through to the legacy location */ }
+  try {
+    const legacy = await AsyncStorage.getItem(SESSION_KEY);
+    if (legacy) {
+      try { await SecureStore.setItemAsync(SESSION_KEY, legacy); await AsyncStorage.removeItem(SESSION_KEY); } catch { /* keep the legacy copy */ }
+      return legacy;
+    }
+  } catch { /* nothing stored */ }
+  return null;
+}
+
 export async function startSession(session: AuthSession) {
   setToken(session.token);
-  try { await AsyncStorage.setItem(SESSION_KEY, JSON.stringify(session)); } catch { /* storage unavailable — session just won't survive a restart */ }
+  const json = JSON.stringify(session);
+  try {
+    await SecureStore.setItemAsync(SESSION_KEY, json);
+    try { await AsyncStorage.removeItem(SESSION_KEY); } catch { /* no legacy copy */ }
+  } catch {
+    try { await AsyncStorage.setItem(SESSION_KEY, json); } catch { /* storage unavailable — session just won't survive a restart */ }
+  }
 }
 
 export async function endSession() {
   setToken(null);
+  try { await SecureStore.deleteItemAsync(SESSION_KEY); } catch { /* nothing stored */ }
   try { await AsyncStorage.removeItem(SESSION_KEY); } catch { /* nothing stored */ }
 }
 
@@ -67,7 +92,7 @@ export async function endSession() {
 export async function restoreSession(): Promise<AuthSession | null> {
   let saved: AuthSession | null = null;
   try {
-    const raw = await AsyncStorage.getItem(SESSION_KEY);
+    const raw = await readSavedSession();
     saved = raw ? (JSON.parse(raw) as AuthSession) : null;
   } catch { saved = null; }
   if (!saved?.token || !saved.user || Date.parse(saved.expiresAt) <= Date.now()) {

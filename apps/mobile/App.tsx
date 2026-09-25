@@ -25,7 +25,7 @@ import {
   type ApiNotification, type ApiDocument, type ApiRequirement, type ApiMessage, type ApiConversationThread,
 } from './src/api';
 import { GoogleSignin, statusCodes } from '@react-native-google-signin/google-signin';
-import { ActivityIndicator, Alert, Animated, BackHandler, Dimensions, Image, Keyboard, Linking, Platform, Pressable, ScrollView, StatusBar, Modal, StyleSheet, Text, TextInput, useWindowDimensions, View } from 'react-native';
+import { ActivityIndicator, Alert, Animated, AppState, BackHandler, Dimensions, Image, Keyboard, Linking, Platform, Pressable, ScrollView, StatusBar, Modal, StyleSheet, Text, TextInput, useWindowDimensions, View } from 'react-native';
 import { SafeAreaProvider, SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -71,6 +71,7 @@ import { getCacheSnapshot, clearCache } from './src/offlineCache';
 import { loadPreferences, savePreferences, DEFAULT_PREFERENCES, type SettingsPreferences } from './src/preferences';
 import { colors, scoreColor } from './src/theme';
 import { PLAN_ENFORCED, canUse, tierOf, type FeatureId } from './src/plan';
+import { getBiometricSupport, authenticateBiometric, isLockEnabled, setLockEnabled, wasAsked, markAsked, faceGateSkipped, markFaceGateSkipped, type BiometricSupport } from './src/biometricLock';
 import { faceSdkAvailable, passportFaceId, accountFaceId, enrolPassportFace, liveVerify, captureAccountFace, loadAccountTemplate, forgetPassportFace } from './src/faceSdk';
 import { HOW_TO_SECTIONS, TOUR_STEPS, hasSeenTour, markTourSeen, type TourTarget } from './src/tour';
 import { DOC_GUIDES, DOC_KIND_LABEL, judge, liveChecks, monthsUntil, parsePassportMrz, recognise, similarity, tokensOf, type DocKind, type FaceLike, type LiveCheck, type MrzResult, type OcrLike, type Verdict } from './src/documentRecognition';
@@ -155,7 +156,7 @@ type Route =
   | { name: 'visaCalculator' }
   | { name: 'bankBalance' }
   | { name: 'embassyFinder' }
-  | { name: 'faceVerification' }
+  | { name: 'faceVerification'; firstRun?: boolean }
   | { name: 'timelineTracker' }
   | { name: 'countryComparison' }
   | { name: 'onboarding'; step: number }
@@ -248,10 +249,20 @@ function AppInner() {
   // underneath it instead of above it.
   const bottomNavH = 64 + insets.bottom;
   const [route, setRoute] = useState<Route>({ name: 'splash' });
+  // App lock: set when a signed-in session is waiting behind the device fingerprint / face check.
+  const [locked, setLocked] = useState(false);
+  const pendingSession = useRef<AuthSession | null>(null);
+  const backgroundedAt = useRef<number | null>(null);
+  // Where to go once the first-time face check is finished or postponed.
+  const postAuthRoute = useRef<Route | null>(null);
+  const authUserRef = useRef<AuthUser | null>(null);
+  const [bioLabel, setBioLabel] = useState('Fingerprint or face');
+  useEffect(() => { getBiometricSupport().then((sup) => { if (sup.available) setBioLabel(sup.label); }).catch(() => {}); }, []);
   const [acceptedTerms, setAcceptedTerms] = useState(false);
   const [authEmail, setAuthEmail] = useState('');
   const [authPassword, setAuthPassword] = useState('');
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
+  authUserRef.current = authUser;
   // Route-level guard matching the backend's own requireRole gates exactly
   // (app.ts: /consultant-console, /hr, /admin/overview) — the web app
   // already redirects at the route level as defense-in-depth on top of the
@@ -450,24 +461,44 @@ function AppInner() {
   // for that bug is that THIS function stays referentially stable, since
   // handleLogin depends on it and WelcomeScreen's sticky-footer effect
   // depends on handleLogin in turn — see the comment on handleLogin.
-  const routeAfterAuth = useCallback(async (resumed = false, roles: string[] = []) => {
+  const routeAfterAuth = useCallback(async (resumed = false, roles: string[] = [], uid?: string) => {
     setLoadingApps(true);
     setLoadAppsError('');
     let firstAppId: string | undefined;
+    // A consultant lands in their own workspace; a client lands on Home (or onboarding when new).
+    let target: Route = roles.includes('consultant') ? { name: 'ctabs', tab: 'schedule' } : { name: 'tabs', tab: 'home' };
     try {
       const { applications } = await fetchApplications();
       firstAppId = applications[0]?.id;
       setAppList(applications.map(normalizeApp));
-      // A consultant lands in their own workspace; a client lands on Home (or onboarding when new).
-      setRoute(roles.includes('consultant') ? { name: 'ctabs', tab: 'schedule' } : applications.length === 0 && !resumed ? { name: 'onboarding', step: 0 } : { name: 'tabs', tab: 'home' });
+      if (!roles.includes('consultant') && applications.length === 0 && !resumed) target = { name: 'onboarding', step: 0 };
     } catch (e: any) {
       setLoadAppsError(e?.message ?? 'Failed to load applications. Please try again.');
-      setRoute(roles.includes('consultant') ? { name: 'ctabs', tab: 'schedule' } : { name: 'tabs', tab: 'home' });
     } finally {
       setLoadingApps(false);
     }
-    void Promise.all([loadConsultants(), loadSessionOpts(), loadNotifications(), loadDocuments(firstAppId), loadBookings(), loadGrants(), loadFaceStatus(), ...(roles.includes('consultant') ? [loadConsultantData()] : [])]);
+    void Promise.all([loadConsultants(), loadSessionOpts(), loadNotifications(), loadDocuments(firstAppId), loadBookings(), loadGrants(), ...(roles.includes('consultant') ? [loadConsultantData()] : [])]);
+    // First time on this account: ask for the face check before anything else (once — "Later" is remembered).
+    if (!roles.includes('consultant')) {
+      try {
+        const fs = await fetchFaceStatus();
+        setFaceStatus(fs);
+        if (!fs.enrolled && uid && faceSdkAvailable() && !(await faceGateSkipped(uid))) {
+          postAuthRoute.current = target;
+          setRoute({ name: 'faceVerification', firstRun: true });
+          return;
+        }
+      } catch { /* the app works without it; Home offers the check later */ }
+    }
+    setRoute(target);
   }, []);
+
+  /** After the first-time face check (done or postponed): carry on to where the user was headed. */
+  const finishFirstFaceCheck = () => {
+    const next = postAuthRoute.current ?? { name: 'tabs', tab: 'home' } as Route;
+    postAuthRoute.current = null;
+    setRoute(next);
+  };
 
   // Registers this device for real push notifications once signed in.
   // Best-effort and silent on failure — a user who denies the permission (or
@@ -658,6 +689,7 @@ function AppInner() {
     documentsRef.current = [];
     docFlow.current = { handled: new Set() };
     chatPending.current = null;
+    postAuthRoute.current = null;
     setMyBookings([]);
     setMyGrants([]);
     setConsultantMe(null);
@@ -689,6 +721,63 @@ function AppInner() {
     }
   };
 
+  // ── Fingerprint / face lock ─────────────────────────────────────────────────────────────────────────────
+  // After sign-in the phone can guard the app with the biometrics it already has enrolled. It is per account,
+  // asked once, and always has a "sign in with password" way out.
+  const offerBiometricLock = async (uid: string) => {
+    try {
+      const support = await getBiometricSupport();
+      if (!support.available || (await wasAsked(uid)) || (await isLockEnabled(uid))) return;
+      await markAsked(uid);
+      Alert.alert(
+        `Unlock with ${support.label.toLowerCase()}?`,
+        'Skip typing your password: the app opens with your phone’s biometrics and locks itself when you leave it. You can change this in Settings.',
+        [
+          { text: 'Not now', style: 'cancel' },
+          { text: 'Turn on', onPress: () => { void (async () => {
+            const r = await authenticateBiometric(`Confirm to turn on ${support.label.toLowerCase()} unlock`);
+            if (r.ok) await setLockEnabled(uid, true);
+          })(); } },
+        ],
+      );
+    } catch { /* optional convenience — never blocks sign-in */ }
+  };
+
+  /** Runs the device check for a saved session; on success continues into the app. */
+  const unlockWithBiometrics = async (): Promise<boolean> => {
+    const r = await authenticateBiometric('Unlock Visa With Ease');
+    if (!r.ok) return false;
+    const session = pendingSession.current;
+    pendingSession.current = null;
+    setLocked(false);
+    if (session) {
+      setAuthUser(session.user);
+      await routeAfterAuth(true, session.user.roles, session.user.uid);
+    }
+    return true;
+  };
+
+  /** "Use my password instead": ends the saved session so the normal sign-in shows. */
+  const leaveLockToPassword = () => {
+    pendingSession.current = null;
+    setLocked(false);
+    signOutNow();
+  };
+
+  // Lock again when the app has been away for a minute (long enough for the camera / picker to come and go).
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'background') { backgroundedAt.current = Date.now(); return; }
+      if (state !== 'active' || backgroundedAt.current === null) return;
+      const away = Date.now() - backgroundedAt.current;
+      backgroundedAt.current = null;
+      const uid = authUserRef.current?.uid;
+      if (!uid || away < 60_000) return;
+      void isLockEnabled(uid).then((on) => { if (on) setLocked(true); });
+    });
+    return () => sub.remove();
+  }, []);
+
   // useCallback is load-bearing here, not just tidiness: WelcomeScreen's
   // sticky-footer effect lists this function in its own dependency array
   // and calls a setState (setStickyFooter) that lives in this component —
@@ -706,7 +795,8 @@ function AppInner() {
       const session = await apiLogin(authEmail, authPassword, true);
       await startSession(session);
       setAuthUser(session.user);
-      await routeAfterAuth(false, session.user.roles);
+      await routeAfterAuth(false, session.user.roles, session.user.uid);
+      void offerBiometricLock(session.user.uid);
     } catch (e: any) {
       setLoginError(e?.message ?? 'Login failed. Check your connection.');
     } finally {
@@ -726,7 +816,8 @@ function AppInner() {
       const session = await apiGoogleLogin(idToken);
       await startSession(session);
       setAuthUser(session.user);
-      await routeAfterAuth(false, session.user.roles);
+      await routeAfterAuth(false, session.user.roles, session.user.uid);
+      void offerBiometricLock(session.user.uid);
     } catch (e: any) {
       if (e?.code === statusCodes.SIGN_IN_CANCELLED) return;
       if (e?.code === statusCodes.IN_PROGRESS) return;
@@ -891,6 +982,7 @@ function AppInner() {
   return (
     <SafeAreaView style={[styles.shell, ['splash','welcome','register','forgotPassword'].includes(route.name) && { backgroundColor: '#fff' }]} edges={['top']}>
       <StatusBar barStyle="dark-content" />
+      {locked && <LockScreen userName={(pendingSession.current?.user ?? authUser)?.name} label={bioLabel} onUnlock={unlockWithBiometrics} onPassword={leaveLockToPassword} />}
       {/* Padded by the keyboard's real overlap, which lifts the absolutely-
           positioned pinned footer/composer above it too. */}
       <View style={{ flex: 1, paddingBottom: ['camera','liveAnalysis'].includes(route.name) ? 0 : keyboardHeight }}>
@@ -981,8 +1073,14 @@ function AppInner() {
           <SplashScreen onDone={() => { void (async () => {
             const session = await restoreSession();
             if (!session) { setRoute({ name: 'welcome' }); return; }
+            // A biometric lock is waiting on this account: hold the session behind it.
+            if (await isLockEnabled(session.user.uid) && (await getBiometricSupport()).available) {
+              pendingSession.current = session;
+              setLocked(true);
+              return;
+            }
             setAuthUser(session.user);
-            await routeAfterAuth(true, session.user.roles);
+            await routeAfterAuth(true, session.user.roles, session.user.uid);
           })(); }} />
         )}
         {route.name === 'welcome' && (
@@ -1311,7 +1409,7 @@ function AppInner() {
         {route.name === 'visaCalculator' && <VisaCalculatorScreen back={goHome} />}
         {route.name === 'bankBalance' && <BankBalanceScreen back={goHome} />}
         {route.name === 'embassyFinder' && <EmbassyFinderScreen back={goHome} residenceCountry={newAppResidence} />}
-        {route.name === 'faceVerification' && <FaceVerifyScreen back={goHome} uid={authUser?.uid ?? ''} status={faceStatus} reload={loadFaceStatus} openScanner={() => setRoute({ name: 'upload', state: 'select' })} />}
+        {route.name === 'faceVerification' && <FaceVerifyScreen back={route.firstRun ? finishFirstFaceCheck : goHome} uid={authUser?.uid ?? ''} status={faceStatus} reload={loadFaceStatus} openScanner={() => setRoute({ name: 'upload', state: 'select' })} firstRun={!!route.firstRun} onLater={() => { if (authUser?.uid) void markFaceGateSkipped(authUser.uid); finishFirstFaceCheck(); }} />}
         {route.name === 'timelineTracker' && (
           <TimelineTrackerScreen
             back={goHome}
@@ -1341,7 +1439,20 @@ function AppInner() {
           />
         )}
         {route.name === 'howTo' && <HowToUseScreen back={() => setRoute({ name: 'tabs', tab: 'profile' })} startTour={() => setTourVisible(true)} />}
-        {route.name === 'verify' && <VerifyEmailScreen email={route.email} onDone={() => setRoute({ name: 'onboarding', step: 0 })} />}
+        {route.name === 'verify' && <VerifyEmailScreen email={route.email} onDone={() => { void (async () => {
+          const uid = authUser?.uid;
+          try {
+            const fs = await fetchFaceStatus();
+            setFaceStatus(fs);
+            if (!fs.enrolled && uid && faceSdkAvailable() && !(await faceGateSkipped(uid))) {
+              postAuthRoute.current = { name: 'onboarding', step: 0 };
+              setRoute({ name: 'faceVerification', firstRun: true });
+              return;
+            }
+          } catch { /* Home offers the check later */ }
+          setRoute({ name: 'onboarding', step: 0 });
+          if (uid) void offerBiometricLock(uid);
+        })(); }} />}
       </ScrollView>
       )}
       {canScrollDown && !isChatRoute && !['camera','liveAnalysis'].includes(route.name) && (
@@ -1387,6 +1498,35 @@ function AppInner() {
         }}
       />
     </SafeAreaView>
+  );
+}
+
+/** Full-screen gate shown while a saved session waits for the phone's fingerprint / face check. */
+function LockScreen({ userName, label, onUnlock, onPassword }: { userName?: string; label: string; onUnlock: () => Promise<boolean>; onPassword: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const run = useCallback(async () => {
+    if (busy) return;
+    setBusy(true);
+    setFailed(false);
+    try { if (!(await onUnlock())) setFailed(true); } finally { setBusy(false); }
+  }, [busy, onUnlock]);
+  // Prompt straight away so a returning user just touches the sensor.
+  useEffect(() => { void run(); // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  return (
+    <View style={{ ...StyleSheet.absoluteFillObject, backgroundColor: '#fff', alignItems: 'center', justifyContent: 'center', padding: 32, gap: 14, zIndex: 100 }} accessibilityLabel="App locked">
+      <Image source={require('./assets/logo-icon.png')} style={{ width: 72, height: 72, borderRadius: 16 }} resizeMode="contain" />
+      <Text style={{ fontSize: 22, fontWeight: '900', color: '#0F172A' }}>{userName ? `Welcome back, ${userName.split(' ')[0]}` : 'Welcome back'}</Text>
+      <Text style={{ fontSize: 14, color: '#475569', textAlign: 'center' }}>Use {label.toLowerCase()} to open Visa With Ease.</Text>
+      <Pressable onPress={run} disabled={busy} accessibilityLabel="Unlock" style={{ marginTop: 10, width: 84, height: 84, borderRadius: 42, backgroundColor: colors.royal50, alignItems: 'center', justifyContent: 'center' }}>
+        {busy ? <ActivityIndicator color={colors.royal600} /> : <Ionicons name="finger-print" size={44} color={colors.royal600} />}
+      </Pressable>
+      {failed && <Text style={{ color: '#B91C1C', fontSize: 13, fontWeight: '700' }}>Couldn’t unlock. Tap the icon to try again.</Text>}
+      <Pressable onPress={onPassword} accessibilityLabel="Use my password instead" hitSlop={10} style={{ marginTop: 16 }}>
+        <Text style={{ color: colors.royal600, fontWeight: '800', fontSize: 14 }}>Use my password instead</Text>
+      </Pressable>
+    </View>
   );
 }
 
@@ -4224,7 +4364,14 @@ function ProfileScreen({
           </View>
           <Ionicons name="chevron-forward" size={18} color={colors.slate300} />
         </Pressable>
-        <TaskRow title="Fingerprint sign-in" meta="Enable in Settings → Security." />
+        <Pressable style={styles.taskRow} onPress={openSettings} accessibilityLabel="Fingerprint or face unlock settings">
+          <View style={[styles.taskMark]}><Ionicons name="finger-print" size={14} color={colors.royal600} /></View>
+          <View style={styles.flex}>
+            <Text style={styles.rowTitle}>Fingerprint or face unlock</Text>
+            <Text style={styles.rowMeta}>Open the app with your phone’s biometrics. Turn it on in Settings.</Text>
+          </View>
+          <Ionicons name="chevron-forward" size={18} color={colors.slate300} />
+        </Pressable>
       </Section>
       <OfflineCacheCard />
       <Pressable style={styles.primaryButton} onPress={openSettings}><Text style={styles.primaryButtonText}>Settings</Text></Pressable>
@@ -4668,6 +4815,7 @@ function SearchScreen({ back, openApplication, openConsultant, appList, consulta
 function SettingsScreen({ back, authUser, onSignOut, openProfileHub }: { back: () => void; authUser: AuthUser | null; onSignOut: () => void; openProfileHub: () => void }) {
   const [prefs, setPrefs] = useState<SettingsPreferences>(DEFAULT_PREFERENCES);
   const [biometricAvailable, setBiometricAvailable] = useState<boolean | null>(null);
+  const [biometricSupport, setBiometricSupport] = useState<BiometricSupport | null>(null);
   const [changingPassword, setChangingPassword] = useState(false);
   const [clearingCache, setClearingCache] = useState(false);
   const [twoFactorEnabled, setTwoFactorEnabled] = useState<boolean | null>(null);
@@ -4677,9 +4825,8 @@ function SettingsScreen({ back, authUser, onSignOut, openProfileHub }: { back: (
   const [deletingData, setDeletingData] = useState(false);
 
   useEffect(() => {
-    Promise.all([LocalAuthentication.hasHardwareAsync(), LocalAuthentication.isEnrolledAsync()])
-      .then(([hasHw, isEnrolled]) => setBiometricAvailable(hasHw && isEnrolled))
-      .catch(() => setBiometricAvailable(false));
+    getBiometricSupport().then((sup) => { setBiometricSupport(sup); setBiometricAvailable(sup.available); }).catch(() => setBiometricAvailable(false));
+    if (authUser?.uid) isLockEnabled(authUser.uid).then((on) => setPrefs((prev) => ({ ...prev, biometricEnabled: on })));
     loadPreferences().then(setPrefs);
     fetch2faStatus().then((r) => setTwoFactorEnabled(r.enabled)).catch(() => setTwoFactorEnabled(false));
   }, []);
@@ -4738,15 +4885,20 @@ function SettingsScreen({ back, authUser, onSignOut, openProfileHub }: { back: (
   };
 
   const toggleBiometric = async () => {
+    const uid = authUser?.uid;
+    if (!uid) return;
     if (prefs.biometricEnabled) {
-      updatePref('biometricEnabled', false);
+      await setLockEnabled(uid, false);
+      setPrefs((prev) => ({ ...prev, biometricEnabled: false }));
       return;
     }
-    const result = await LocalAuthentication.authenticateAsync({
-      promptMessage: 'Confirm your identity to enable biometric unlock',
-      fallbackLabel: 'Use passcode',
-    });
-    if (result.success) updatePref('biometricEnabled', true);
+    const result = await authenticateBiometric('Confirm it’s you to turn on the app lock');
+    if (result.ok) {
+      await setLockEnabled(uid, true);
+      setPrefs((prev) => ({ ...prev, biometricEnabled: true }));
+    } else if (!result.cancelled) {
+      Alert.alert('Could not turn on the lock', 'Your phone did not confirm the check. Try again.');
+    }
   };
 
   const handleChangePassword = async () => {
@@ -4844,8 +4996,8 @@ function SettingsScreen({ back, authUser, onSignOut, openProfileHub }: { back: (
 
       <Section title="Security">
         <ToggleRow
-          title="Biometric unlock"
-          meta={biometricAvailable === false ? 'Not available on this device' : prefs.biometricEnabled ? 'Enabled' : 'Tap to enable'}
+          title={`${biometricSupport?.label ?? 'Biometric'} unlock`}
+          meta={biometricAvailable === false ? 'Set up a fingerprint or face on your phone first' : prefs.biometricEnabled ? 'On — the app locks when you leave it' : 'Open the app without typing your password'}
           value={prefs.biometricEnabled}
           onToggle={toggleBiometric}
           disabled={biometricAvailable === false}
@@ -4895,7 +5047,7 @@ function SettingsScreen({ back, authUser, onSignOut, openProfileHub }: { back: (
           onPress={handleClearCache}
           disabled={clearingCache}
         />
-        <Finding title="App version" meta="0.1.0" />
+        <Finding title="App version" meta={String((require('./app.json') as { expo: { version: string } }).expo.version)} />
       </Section>
 
       <Section title="About">
@@ -5943,7 +6095,9 @@ async function cropPassportFace(uri: string): Promise<{ base64: string; previewU
   }
 }
 
-function FaceVerifyScreen({ back, uid, status, reload, openScanner }: {
+function FaceVerifyScreen({ back, uid, status, reload, openScanner, firstRun, onLater }: {
+  firstRun?: boolean;
+  onLater?: () => void;
   back: () => void;
   uid: string;
   status: ApiFaceStatus | null;
@@ -6047,7 +6201,14 @@ function FaceVerifyScreen({ back, uid, status, reload, openScanner }: {
 
   return (
     <View style={{ gap: 16, paddingBottom: insets.bottom }}>
-      <BackButton label="Back" onPress={back} />
+      {firstRun ? (
+        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+          <Text style={{ color: colors.royal600, fontWeight: '800', fontSize: 12, letterSpacing: 1 }}>STEP 1 · SECURE YOUR ACCOUNT</Text>
+          {!enrolled && <Pressable onPress={onLater} accessibilityLabel="Do this later" hitSlop={10}><Text style={{ color: colors.slate500, fontWeight: '800', fontSize: 13 }}>Later</Text></Pressable>}
+        </View>
+      ) : (
+        <BackButton label="Back" onPress={back} />
+      )}
       <View>
         <Text style={styles.eyebrow}>Identity check</Text>
         <Text style={[styles.title, { marginBottom: 4 }]}>Verify it’s really you</Text>
@@ -6078,7 +6239,10 @@ function FaceVerifyScreen({ back, uid, status, reload, openScanner }: {
               {working ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryButtonText}>Quick face check</Text>}
             </Pressable>
           )}
-          {!stale && <Text style={{ color: '#047857', fontSize: 12, fontWeight: '700' }}>Checked recently — no action needed.</Text>}
+          {!stale && !firstRun && <Text style={{ color: '#047857', fontSize: 12, fontWeight: '700' }}>Checked recently — no action needed.</Text>}
+          {firstRun && (
+            <Pressable onPress={back} accessibilityLabel="Continue" style={[styles.primaryButton, { marginTop: 4 }]}><Text style={styles.primaryButtonText}>Continue</Text></Pressable>
+          )}
         </View>
       )}
 

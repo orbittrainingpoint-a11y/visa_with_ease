@@ -1838,6 +1838,8 @@ export function createApp(services: Services = createServices()) {
     KWD: 0.3080, OMR: 0.3845, JOD: 0.7090, PKR: 278.5, BDT: 109.8,
     LKR: 299.2, NPR: 133.4, IDR: 15840, VND: 25135, EGP: 30.90,
     NGN: 1608, GHS: 15.25, ETB: 56.90, MAD: 9.980, KES: 128.7,
+    // Approximate majors — only shown when the live rate service is unreachable.
+    EUR: 0.92, GBP: 0.79, AUD: 1.52, CAD: 1.37, CHF: 0.88, JPY: 150, CNY: 7.2, INR: 83, SGD: 1.34, NZD: 1.65, TRY: 32, ZAR: 18.5,
   };
   let rateCache: { rates: Record<string, number>; updatedAt: string } | null = null;
   let rateCacheExpiry = 0;

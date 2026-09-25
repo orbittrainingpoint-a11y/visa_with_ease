@@ -1761,7 +1761,7 @@ function WelcomeScreen({
 function ConsultantHeader({ userName }: { userName?: string }) {
   const initials = userName ? userName.split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2) : '?';
   return (
-    <View style={[styles.header, { backgroundColor: '#0B1F4B' }]}>
+    <View style={[styles.header, { backgroundColor: '#0B1F4B', gap: 12 }]}>
       <View style={[styles.avatar, { backgroundColor: '#1A56DB' }]}><Text style={styles.avatarText}>{initials}</Text></View>
       <View style={{ flex: 1 }}>
         <Text style={{ color: '#fff', fontWeight: '900', fontSize: 15 }}>Consultant workspace</Text>

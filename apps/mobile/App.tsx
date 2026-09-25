@@ -813,8 +813,10 @@ function AppInner() {
     try {
       await GoogleSignin.hasPlayServices();
       const userInfo = await GoogleSignin.signIn();
-      const idToken = userInfo.data?.idToken;
-      if (!idToken) throw new Error('No ID token returned from Google');
+      // Backing out of the Google account screen is not an error.
+      if ((userInfo as { type?: string }).type === 'cancelled' || !userInfo.data) return;
+      const idToken = userInfo.data.idToken;
+      if (!idToken) throw new Error('Google did not return an identity token. This usually means the app’s Google setup is incomplete — sign in with email for now.');
       const session = await apiGoogleLogin(idToken);
       await startSession(session);
       setAuthUser(session.user);

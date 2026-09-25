@@ -680,6 +680,8 @@ function AppInner() {
   };
   const signOutNow = () => {
     void endSession();
+    // Forget the Google account too, so the next "Continue with Google" shows the account chooser (shared phones).
+    void GoogleSignin.signOut().catch(() => { /* not signed in with Google */ });
     setAuthUser(null);
     setAppList([]);
     setSessionMessages([]);
@@ -821,7 +823,13 @@ function AppInner() {
     } catch (e: any) {
       if (e?.code === statusCodes.SIGN_IN_CANCELLED) return;
       if (e?.code === statusCodes.IN_PROGRESS) return;
-      setLoginError(e?.message ?? 'Google sign-in failed. Try email & password.');
+      // Say what actually went wrong instead of a raw SDK code.
+      setLoginError(
+        e?.code === statusCodes.PLAY_SERVICES_NOT_AVAILABLE ? 'Google Play services are missing or out of date on this phone. Update them, or sign in with email.'
+        : String(e?.code) === '10' || /DEVELOPER_ERROR/i.test(String(e?.message)) ? 'Google sign-in is not set up for this build of the app yet. Sign in with email for now.'
+        : /network/i.test(String(e?.message)) ? 'No connection. Check your internet and try again.'
+        : (e?.message ?? 'Google sign-in failed. Try email & password.'),
+      );
     } finally {
       setLoginLoading(false);
     }

@@ -150,7 +150,20 @@ const sensitiveLimiter = rateLimit({
   message: { error: { code: 'RATE_LIMITED', message: 'Too many requests, please try again later' } }
 });
 
-export function createApp(services: Services = createServices()) {
+export interface GoogleIdentity { email: string; emailVerified: boolean; name?: string; sub: string }
+export interface AppOptions {
+  /** Verifies a Google ID token. Replaced in tests so no call goes to Google. */
+  verifyGoogleToken?: (idToken: string, audiences: string[]) => Promise<GoogleIdentity | null>;
+}
+
+async function verifyGoogleTokenWithGoogle(idToken: string, audiences: string[]): Promise<GoogleIdentity | null> {
+  const ticket = await new OAuth2Client().verifyIdToken({ idToken, audience: audiences });
+  const payload = ticket.getPayload();
+  if (!payload?.email || !payload.sub) return null;
+  return { email: payload.email, emailVerified: payload.email_verified === true, name: payload.name, sub: payload.sub };
+}
+
+export function createApp(services: Services = createServices(), options: AppOptions = {}) {
   const app = express();
 
   // Deployed behind exactly one reverse proxy hop (the VPS's own nginx/Caddy
@@ -207,6 +220,9 @@ export function createApp(services: Services = createServices()) {
     if (!record || !verifyPassword(password, record.passwordHash)) {
       return res.status(401).json({ error: { code: 'INVALID_CREDENTIALS', message: 'Incorrect email or password' } });
     }
+    if (record.status === 'suspended') {
+      return res.status(403).json({ error: { code: 'ACCOUNT_SUSPENDED', message: 'This account has been suspended. Contact support.' } });
+    }
     const expiresIn = remember ? '7d' : '1d';
     const expiresAt = new Date(Date.now() + (remember ? 7 : 1) * 24 * 60 * 60 * 1000).toISOString();
     const token = signToken({ uid: record.uid, email: record.email, roles: record.roles }, expiresIn);
@@ -226,6 +242,9 @@ export function createApp(services: Services = createServices()) {
     const email = req.user!.email;
     const record = email ? await getUserByEmail(email) : null;
     if (!record || record.uid !== req.user!.uid) {
+      return res.status(401).json({ error: { code: 'UNAUTHORIZED', message: 'Session no longer valid' } });
+    }
+    if (record.status === 'suspended') {
       return res.status(401).json({ error: { code: 'UNAUTHORIZED', message: 'Session no longer valid' } });
     }
     const days = 30;
@@ -278,20 +297,38 @@ export function createApp(services: Services = createServices()) {
       return res.status(503).json({ error: { code: 'NOT_CONFIGURED', message: 'Google Sign-In is not configured on this server' } });
     }
     try {
-      const client = new OAuth2Client();
-      const ticket = await client.verifyIdToken({ idToken, audience: webClientIds });
-      const payload = ticket.getPayload();
-      if (!payload?.email) {
+      const identity = await (options.verifyGoogleToken ?? verifyGoogleTokenWithGoogle)(idToken, webClientIds);
+      if (!identity) {
         return res.status(401).json({ error: { code: 'INVALID_TOKEN', message: 'Could not verify Google token' } });
       }
-      const { email, name: googleName, sub: googleSub } = payload;
-      const uid = `google-${googleSub}`;
-      const name = googleName ?? email.split('@')[0];
-      const roles = ['consumer'];
-      const token = signToken({ uid, email, roles }, '7d');
+      // Only a Google-verified email can claim an account: an unverified address could belong to someone else.
+      if (!identity.emailVerified) {
+        return res.status(401).json({ error: { code: 'EMAIL_NOT_VERIFIED', message: 'Your Google email address is not verified.' } });
+      }
+      const email = identity.email;
+      // The same person signing in with Google and with a password must land in ONE account: link by verified
+      // email. A first-time Google user gets a real account record (with a password nobody knows), so the rest of
+      // the system — session refresh, suspension, roles, erasure — treats them like any other user.
+      let record = await getUserByEmail(email);
+      const created = !record;
+      if (!record) {
+        record = {
+          uid: `google-${identity.sub}`,
+          email,
+          name: identity.name ?? email.split('@')[0],
+          passwordHash: hashPassword(randomBytes(32).toString('hex')),
+          roles: ['consumer'],
+        };
+        await createUser(record);
+      }
+      if (record.status === 'suspended') {
+        return res.status(403).json({ error: { code: 'ACCOUNT_SUSPENDED', message: 'This account has been suspended. Contact support.' } });
+      }
+      const token = signToken({ uid: record.uid, email: record.email, roles: record.roles }, '7d');
       const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
-      await cancelAccountDeletion(uid);
-      return res.status(201).json({ token, user: { uid, email, name, roles }, expiresAt });
+      await cancelAccountDeletion(record.uid);
+      await appendAuditLog({ actor: email, action: created ? 'REGISTER_GOOGLE' : 'LOGIN_GOOGLE', resource: 'auth', ip: req.ip ?? '?' });
+      return res.status(created ? 201 : 200).json({ token, user: { uid: record.uid, email: record.email, name: record.name, roles: record.roles }, expiresAt });
     } catch {
       return res.status(401).json({ error: { code: 'INVALID_TOKEN', message: 'Google token verification failed' } });
     }

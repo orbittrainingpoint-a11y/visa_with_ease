@@ -1740,3 +1740,66 @@ test('Admin purge erases an account: applications, face template and the login i
   assert.equal((await get('/applications', token)).body.applications.length, 0, 'applications erased');
   assert.equal((await post('/auth/session', { email, password: 'PurgeMe#2026x' })).res.status, 401, 'the login no longer exists');
 });
+
+// ─── Google sign-in ──────────────────────────────────────────────────────────
+
+process.env.GOOGLE_WEB_CLIENT_ID = 'test-client-id.apps.googleusercontent.com';
+const fakeGoogle: Record<string, { email: string; emailVerified: boolean; name?: string; sub: string }> = {};
+const googleServer = createApp(undefined, { verifyGoogleToken: async (t) => fakeGoogle[t] ?? null }).listen(0);
+test.after(() => { googleServer.close(); });
+const googleBase = `http://127.0.0.1:${(googleServer.address() as AddressInfo).port}`;
+const googlePost = async (path: string, body: unknown, token?: string) => {
+  const res = await fetch(`${googleBase}${path}`, { method: 'POST', headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify(body) });
+  return { res, body: await res.json() };
+};
+
+test('Google sign-in — a new Google user gets a real account that survives a session refresh', async () => {
+  const email = `g.new.${Date.now()}@example.com`;
+  fakeGoogle['tok-new'] = { email, emailVerified: true, name: 'Gina Google', sub: `sub-${Date.now()}` };
+  const first = await googlePost('/auth/google', { idToken: 'tok-new' });
+  assert.equal(first.res.status, 201);
+  assert.equal(first.body.user.name, 'Gina Google');
+  // Regression: refresh looked the user up by email and 401'd for Google users, signing them out on every app restart.
+  const refreshed = await googlePost('/auth/refresh', {}, first.body.token);
+  assert.equal(refreshed.res.status, 200);
+  assert.equal(refreshed.body.user.uid, first.body.user.uid);
+  const second = await googlePost('/auth/google', { idToken: 'tok-new' });
+  assert.equal(second.res.status, 200, 'the second sign-in is a login, not a new signup');
+  assert.equal(second.body.user.uid, first.body.user.uid);
+});
+
+test('Google sign-in — links to the existing password account with the same verified email (one person, one account)', async () => {
+  const email = `g.link.${Date.now()}@example.com`;
+  const reg = await post('/auth/register', { name: 'Linked Person', email, password: 'LinkMe#2026x' });
+  fakeGoogle['tok-link'] = { email, emailVerified: true, name: 'Someone Else', sub: `sub-link-${Date.now()}` };
+  const g = await googlePost('/auth/google', { idToken: 'tok-link' });
+  assert.equal(g.res.status, 200);
+  assert.equal(g.body.user.uid, reg.body.user.uid, 'same account, not a second one');
+  assert.equal(g.body.user.name, 'Linked Person');
+});
+
+test('Google sign-in — an unverified Google email cannot claim an account, and a bad token is refused', async () => {
+  fakeGoogle['tok-unverified'] = { email: `g.unv.${Date.now()}@example.com`, emailVerified: false, sub: 'sub-unv' };
+  const r = await googlePost('/auth/google', { idToken: 'tok-unverified' });
+  assert.equal(r.res.status, 401);
+  assert.equal(r.body.error.code, 'EMAIL_NOT_VERIFIED');
+  assert.equal((await googlePost('/auth/google', { idToken: 'not-a-real-token' })).res.status, 401);
+});
+
+test('Suspended accounts cannot sign in (password or Google) and their session stops refreshing', async () => {
+  const email = `g.susp.${Date.now()}@example.com`;
+  fakeGoogle['tok-susp'] = { email, emailVerified: true, name: 'Sam Suspended', sub: `sub-susp-${Date.now()}` };
+  const g = await googlePost('/auth/google', { idToken: 'tok-susp' });
+  const admin = await demoToken('platform_admin');
+  assert.equal((await post(`/admin/users/${g.body.user.uid}/suspend`, {}, admin)).res.status, 200);
+  const again = await googlePost('/auth/google', { idToken: 'tok-susp' });
+  assert.equal(again.res.status, 403);
+  assert.equal(again.body.error.code, 'ACCOUNT_SUSPENDED');
+  assert.equal((await googlePost('/auth/refresh', {}, g.body.token)).res.status, 401, 'an existing session stops refreshing');
+
+  const pwEmail = `pw.susp.${Date.now()}@example.com`;
+  const reg = await post('/auth/register', { name: 'Pat Password', email: pwEmail, password: 'Suspend#2026x' });
+  await post(`/admin/users/${reg.body.user.uid}/suspend`, {}, admin);
+  const login = await post('/auth/session', { email: pwEmail, password: 'Suspend#2026x' });
+  assert.equal(login.res.status, 403);
+});

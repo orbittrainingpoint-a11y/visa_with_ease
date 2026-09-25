@@ -973,6 +973,8 @@ function AppInner() {
         {route.name === 'calendarPicker' && (
           <CalendarPickerScreen
             consultantId={route.consultantId}
+            consultantName={consultantList.find((c) => c.id === route.consultantId)?.name ?? 'your consultant'}
+            rescheduling={!!rescheduleOf.current}
             back={() => setRoute({ name: 'booking', consultantId: route.consultantId, optionId: route.optionId })}
             confirm={(slotISO) => setRoute({ name: 'consent', consultantId: route.consultantId, optionId: route.optionId, slotISO })}
           />
@@ -4268,95 +4270,126 @@ function parseSlotTo24h(t: string): { h: number; m: number } {
   return { h, m: Number(match[2]) };
 }
 
-function CalendarPickerScreen({ consultantId, back, confirm }: { consultantId: string; back: () => void; confirm: (slotISO: string) => void }) {
-  const now = new Date();
-  const [selectedDay, setSelectedDay] = useState(now.getDate());
-  const [selectedSlot, setSelectedSlot] = useState('11:00 AM');
+function CalendarPickerScreen({ consultantName, consultantId, back, confirm, rescheduling }: { consultantName: string; consultantId: string; back: () => void; confirm: (slotISO: string) => void; rescheduling?: boolean }) {
+  // All slot times are quoted in GST (UTC+4, no DST) — the same convention the backend uses
+  // to decide which slots are taken. Each slot is turned into a real instant here, then shown
+  // in the phone's own time zone too, so nobody has to convert in their head.
+  const GST_MS = 4 * 3600 * 1000;
+  const gstNow = new Date(Date.now() + GST_MS);
+  const days = Array.from({ length: 21 }, (_, i) => {
+    const d = new Date(Date.UTC(gstNow.getUTCFullYear(), gstNow.getUTCMonth(), gstNow.getUTCDate() + i));
+    return { y: d.getUTCFullYear(), m: d.getUTCMonth(), d: d.getUTCDate(), dow: d.getUTCDay(), key: `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}` };
+  });
+  const [dayIndex, setDayIndex] = useState(0);
+  const [selectedSlot, setSelectedSlot] = useState<string | null>(null);
   const [takenSlots, setTakenSlots] = useState<string[]>([]);
+  const [slotsError, setSlotsError] = useState(false);
   const [loadingSlots, setLoadingSlots] = useState(false);
-  const consultantLabel = consultantId || 'Consultant';
-  const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
-  const days = Array.from({ length: daysInMonth }, (_, i) => i + 1);
-  const today = now.getDate();
-  const selectedDateLabel = new Date(now.getFullYear(), now.getMonth(), selectedDay).toLocaleString('en-US', { month: 'short', day: 'numeric' });
+  const day = days[dayIndex];
+  const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+
+  const slotInstant = (label: string, dy = day) => {
+    const { h, m } = parseSlotTo24h(label);
+    return new Date(Date.UTC(dy.y, dy.m, dy.d, h, m) - GST_MS);
+  };
+  const localTime = (label: string) => slotInstant(label).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
 
   useEffect(() => {
     if (!consultantId) return;
+    let cancelled = false;
     setLoadingSlots(true);
-    const dateKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(selectedDay).padStart(2, '0')}`;
-    fetchBookingSlots(consultantId, dateKey)
-      .then(d => setTakenSlots(d.takenSlots ?? []))
-      .catch(() => setTakenSlots([]))
-      .finally(() => setLoadingSlots(false));
-  }, [consultantId, selectedDay]);
+    setSlotsError(false);
+    setSelectedSlot(null);
+    fetchBookingSlots(consultantId, day.key)
+      .then((d) => { if (!cancelled) setTakenSlots(d.takenSlots ?? []); })
+      .catch(() => { if (!cancelled) { setTakenSlots([]); setSlotsError(true); } })
+      .finally(() => { if (!cancelled) setLoadingSlots(false); });
+    return () => { cancelled = true; };
+  }, [consultantId, dayIndex]);
 
-  const Slot = ({ t }: { t: string }) => {
-    const taken = takenSlots.includes(t);
-    const sel = selectedSlot === t && !taken;
+  const state = (t: string) => (takenSlots.includes(t) ? 'taken' : slotInstant(t).getTime() <= Date.now() + 30 * 60 * 1000 ? 'past' : 'free');
+  const SlotChip = ({ t }: { t: string }) => {
+    const st = state(t);
+    const sel = selectedSlot === t && st === 'free';
+    const off = st !== 'free';
     return (
       <Pressable
-        onPress={() => !taken && setSelectedSlot(t)}
-        style={{ flex: 1, paddingVertical: 10, borderRadius: 10, alignItems: 'center',
-          backgroundColor: sel ? colors.royal600 : taken ? colors.slate100 : colors.white,
-          borderWidth: 1, borderColor: sel ? colors.royal600 : colors.slate200 }}
+        disabled={off}
+        onPress={() => setSelectedSlot(t)}
+        accessibilityLabel={`${t} GST${off ? ', unavailable' : ''}`}
+        style={{ flexBasis: '31%', flexGrow: 1, paddingVertical: 10, borderRadius: 12, alignItems: 'center',
+          backgroundColor: sel ? colors.royal600 : off ? colors.slate50 : colors.white, borderWidth: 1, borderColor: sel ? colors.royal600 : colors.slate200 }}
       >
-        <Text style={{ fontSize: 12, fontWeight: '700', color: sel ? '#fff' : taken ? colors.slate300 : colors.slate900, textDecorationLine: taken ? 'line-through' : 'none' }}>{t}</Text>
+        <Text style={{ fontSize: 13, fontWeight: '800', color: sel ? '#fff' : off ? colors.slate300 : colors.slate900, textDecorationLine: st === 'taken' ? 'line-through' : 'none' }}>{t}</Text>
+        <Text style={{ fontSize: 10.5, color: sel ? 'rgba(255,255,255,0.85)' : off ? colors.slate300 : colors.slate500, marginTop: 1 }}>{st === 'taken' ? 'Booked' : st === 'past' ? 'Passed' : localTime(t)}</Text>
       </Pressable>
     );
   };
+  const allSlots = [...SLOTS_AM, ...SLOTS_PM];
+  const anyFree = allSlots.some((t) => state(t) === 'free');
+  const chosen = selectedSlot ? slotInstant(selectedSlot) : null;
 
   return (
-    <View>
+    <View style={{ gap: 14 }}>
       <BackButton label="Booking" onPress={back} />
-      <Text style={styles.eyebrow}>Schedule session</Text>
-      <Text style={styles.title}>Pick a time slot</Text>
-      <Text style={[styles.rowMeta, { marginBottom: 14 }]}>With {consultantLabel} · All times in GST (your local timezone)</Text>
-      <Section title={new Date().toLocaleString('en-US', { month: 'long', year: 'numeric' })}>
-        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 4 }}>
-          {['Mo','Tu','We','Th','Fr','Sa','Su'].map(d => (
-            <Text key={d} style={{ width: '13.5%', textAlign: 'center', color: colors.slate300, fontSize: 11, fontWeight: '700', marginBottom: 4 }}>{d}</Text>
-          ))}
-          {days.map(d => {
-            const past = d < today;
-            const sel = d === selectedDay;
-            const isToday = d === today;
+      <View>
+        <Text style={styles.eyebrow}>{rescheduling ? 'Reschedule session' : 'Schedule session'}</Text>
+        <Text style={[styles.title, { marginBottom: 4 }]}>Pick a time</Text>
+        <Text style={[styles.rowMeta, { lineHeight: 19 }]}>With {consultantName}. Slots are in GST (UTC+4); your own time is shown under each one.</Text>
+      </View>
+
+      <View>
+        <Text style={{ color: colors.slate900, fontWeight: '900', fontSize: 15, marginBottom: 8 }}>{MONTHS[day.m]} {day.y}</Text>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingRight: 8 }}>
+          {days.map((dy, i) => {
+            const sel = i === dayIndex;
             return (
-              <Pressable key={d} onPress={() => !past && setSelectedDay(d)}
-                style={{ width: '13.5%', aspectRatio: 1, borderRadius: 8, alignItems: 'center', justifyContent: 'center',
-                  backgroundColor: sel ? colors.royal600 : 'transparent' }}>
-                <Text style={{ fontSize: 13, fontWeight: sel || isToday ? '900' : '500',
-                  color: sel ? '#fff' : past ? colors.slate300 : isToday ? colors.royal600 : colors.slate800 }}>{d}</Text>
+              <Pressable key={dy.key} onPress={() => setDayIndex(i)} accessibilityLabel={`${WEEKDAYS[dy.dow]} ${dy.d} ${MONTHS[dy.m]}`}
+                style={{ width: 54, paddingVertical: 10, borderRadius: 16, alignItems: 'center', backgroundColor: sel ? colors.royal600 : colors.white, borderWidth: 1, borderColor: sel ? colors.royal600 : colors.slate200 }}>
+                <Text style={{ fontSize: 11, fontWeight: '700', color: sel ? 'rgba(255,255,255,0.85)' : colors.slate500 }}>{i === 0 ? 'Today' : WEEKDAYS[dy.dow]}</Text>
+                <Text style={{ fontSize: 19, fontWeight: '900', color: sel ? '#fff' : colors.slate900, marginTop: 2 }}>{dy.d}</Text>
               </Pressable>
             );
           })}
-        </View>
-      </Section>
-      {loadingSlots ? (
-        <ActivityIndicator style={{ marginVertical: 16 }} color={colors.royal600} />
-      ) : (
-        <>
-          <Section title="Morning slots">
-            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
-              {SLOTS_AM.map(t => <Slot key={t} t={t} />)}
-            </View>
-          </Section>
-          <Section title="Afternoon slots">
-            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
-              {SLOTS_PM.map(t => <Slot key={t} t={t} />)}
-            </View>
-          </Section>
-        </>
-      )}
-      <View style={[styles.notice, { flexDirection: 'row', alignItems: 'center', gap: 10 }]}>
-        <Ionicons name="checkmark-circle" size={16} color={colors.gold500} />
-        <Text style={[styles.noticeText, { flex: 1 }]}>Selected: {selectedDateLabel} · {selectedSlot} GST</Text>
+        </ScrollView>
       </View>
-      <Pressable style={styles.primaryButton} onPress={() => {
-        const { h, m } = parseSlotTo24h(selectedSlot);
-        const slotISO = new Date(now.getFullYear(), now.getMonth(), selectedDay, h, m).toISOString();
-        confirm(slotISO);
-      }}>
-        <Text style={styles.primaryButtonText}>Confirm slot → Consent</Text>
+
+      {loadingSlots ? (
+        <ActivityIndicator style={{ marginVertical: 24 }} color={colors.royal600} />
+      ) : (
+        <View style={{ gap: 12 }}>
+          {slotsError && (
+            <View style={{ backgroundColor: '#FEF3C7', borderRadius: 12, padding: 12 }}>
+              <Text style={{ color: '#92400E', fontSize: 12.5, fontWeight: '700' }}>Couldn’t check which slots are already booked. You can still choose a time — a clash will be caught when you confirm.</Text>
+            </View>
+          )}
+          <View>
+            <Text style={{ color: colors.slate500, fontSize: 11, fontWeight: '800', letterSpacing: 0.8, textTransform: 'uppercase', marginBottom: 8 }}>Morning</Text>
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>{SLOTS_AM.map((t) => <SlotChip key={t} t={t} />)}</View>
+          </View>
+          <View>
+            <Text style={{ color: colors.slate500, fontSize: 11, fontWeight: '800', letterSpacing: 0.8, textTransform: 'uppercase', marginBottom: 8 }}>Afternoon</Text>
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>{SLOTS_PM.map((t) => <SlotChip key={t} t={t} />)}</View>
+          </View>
+          {!anyFree && !slotsError && <Text style={{ color: colors.slate600, textAlign: 'center', fontSize: 13 }}>No times left on this day — try another date.</Text>}
+        </View>
+      )}
+
+      <View style={{ backgroundColor: chosen ? colors.royal50 : colors.slate50, borderRadius: 14, padding: 14, flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+        <Ionicons name={chosen ? 'checkmark-circle' : 'time-outline'} size={20} color={chosen ? colors.royal600 : colors.slate500} />
+        <Text style={{ flex: 1, color: chosen ? colors.navy900 : colors.slate500, fontWeight: chosen ? '800' : '500', fontSize: 13.5, lineHeight: 19 }}>
+          {chosen
+            ? `${chosen.toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' })} · ${chosen.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })} your time (${selectedSlot} GST)`
+            : 'Choose a time to continue'}
+        </Text>
+      </View>
+      <Pressable
+        disabled={!chosen}
+        style={[styles.primaryButton, !chosen && styles.disabledButton, { marginTop: 0 }]}
+        onPress={() => { if (chosen) confirm(chosen.toISOString()); }}
+      >
+        <Text style={[styles.primaryButtonText, !chosen && styles.disabledButtonText]}>Continue to consent</Text>
       </Pressable>
     </View>
   );
@@ -6065,12 +6098,14 @@ function HowToUseScreen({ back, startTour }: { back: () => void; startTour: () =
 }
 
 // ─── Bookings tab ─────────────────────────────────────────────────────────────
-function formatSlot(slotISO: string | null): { day: string; time: string } | null {
+function formatSlot(slotISO: string | null): { day: string; time: string; weekday: string; dayNum: string } | null {
   if (!slotISO) return null;
   const d = new Date(slotISO);
   if (isNaN(d.getTime())) return null;
   return {
     day: d.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' }),
+    weekday: d.toLocaleDateString(undefined, { weekday: 'short' }),
+    dayNum: String(d.getDate()),
     time: d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }),
   };
 }
@@ -6100,14 +6135,14 @@ function BookingCard({ booking, sessionLabel, onCancel, onReschedule, onOpenCons
   const past = !cancelled && !!booking.slotISO && new Date(booking.slotISO).getTime() < Date.now();
   const tone = cancelled ? { bg: '#FEE2E2', fg: '#B91C1C', label: 'Cancelled' }
     : past ? { bg: colors.slate100, fg: colors.slate600, label: 'Completed' }
-      : slot ? { bg: '#DCFCE7', fg: '#15803D', label: 'Booked' }
+      : slot ? { bg: '#DBEAFE', fg: '#1D4ED8', label: 'Requested' }
         : { bg: '#FEF3C7', fg: '#B45309', label: 'Awaiting time' };
   return (
     <View style={{ backgroundColor: colors.white, borderRadius: 18, borderWidth: 1, borderColor: colors.slate100, padding: 14, gap: 12, opacity: cancelled ? 0.75 : 1 }}>
       <View style={{ flexDirection: 'row', gap: 12, alignItems: 'center' }}>
         <View style={{ width: 52, borderRadius: 14, backgroundColor: colors.royal50, alignItems: 'center', paddingVertical: 8 }}>
-          <Text style={{ color: colors.royal600, fontSize: 11, fontWeight: '800', textTransform: 'uppercase' }}>{slot ? slot.day.split(' ')[0] : '—'}</Text>
-          <Text style={{ color: colors.navy900, fontSize: 20, fontWeight: '900' }}>{slot ? slot.day.split(' ')[1] : '?'}</Text>
+          <Text style={{ color: colors.royal600, fontSize: 11, fontWeight: '800', textTransform: 'uppercase' }}>{slot ? slot.weekday : '—'}</Text>
+          <Text style={{ color: colors.navy900, fontSize: 20, fontWeight: '900' }}>{slot ? slot.dayNum : '?'}</Text>
         </View>
         <View style={{ flex: 1 }}>
           <Text style={{ color: colors.slate900, fontWeight: '800', fontSize: 15 }} numberOfLines={1}>{booking.consultantName}</Text>

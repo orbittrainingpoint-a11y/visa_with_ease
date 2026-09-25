@@ -9,6 +9,11 @@ let _token: string | null = null;
 export function setToken(t: string | null) { _token = t; }
 export function getToken() { return _token; }
 
+// Called when the server rejects a signed-in session (expired or revoked token) on a non-auth call, so the app
+// can send the user back to sign-in instead of showing a screen full of failed requests.
+let _onUnauthorized: (() => void) | null = null;
+export function setUnauthorizedHandler(fn: (() => void) | null) { _onUnauthorized = fn; }
+
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (_token) headers['Authorization'] = `Bearer ${_token}`;
@@ -18,6 +23,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
   if (!res.ok) {
+    if (res.status === 401 && _token && !path.startsWith('/auth/')) _onUnauthorized?.();
     const text = await res.text().catch(() => res.statusText);
     let msg = text;
     let code: string | undefined;

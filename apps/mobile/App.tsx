@@ -2,7 +2,7 @@ import React from 'react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   login as apiLogin, register as apiRegister, googleLogin as apiGoogleLogin,
-  sendChatMessage, setToken, startSession, endSession, restoreSession,
+  sendChatMessage, setUnauthorizedHandler, setToken, startSession, endSession, restoreSession,
   fetchApplications, createApplication as apiCreateApplication,
   fetchConsultants as apiFetchConsultants,
   fetchSessionOptions as apiFetchSessionOptions,
@@ -652,6 +652,12 @@ function AppInner() {
     setAuthUser(null);
     setAppList([]);
     setSessionMessages([]);
+    setDocumentList([]);
+    setAuditData({});
+    setNotificationList([]);
+    documentsRef.current = [];
+    docFlow.current = { handled: new Set() };
+    chatPending.current = null;
     setMyBookings([]);
     setMyGrants([]);
     setConsultantMe(null);
@@ -659,6 +665,13 @@ function AppInner() {
     setFaceStatus(null);
     setRoute({ name: 'welcome' });
   };
+  // An expired or revoked session on any signed-in call returns the user to sign-in with a clear reason.
+  const signOutRef = useRef(signOutNow);
+  signOutRef.current = signOutNow;
+  useEffect(() => {
+    setUnauthorizedHandler(() => { signOutRef.current(); setLoginError('Your session has expired. Please sign in again.'); });
+    return () => setUnauthorizedHandler(null);
+  }, []);
 
   // Deleting an application removes it for good, and the server also cancels its upcoming
   // appointments and revokes any consultant access granted for it.
@@ -1377,10 +1390,32 @@ function AppInner() {
   );
 }
 
+/** Last line of defence: an unexpected render error shows a recoverable screen instead of closing the app. */
+class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { failed: boolean; attempt: number }> {
+  state = { failed: false, attempt: 0 };
+  static getDerivedStateFromError() { return { failed: true }; }
+  componentDidCatch(error: unknown) { console.warn('UI error caught by boundary', error); }
+  render() {
+    if (!this.state.failed) return <React.Fragment key={this.state.attempt}>{this.props.children}</React.Fragment>;
+    return (
+      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: 32, backgroundColor: '#fff', gap: 12 }}>
+        <Ionicons name="alert-circle-outline" size={44} color="#DC2626" />
+        <Text style={{ fontSize: 18, fontWeight: '900', color: '#0F172A', textAlign: 'center' }}>Something went wrong</Text>
+        <Text style={{ fontSize: 14, color: '#475569', textAlign: 'center' }}>Your data is safe. Tap below to reload the app.</Text>
+        <Pressable onPress={() => this.setState(s => ({ failed: false, attempt: s.attempt + 1 }))} accessibilityLabel="Reload the app" style={{ backgroundColor: '#1A56DB', borderRadius: 12, paddingHorizontal: 22, paddingVertical: 12 }}>
+          <Text style={{ color: '#fff', fontWeight: '800' }}>Reload</Text>
+        </Pressable>
+      </View>
+    );
+  }
+}
+
 export default function App() {
   return (
     <SafeAreaProvider>
-      <AppInner />
+      <ErrorBoundary>
+        <AppInner />
+      </ErrorBoundary>
     </SafeAreaProvider>
   );
 }

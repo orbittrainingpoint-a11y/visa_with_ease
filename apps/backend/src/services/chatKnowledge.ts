@@ -211,6 +211,11 @@ export function uploadReply(message: string, apps: VisaApplication[]): ChatRespo
   };
 }
 
+/** Whether answering could need the caller's applications — lets the route skip a database read for plain FAQ/AI messages. */
+export function needsApplications(message: string): boolean {
+  return STATUS_RE.test(message) || UPLOAD_RE.test(message);
+}
+
 /** Everything this module can answer without the AI, in priority order. */
 export function answerFromKnowledge(message: string, apps: VisaApplication[]): ChatResponse | null {
   return statusReply(message, apps) ?? uploadReply(message, apps) ?? (() => { const f = matchFaq(message); return f ? faqReply(f) : null; })();

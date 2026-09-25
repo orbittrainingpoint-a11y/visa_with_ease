@@ -1708,3 +1708,35 @@ test('POST /chat — "upload my documents" starts the in-chat document flow only
   const after = await post('/chat', { message: 'I want to upload my documents' }, token);
   assert.equal(after.body.startDocumentFlow, true);
 });
+
+// ─── Erasure and hardening ───────────────────────────────────────────────────
+
+const uidOf = (token: string) => JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString()).sub ?? JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString()).uid;
+
+test('Face scores outside 0–100 are rejected (a huge number must not normalise into a pass)', async () => {
+  const me = await registerFresh('facerange');
+  const r = await post('/face/enroll', { faceFeature: 'f'.repeat(64), passportSimilarity: 9999, liveness: 9999, steps: ['blink', 'turn_left'] }, me);
+  assert.equal(r.res.status, 400);
+  assert.equal((await get('/face/status', me)).body.enrolled, false);
+});
+
+test('Admin purge erases an account: applications, face template and the login itself', async () => {
+  const email = `purge.${Date.now()}@example.com`;
+  const reg = await post('/auth/register', { name: 'Purge Me', email, password: 'PurgeMe#2026x' });
+  const token = reg.body.token as string;
+  const uid = uidOf(token);
+  await post('/applications', { destinationCountry: 'France', visaType: 'Tourist', intendedFrom: '2026-12-01' }, token);
+  await post('/face/enroll', { faceFeature: 'f'.repeat(64), passportSimilarity: 0.9, liveness: 0.9, steps: ['blink', 'turn_left'] }, token);
+  assert.equal((await get('/applications', token)).body.applications.length, 1);
+
+  const consumer = await demoToken('consumer');
+  assert.equal((await post(`/admin/accounts/${uid}/purge`, {}, consumer)).res.status, 403, 'only a platform admin may purge');
+
+  const admin = await demoToken('platform_admin');
+  const purged = await post(`/admin/accounts/${uid}/purge`, {}, admin);
+  assert.equal(purged.res.status, 200);
+  assert.equal(purged.body.applicationsErased, 1);
+  assert.equal((await get('/face/status', token)).body.enrolled, false, 'face template erased');
+  assert.equal((await get('/applications', token)).body.applications.length, 0, 'applications erased');
+  assert.equal((await post('/auth/session', { email, password: 'PurgeMe#2026x' })).res.status, 401, 'the login no longer exists');
+});

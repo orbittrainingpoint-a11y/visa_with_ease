@@ -1,4 +1,4 @@
-import { faqCatalog, getFaq, faqReply, answerFromKnowledge } from './services/chatKnowledge.js';
+import { faqCatalog, getFaq, faqReply, answerFromKnowledge, needsApplications } from './services/chatKnowledge.js';
 import { createHash, randomBytes } from 'node:crypto';
 import cors from 'cors';
 import express from 'express';
@@ -59,6 +59,9 @@ import {
   getFaceProfile,
   saveFaceProfile,
   deleteFaceProfile,
+  deletePassportDataForApplication,
+  deleteUserByUid,
+  completeAccountDeletion,
   savePassportData,
   getPassportDataForApplication,
   resolveConsultantId,
@@ -135,6 +138,16 @@ const chatLimiter = rateLimit({
   legacyHeaders: false,
   skip: () => isRateLimitDisabled(),
   message: { error: { code: 'RATE_LIMITED', message: 'Too many messages, please slow down and try again shortly' } }
+});
+
+// Face and call-link routes: cheap, but they touch biometric data and (once configured) create Google Meet rooms.
+const sensitiveLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: () => isRateLimitDisabled(),
+  message: { error: { code: 'RATE_LIMITED', message: 'Too many requests, please try again later' } }
 });
 
 export function createApp(services: Services = createServices()) {
@@ -511,22 +524,57 @@ export function createApp(services: Services = createServices()) {
   // Deleting an application also ends everything that hangs off it: the caller's
   // upcoming appointments for it are cancelled and any consultant access they granted
   // for it is revoked — otherwise a deleted application could still be visible to an expert.
+  // Everything that hangs off an application goes with it: upcoming appointments are cancelled, consultant
+  // access is revoked and the passport details read from it are erased.
+  async function eraseApplication(uid: string, id: string) {
+    const bookings = (await services.consultants.listBookings()).filter((b) => b.userId === uid && b.applicationId === id && b.status !== 'cancelled');
+    await Promise.all(bookings.map((b) => services.consultants.cancelBooking(b.bookingId, uid)));
+    const grants = (await services.accessGrants.listActiveGrants()).filter((g) => g.applicationId === id && g.grantedBy === uid);
+    await Promise.all(grants.map((g) => services.accessGrants.revokeGrant(g.grantId, uid)));
+    const deleted = await services.applications.deleteApplication(id, uid);
+    if (deleted) await deletePassportDataForApplication(id);
+    return { deleted, cancelledBookings: bookings.length, revokedGrants: grants.length };
+  }
+
   app.delete('/applications/:id', requireAuth, async (req, res, next) => {
     try {
       const uid = req.user!.uid;
       const id = req.params.id as string;
       const owned = await services.applications.getApplication(id, uid);
       if (!owned) throw notFound('Application not found');
-
-      const bookings = (await services.consultants.listBookings()).filter((b) => b.userId === uid && b.applicationId === id && b.status !== 'cancelled');
-      await Promise.all(bookings.map((b) => services.consultants.cancelBooking(b.bookingId, uid)));
-      const grants = (await services.accessGrants.listActiveGrants()).filter((g) => g.applicationId === id && g.grantedBy === uid);
-      await Promise.all(grants.map((g) => services.accessGrants.revokeGrant(g.grantId, uid)));
-
-      const deleted = await services.applications.deleteApplication(id, uid);
+      const { deleted, cancelledBookings, revokedGrants } = await eraseApplication(uid, id);
       if (!deleted) throw notFound('Application not found');
       await appendAuditLog({ actor: req.user!.email ?? uid, action: 'DELETE_APPLICATION', resource: id, ip: req.ip ?? '?' });
-      res.json({ id, deleted: true, cancelledBookings: bookings.length, revokedGrants: grants.length });
+      res.json({ id, deleted: true, cancelledBookings, revokedGrants });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // Erases an account for good: its applications (with their bookings, grants and passport details), the
+  // face template and the login itself. Runs for accounts whose 30-day deletion window has passed, and on
+  // demand for a platform admin handling an erasure request.
+  async function purgeAccount(uid: string, actor: string) {
+    // Copy: deleting while iterating the store's own list would skip entries.
+    const apps = [...(await services.applications.listApplications(uid))];
+    for (const a of apps) await eraseApplication(uid, a.id);
+    await deleteFaceProfile(uid);
+    await deleteUserByUid(uid);
+    await completeAccountDeletion(uid);
+    await appendAuditLog({ actor, action: 'ACCOUNT_PURGED', resource: uid, ip: 'system' });
+    return { uid, applicationsErased: apps.length };
+  }
+  app.locals.purgeOverdueAccounts = async () => {
+    const due = await listOverduePendingDeletions();
+    const done: string[] = [];
+    for (const r of due) {
+      try { await purgeAccount(r.uid, 'system:deletion-job'); done.push(r.uid); } catch (err) { console.warn('account purge failed', r.uid, err); }
+    }
+    return done;
+  };
+  app.post('/admin/accounts/:uid/purge', requireAuth, requireRole('platform_admin'), async (req, res, next) => {
+    try {
+      res.json(await purgeAccount(String(req.params.uid), req.user!.email ?? req.user!.uid));
     } catch (err) {
       next(err);
     }
@@ -731,7 +779,8 @@ export function createApp(services: Services = createServices()) {
     try {
       // Status / upload / FAQ questions are answered from the knowledge base and the user's own applications
       // first — instant, free and always consistent. Only what they cannot answer goes to the AI model.
-      const known = answerFromKnowledge((req.body as { message: string }).message, await services.applications.listApplications(req.user!.uid));
+      const chatMessage = (req.body as { message: string }).message;
+      const known = answerFromKnowledge(chatMessage, needsApplications(chatMessage) ? await services.applications.listApplications(req.user!.uid) : []);
       if (known) return res.json(known);
       // Ground the assistant's answer in the caller's own application data (the
       // "given service" data source) when applicationId refers to an application
@@ -820,7 +869,7 @@ export function createApp(services: Services = createServices()) {
 
   // The call link: released to the client who booked it or the consultant it is booked with, only inside
   // the join window. Creates the Meet room on first use if it wasn't created at booking time.
-  app.get('/bookings/:bookingId/join', requireAuth, async (req, res, next) => {
+  app.get('/bookings/:bookingId/join', requireAuth, sensitiveLimiter, async (req, res, next) => {
     try {
       const b = await services.consultants.getBooking(req.params.bookingId as string);
       const myConsultantId = await resolveConsultantId(req.user!);
@@ -1026,7 +1075,7 @@ export function createApp(services: Services = createServices()) {
   const faceSessionMs = () => Number(process.env.FACE_SESSION_HOURS ?? 24) * 3600_000;
   const faceRequiredForAudit = () => process.env.FACE_REQUIRED_FOR_AUDIT === 'true';
 
-  app.get('/face/status', requireAuth, async (req, res, next) => {
+  app.get('/face/status', requireAuth, sensitiveLimiter, async (req, res, next) => {
     try {
       const f = await getFaceProfile(req.user!.uid);
       res.json({
@@ -1046,7 +1095,7 @@ export function createApp(services: Services = createServices()) {
   });
 
   // The owner's own template, so a new phone can verify against it. Never returned to anyone else.
-  app.get('/face/template', requireAuth, async (req, res, next) => {
+  app.get('/face/template', requireAuth, sensitiveLimiter, async (req, res, next) => {
     try {
       const f = await getFaceProfile(req.user!.uid);
       if (!f) throw notFound('No face enrolled');
@@ -1056,7 +1105,7 @@ export function createApp(services: Services = createServices()) {
     }
   });
 
-  app.post('/face/enroll', requireAuth, async (req, res, next) => {
+  app.post('/face/enroll', requireAuth, sensitiveLimiter, async (req, res, next) => {
     try {
       const b = (req.body ?? {}) as { faceFeature?: unknown; passportSimilarity?: unknown; liveness?: unknown; steps?: unknown };
       if (typeof b.faceFeature !== 'string' || b.faceFeature.length < 16 || b.faceFeature.length > 20000) return res.status(400).json({ error: { code: 'INVALID_BODY', message: 'faceFeature is required' } });
@@ -1065,6 +1114,7 @@ export function createApp(services: Services = createServices()) {
       if (steps.length < 2) return res.status(400).json({ error: { code: 'INVALID_BODY', message: 'At least two liveness steps must be completed' } });
       const existing = await getFaceProfile(req.user!.uid);
       if (existing) return res.status(409).json({ error: { code: 'FACE_ALREADY_ENROLLED', message: 'A face is already verified for this account and cannot be replaced. Contact support to reset it.' } });
+      if (![b.passportSimilarity, b.liveness].every((n) => Number.isFinite(n) && (n as number) >= 0 && (n as number) <= 100)) return res.status(400).json({ error: { code: 'INVALID_BODY', message: 'Scores must be between 0 and 100' } });
       const similarity = norm(b.passportSimilarity);
       const liveness = norm(b.liveness);
       if (liveness < faceMinLiveness()) return res.status(422).json({ error: { code: 'LIVENESS_FAILED', message: 'The liveness check did not pass. Try again in good light, following each instruction.' } });
@@ -1079,12 +1129,13 @@ export function createApp(services: Services = createServices()) {
   });
 
   // A returning check (new session or device) against the already-enrolled face.
-  app.post('/face/verified', requireAuth, async (req, res, next) => {
+  app.post('/face/verified', requireAuth, sensitiveLimiter, async (req, res, next) => {
     try {
       const f = await getFaceProfile(req.user!.uid);
       if (!f) throw notFound('No face enrolled');
       const b = (req.body ?? {}) as { similarity?: unknown; liveness?: unknown };
       if (typeof b.similarity !== 'number' || typeof b.liveness !== 'number') return res.status(400).json({ error: { code: 'INVALID_BODY', message: 'similarity and liveness are required numbers' } });
+      if (![b.similarity, b.liveness].every((n) => Number.isFinite(n) && (n as number) >= 0 && (n as number) <= 100)) return res.status(400).json({ error: { code: 'INVALID_BODY', message: 'Scores must be between 0 and 100' } });
       if (norm(b.liveness) < faceMinLiveness()) return res.status(422).json({ error: { code: 'LIVENESS_FAILED', message: 'The liveness check did not pass.' } });
       if (norm(b.similarity) < faceMinSimilarity()) return res.status(422).json({ error: { code: 'FACE_MISMATCH', message: 'This face does not match the verified face on this account.' } });
       const now = new Date().toISOString();

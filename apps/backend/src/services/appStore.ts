@@ -447,7 +447,7 @@ export interface AccountDeletionRecord {
   uid: string;
   requestedAt: string;
   scheduledFor: string;
-  status: 'pending' | 'cancelled';
+  status: 'pending' | 'cancelled' | 'completed';
 }
 
 const memDeletionRequests = new Map<string, AccountDeletionRecord>();
@@ -468,6 +468,32 @@ export async function getAccountDeletionStatus(uid: string): Promise<AccountDele
   if (!db) return memDeletionRequests.get(uid) ?? null;
   const doc = await db.collection('accountDeletions').doc(uid).get();
   return doc.exists ? (doc.data() as AccountDeletionRecord) : null;
+}
+
+/** Marks a request as carried out once the account's data has actually been erased. */
+export async function completeAccountDeletion(uid: string): Promise<void> {
+  const db = getDb();
+  if (!db) {
+    const existing = memDeletionRequests.get(uid);
+    if (existing) memDeletionRequests.set(uid, { ...existing, status: 'completed' });
+    return;
+  }
+  await db.collection('accountDeletions').doc(uid).set({ status: 'completed' }, { merge: true });
+}
+
+/** Removes the login record itself. */
+export async function deleteUserByUid(uid: string): Promise<boolean> {
+  const db = getDb();
+  if (!db) {
+    for (const [key, user] of memUsers) {
+      if (user.uid === uid) { memUsers.delete(key); return true; }
+    }
+    return false;
+  }
+  const snap = await db.collection('users').where('uid', '==', uid).limit(1).get();
+  if (snap.empty) return false;
+  await snap.docs[0].ref.delete();
+  return true;
 }
 
 /** Called on successful login — makes "cancel by logging in" literally true. */
@@ -615,6 +641,17 @@ export async function savePassportData(documentId: string, applicationId: string
   const db = getDb();
   if (!db) { memPassportData.set(documentId, { applicationId, data }); return; }
   await db.collection('passportData').doc(documentId).set({ applicationId, data });
+}
+
+/** Passport details are personal data: they go when the application does. */
+export async function deletePassportDataForApplication(applicationId: string): Promise<void> {
+  const db = getDb();
+  if (!db) {
+    for (const [id, v] of memPassportData) if (v.applicationId === applicationId) memPassportData.delete(id);
+    return;
+  }
+  const snap = await db.collection('passportData').where('applicationId', '==', applicationId).get();
+  await Promise.all(snap.docs.map((d) => d.ref.delete()));
 }
 
 export async function getPassportDataForApplication(applicationId: string): Promise<unknown | null> {

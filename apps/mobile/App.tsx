@@ -5874,7 +5874,7 @@ function HowToUseScreen({ back, startTour }: { back: () => void; startTour: () =
               <Pressable style={styles.taskRow} onPress={() => setOpenGuide(open ? null : kind)} accessibilityLabel={`${DOC_GUIDES[kind].title} guide`}>
                 <View style={styles.flex}>
                   <Text style={styles.rowTitle}>{DOC_GUIDES[kind].title}</Text>
-                  <Text style={styles.rowMeta} numberOfLines={open ? undefined : 1}>{DOC_GUIDES[kind].intro}</Text>
+                  {!open && <Text style={styles.rowMeta} numberOfLines={1}>{DOC_GUIDES[kind].intro}</Text>}
                 </View>
                 <Ionicons name={open ? 'chevron-up' : 'chevron-down'} size={18} color={colors.slate300} />
               </Pressable>

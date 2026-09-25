@@ -6,7 +6,10 @@
     "orientation": "portrait",
     "scheme": "visaiq",
     "userInterfaceStyle": "automatic",
-    "platforms": ["android", "ios"],
+    "platforms": [
+      "android",
+      "ios"
+    ],
     "icon": "./assets/app-icon-1024.png",
     "android": {
       "package": "app.visaiq.mobile",
@@ -17,7 +20,13 @@
       "adaptiveIcon": {
         "foregroundImage": "./assets/app-icon-1024.png",
         "backgroundColor": "#FFFFFF"
-      }
+      },
+      "blockedPermissions": [
+        "android.permission.RECORD_AUDIO",
+        "android.permission.SYSTEM_ALERT_WINDOW",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE"
+      ]
     },
     "ios": {
       "bundleIdentifier": "app.visaiq.mobile",

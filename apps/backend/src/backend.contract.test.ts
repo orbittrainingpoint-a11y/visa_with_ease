@@ -157,7 +157,7 @@ test('DELETE /applications/:id — owner only; cancels its bookings and revokes 
   const id = made.body.application.id as string;
   const keep = await post('/applications', { destinationCountry: 'Germany', visaType: 'schengen-tourist', intendedFrom: '2027-01-01' }, owner);
   await post('/bookings', { consultantId: 'c-priya', applicationId: id, sessionType: 'standard', slotISO: '2027-04-10T06:00:00.000Z' }, owner);
-  await post('/access-grants', { applicationId: id, consultantId: 'c-priya', categories: ['profile'], expiresAt: '2027-05-01T00:00:00.000Z' }, owner);
+  await post('/access-grants', { applicationId: id, consultantId: 'c-priya', categories: ['profile'], acceptedTerms: true, expiresAt: '2027-05-01T00:00:00.000Z' }, owner);
 
   assert.equal((await del(`/applications/${id}`)).res.status, 401, 'needs auth');
   assert.equal((await del(`/applications/${id}`, other)).res.status, 404, 'another user cannot delete it');
@@ -172,6 +172,224 @@ test('DELETE /applications/:id — owner only; cancels its bookings and revokes 
   assert.deepEqual(list.body.applications.map((a: { id: string }) => a.id), [keep.body.application.id], 'only the other application remains');
   assert.equal((await get('/bookings', owner)).body.bookings[0].status, 'cancelled', 'its appointment was cancelled');
   assert.equal((await del(`/applications/${id}`, owner)).res.status, 404, 'deleting twice is a clean 404');
+});
+
+// ─── Consultant workspace, consent, calls and face verification ───────────────
+
+async function registerFresh(tag: string) {
+  const r = await post('/auth/register', { name: `T ${tag}`, email: `t-${tag}-${Date.now()}@example.com`, password: 'Sup3rSecret!x' });
+  assert.equal(r.res.status, 201);
+  return r.body.token as string;
+}
+
+test('Grants must carry accepted terms — without them no access is created', async () => {
+  const client = await registerFresh('terms');
+  const app1 = await post('/applications', { destinationCountry: 'France', visaType: 'schengen-tourist', intendedFrom: '2026-12-01' }, client);
+  const id = app1.body.application.id as string;
+  const noTerms = await post('/access-grants', { applicationId: id, consultantId: 'c-priya', categories: ['profile'], expiresAt: '2030-01-01T00:00:00.000Z' }, client);
+  assert.equal(noTerms.res.status, 400);
+  const falseTerms = await post('/access-grants', { applicationId: id, consultantId: 'c-priya', categories: ['profile'], expiresAt: '2030-01-01T00:00:00.000Z', acceptedTerms: false }, client);
+  assert.equal(falseTerms.res.status, 400);
+  assert.equal((await get('/access-grants', client)).body.grants.length, 0);
+  assert.equal((await post('/access-grants', { applicationId: id, consultantId: 'c-priya', categories: ['profile'], expiresAt: '2030-01-01T00:00:00.000Z', acceptedTerms: true }, client)).res.status, 201);
+});
+
+test('Consultant workspace — sees only own appointments, and client data only after an explicit grant', async () => {
+  const consultant = await demoToken('consultant'); // demo consultant is linked to c-priya
+  const client = await registerFresh('cw');
+  const stranger = await registerFresh('stranger');
+  const app1 = await post('/applications', { destinationCountry: 'France', visaType: 'schengen-tourist', intendedFrom: '2026-12-01', nationality: 'India' }, client);
+  const appId = app1.body.application.id as string;
+  const mine = await post('/bookings', { consultantId: 'c-priya', applicationId: appId, sessionType: 'standard', slotISO: '2030-06-10T06:00:00.000Z' }, client);
+  assert.equal(mine.res.status, 201);
+  const other = await post('/bookings', { consultantId: 'c-omar', applicationId: appId, sessionType: 'standard', slotISO: '2030-06-11T06:00:00.000Z' }, client);
+  assert.equal(other.res.status, 201);
+
+  assert.equal((await get('/consultant/appointments', client)).res.status, 403, 'a normal user has no consultant workspace');
+  const list = await get('/consultant/appointments', consultant);
+  assert.equal(list.res.status, 200);
+  const row = list.body.appointments.find((a: { bookingId: string }) => a.bookingId === mine.body.bookingId);
+  assert.ok(row, 'own appointment is listed');
+  assert.ok(!list.body.appointments.some((a: { bookingId: string }) => a.bookingId === other.body.bookingId), 'another consultant\'s appointment is not listed');
+  assert.equal(row.access.granted, false, 'no access before the client grants it');
+  assert.ok(row.clientName && row.destinationCountry === 'France', 'only name and destination are visible pre-grant');
+  assert.equal(row.nationality, undefined);
+
+  const denied = await get(`/consultant/appointments/${mine.body.bookingId}/case`, consultant);
+  assert.equal(denied.res.status, 403);
+  assert.equal(denied.body.error.code, 'ACCESS_NOT_GRANTED');
+  assert.equal((await get(`/consultant/appointments/${other.body.bookingId}/case`, consultant)).res.status, 404, 'not their appointment');
+
+  // The client grants only profile + requirements — nothing else may appear.
+  const grant = await post('/access-grants', { applicationId: appId, consultantId: 'c-priya', categories: ['profile', 'requirements'], expiresAt: '2031-01-01T00:00:00.000Z', acceptedTerms: true }, client);
+  assert.equal(grant.res.status, 201);
+  const caseView = await get(`/consultant/appointments/${mine.body.bookingId}/case`, consultant);
+  assert.equal(caseView.res.status, 200);
+  assert.equal(caseView.body.profile.nationality, 'India');
+  assert.ok(Array.isArray(caseView.body.requirements));
+  assert.equal(caseView.body.documents, undefined, 'documents were not shared');
+  assert.equal(caseView.body.auditFindings, undefined, 'audit findings were not shared');
+  assert.equal(caseView.body.contact, undefined, 'contact was not shared');
+  assert.ok(caseView.body.access.termsAcceptedAt, 'the terms acceptance is recorded');
+
+  // Revoking closes it again immediately.
+  assert.equal((await del(`/access-grants/${grant.body.grantId}`, client)).res.status, 200);
+  assert.equal((await get(`/consultant/appointments/${mine.body.bookingId}/case`, consultant)).res.status, 403);
+  // A different user's token can never read the case either.
+  assert.equal((await get(`/consultant/appointments/${mine.body.bookingId}/case`, stranger)).res.status, 403);
+});
+
+test('Call link — opens only inside the join window, only for the client or their consultant', async () => {
+  const client = await registerFresh('call');
+  const stranger = await registerFresh('callx');
+  const consultant = await demoToken('consultant');
+  const app1 = await post('/applications', { destinationCountry: 'France', visaType: 'schengen-tourist', intendedFrom: '2026-12-01' }, client);
+  const appId = app1.body.application.id as string;
+  const far = await post('/bookings', { consultantId: 'c-priya', applicationId: appId, sessionType: 'standard', slotISO: '2031-03-10T06:00:00.000Z' }, client);
+  const listed = await get('/bookings', client);
+  const call = listed.body.bookings.find((b: { bookingId: string }) => b.bookingId === far.body.bookingId).call;
+  assert.equal(call.available, true);
+  assert.equal(call.open, false);
+  assert.equal(call.url, undefined, 'the link is never in a list');
+
+  const tooEarly = await get(`/bookings/${far.body.bookingId}/join`, client);
+  assert.equal(tooEarly.res.status, 409);
+  assert.equal(tooEarly.body.error.code, 'JOIN_NOT_OPEN');
+  assert.equal((await get(`/bookings/${far.body.bookingId}/join`, stranger)).res.status, 404, 'outsiders get nothing');
+
+  // A session that starts in 5 minutes is inside the window; with no Google Meet configured that is reported honestly.
+  const soon = await post('/bookings', { consultantId: 'c-priya', applicationId: appId, sessionType: 'standard', slotISO: new Date(Date.now() + 5 * 60_000).toISOString() }, client);
+  const noProvider = await get(`/bookings/${soon.body.bookingId}/join`, client);
+  assert.equal(noProvider.res.status, 503);
+  assert.equal(noProvider.body.error.code, 'MEETING_PROVIDER_NOT_CONFIGURED');
+  assert.equal((await get(`/bookings/${soon.body.bookingId}/join`, consultant)).res.status, 503, 'the consultant is allowed too — same honest answer');
+
+  // Now with a (fake) Google backend: the Meet room is created once and the same link is given to both sides.
+  const { createServer } = await import('node:http');
+  let created = 0;
+  const fake = createServer((req, res) => {
+    let raw = '';
+    req.on('data', (c) => { raw += c; });
+    req.on('end', () => {
+      res.setHeader('content-type', 'application/json');
+      if (req.url === '/token') return void res.end(JSON.stringify({ access_token: 'fake-token' }));
+      if (req.url?.includes('/events')) {
+        created += 1;
+        const body = JSON.parse(raw);
+        assert.ok(body.conferenceData.createRequest.conferenceSolutionKey.type === 'hangoutsMeet');
+        return void res.end(JSON.stringify({ id: 'evt-1', hangoutLink: 'https://meet.google.com/abc-defg-hij' }));
+      }
+      res.statusCode = 404; res.end('{}');
+    });
+  });
+  await new Promise<void>((r) => fake.listen(0, '127.0.0.1', () => r()));
+  const fakePort = (fake.address() as AddressInfo).port;
+  Object.assign(process.env, { GOOGLE_MEET_CLIENT_ID: 'id', GOOGLE_MEET_CLIENT_SECRET: 'secret', GOOGLE_MEET_REFRESH_TOKEN: 'refresh', GOOGLE_OAUTH_URL: `http://127.0.0.1:${fakePort}/token`, GOOGLE_CALENDAR_API_URL: `http://127.0.0.1:${fakePort}` });
+  try {
+    const first = await get(`/bookings/${soon.body.bookingId}/join`, client);
+    assert.equal(first.res.status, 200);
+    assert.equal(first.body.url, 'https://meet.google.com/abc-defg-hij');
+    const second = await get(`/bookings/${soon.body.bookingId}/join`, consultant);
+    assert.equal(second.body.url, first.body.url, 'both sides get the same room');
+    assert.equal(created, 1, 'the room was created exactly once');
+  } finally {
+    for (const k of ['GOOGLE_MEET_CLIENT_ID', 'GOOGLE_MEET_CLIENT_SECRET', 'GOOGLE_MEET_REFRESH_TOKEN', 'GOOGLE_OAUTH_URL', 'GOOGLE_CALENDAR_API_URL']) delete process.env[k];
+    fake.close();
+  }
+});
+
+test('Face verification — one face per account, real thresholds, only the owner can read the template', async () => {
+  const me = await registerFresh('face');
+  const someone = await registerFresh('face2');
+  const feature = 'f'.repeat(128);
+
+  assert.equal((await get('/face/status', me)).body.enrolled, false);
+  assert.equal((await get('/face/template', me)).res.status, 404);
+  assert.equal((await post('/face/enroll', { faceFeature: feature, passportSimilarity: 0.95, liveness: 0.9, steps: ['blink'] }, me)).res.status, 400, 'needs at least two liveness steps');
+
+  const spoof = await post('/face/enroll', { faceFeature: feature, passportSimilarity: 0.95, liveness: 0.2, steps: ['blink', 'turn_left'] }, me);
+  assert.equal(spoof.res.status, 422);
+  assert.equal(spoof.body.error.code, 'LIVENESS_FAILED');
+  const mismatch = await post('/face/enroll', { faceFeature: feature, passportSimilarity: 0.31, liveness: 0.9, steps: ['blink', 'turn_left'] }, me);
+  assert.equal(mismatch.res.status, 422);
+  assert.equal(mismatch.body.error.code, 'FACE_MISMATCH');
+  assert.equal((await get('/face/status', me)).body.enrolled, false, 'failed attempts store nothing');
+
+  const ok = await post('/face/enroll', { faceFeature: feature, passportSimilarity: 92, liveness: 88, steps: ['blink', 'turn_left', 'turn_right'] }, me); // 0-100 scores are normalised
+  assert.equal(ok.res.status, 201);
+  assert.ok(Math.abs(ok.body.passportSimilarity - 0.92) < 1e-9);
+  const status = await get('/face/status', me);
+  assert.equal(status.body.verifiedBadge, true);
+  assert.equal(status.body.faceFeature, undefined, 'the template is never in the status');
+
+  const again = await post('/face/enroll', { faceFeature: 'a'.repeat(128), passportSimilarity: 0.99, liveness: 0.99, steps: ['blink', 'turn_left'] }, me);
+  assert.equal(again.res.status, 409, 'a different face cannot replace the enrolled one');
+  assert.equal(again.body.error.code, 'FACE_ALREADY_ENROLLED');
+
+  assert.equal((await get('/face/template', me)).body.faceFeature, feature);
+  assert.equal((await get('/face/template', someone)).res.status, 404, 'another account has no template and cannot read mine');
+
+  assert.equal((await post('/face/verified', { similarity: 0.2, liveness: 0.9 }, me)).res.status, 422, 'a different person fails the returning check');
+  assert.equal((await post('/face/verified', { similarity: 0.9, liveness: 0.9 }, me)).res.status, 200);
+  assert.equal((await post('/face/verified', { similarity: 0.9, liveness: 0.9 }, someone)).res.status, 404);
+
+  assert.equal((await del('/admin/face/x', me)).res.status, 403, 'only a platform admin can reset a face');
+});
+
+test('Analysis can be limited to the verified applicant (FACE_REQUIRED_FOR_AUDIT)', async () => {
+  const me = await registerFresh('gate');
+  const app1 = await post('/applications', { destinationCountry: 'France', visaType: 'schengen-tourist', intendedFrom: '2026-12-01' }, me);
+  const appId = app1.body.application.id as string;
+  const audit = () => post('/audit', { applicationId: appId, documentId: `${appId}-bank`, documentType: 'bank', extractedText: 'STATEMENT OF ACCOUNT Balance Debit Credit Account IFSC' }, me);
+  process.env.FACE_REQUIRED_FOR_AUDIT = 'true';
+  try {
+    const blocked = await audit();
+    assert.equal(blocked.res.status, 403);
+    assert.equal(blocked.body.error.code, 'FACE_VERIFICATION_REQUIRED');
+    await post('/face/enroll', { faceFeature: 'e'.repeat(128), passportSimilarity: 0.9, liveness: 0.9, steps: ['blink', 'turn_left'] }, me);
+    assert.equal((await audit()).res.status, 202, 'a verified applicant can analyse');
+  } finally {
+    delete process.env.FACE_REQUIRED_FOR_AUDIT;
+  }
+});
+
+test('Passport data read on the phone is kept and shown to a consultant only when documents are shared', async () => {
+  const consultant = await demoToken('consultant');
+  const client = await registerFresh('pp');
+  const app1 = await post('/applications', { destinationCountry: 'France', visaType: 'schengen-tourist', intendedFrom: '2026-12-01' }, client);
+  const appId = app1.body.application.id as string;
+  const booking = await post('/bookings', { consultantId: 'c-priya', applicationId: appId, sessionType: 'standard', slotISO: '2030-07-01T06:00:00.000Z' }, client);
+  // Exactly the text a real device's OCR returned for the ICAO specimen (fillers collapsed/misread).
+  const text = 'PASSPORT\nP<UTOERIKSSON<<ANNA<MARIAK<\u00ab\u00ab\u00ab\u00ab\nL898902C36UTO7408122F3204153<<<';
+  const audited = await post('/audit', { applicationId: appId, documentId: `${appId}-passport`, documentType: 'passport', extractedText: text }, client);
+  assert.equal(audited.res.status, 202);
+
+  await post('/access-grants', { applicationId: appId, consultantId: 'c-priya', categories: ['documents'], expiresAt: '2031-01-01T00:00:00.000Z', acceptedTerms: true }, client);
+  const view = await get(`/consultant/appointments/${booking.body.bookingId}/case`, consultant);
+  assert.equal(view.res.status, 200);
+  assert.equal(view.body.passportData.surname, 'ERIKSSON');
+  assert.equal(view.body.passportData.givenNames, 'ANNA MARIA');
+  assert.equal(view.body.passportData.expiryDate, '2032-04-15');
+  assert.equal(view.body.profile, undefined, 'profile was not shared');
+});
+
+test('Admin can link a login to a consultant profile — that login becomes a consultant', async () => {
+  const admin = await demoToken('platform_admin');
+  const email = `link-${Date.now()}@example.com`;
+  const reg = await post('/auth/register', { name: 'Link Me', email, password: 'Sup3rSecret!x' });
+  assert.equal(reg.res.status, 201);
+  assert.deepEqual(reg.body.user.roles, ['consumer']);
+  assert.equal((await get('/consultant/appointments', reg.body.token)).res.status, 403, 'not a consultant yet');
+
+  assert.equal((await put('/admin/consultant-link', { email, consultantId: 'c-omar' }, reg.body.token)).res.status, 403, 'only a platform admin can link');
+  assert.equal((await put('/admin/consultant-link', { email, consultantId: 'c-nobody' }, admin)).res.status, 404, 'unknown consultant profile');
+  assert.equal((await put('/admin/consultant-link', { email, consultantId: 'c-omar' }, admin)).res.status, 200);
+
+  const login = await post('/auth/session', { email, password: 'Sup3rSecret!x' });
+  assert.ok(login.body.user.roles.includes('consultant') && login.body.user.roles.includes('consumer'));
+  const me = await get('/consultant/me', login.body.token);
+  assert.equal(me.body.consultantId, 'c-omar');
+  assert.equal((await get('/consultant/appointments', login.body.token)).res.status, 200);
 });
 
 test('POST /auth/register — password too short returns 400', async () => {
@@ -1158,7 +1376,7 @@ test('GET /compliance-db — returns country compliance list', async () => {
 test('POST /access-grants — requires auth', async () => {
   const { res } = await post('/access-grants', {
     applicationId: 'app-fr-2026', consultantId: 'c-priya',
-    categories: ['requirements'], expiresAt: '2026-12-01T00:00:00.000Z'
+    categories: ['requirements'], acceptedTerms: true, expiresAt: '2026-12-01T00:00:00.000Z'
   });
   assert.equal(res.status, 401);
 });
@@ -1170,7 +1388,7 @@ test('POST /access-grants — creates grant when authenticated', async () => {
     applicationId: create.body.application.id,
     consultantId: 'c-priya',
     categories: ['requirements', 'audit_findings'],
-    expiresAt: '2026-12-01T00:00:00.000Z'
+    acceptedTerms: true, expiresAt: '2026-12-01T00:00:00.000Z'
   }, token);
   assert.equal(res.status, 201);
   assert.equal(body.status, 'active');
@@ -1186,7 +1404,7 @@ test('POST /access-grants — rejects an applicationId the caller does not own (
     applicationId: create.body.application.id,
     consultantId: 'c-priya',
     categories: ['documents', 'contact'],
-    expiresAt: '2026-12-01T00:00:00.000Z'
+    acceptedTerms: true, expiresAt: '2026-12-01T00:00:00.000Z'
   }, attacker.body.token);
   assert.equal(res.status, 404);
   assert.equal(body.error.code, 'NOT_FOUND');
@@ -1202,7 +1420,7 @@ test('GET /access-grants — a user can see and revoke their own grants, never s
     applicationId: create.body.application.id,
     consultantId: 'c-priya',
     categories: ['documents'],
-    expiresAt: '2026-12-31T00:00:00.000Z'
+    acceptedTerms: true, expiresAt: '2026-12-31T00:00:00.000Z'
   }, ownerToken);
   assert.equal(grant.res.status, 201);
 
@@ -1232,7 +1450,7 @@ test('GET /consultant-console — queue reflects a real access grant + real appl
   const applicationId = create.body.application.id;
 
   const grant = await post('/access-grants', {
-    applicationId, consultantId: 'c-priya', categories: ['requirements', 'audit_findings'], expiresAt: '2027-01-01T00:00:00.000Z'
+    applicationId, consultantId: 'c-priya', categories: ['requirements', 'audit_findings'], acceptedTerms: true, expiresAt: '2027-01-01T00:00:00.000Z'
   }, consumerToken);
   assert.equal(grant.res.status, 201);
 

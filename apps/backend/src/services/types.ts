@@ -24,9 +24,17 @@ export interface AuthService {
   health(): HealthStatus;
 }
 
+export interface BookingMeeting { provider: 'google_meet'; url: string; eventId: string; createdAt: string }
+export interface BookingRecord {
+  bookingId: string; status: string; consultantId: string; applicationId: string; sessionType: string;
+  userId: string; createdAt: string; slotISO?: string; meeting?: BookingMeeting;
+}
+
 export interface ApplicationRepository {
   listApplications(userId?: string): Promise<VisaApplication[]>;
   getApplication(id: string, userId?: string): Promise<VisaApplication | null>;
+  /** Cross-user lookup for staff-facing views (consultants) — callers MUST have checked access first. */
+  getApplicationForStaff(id: string): Promise<VisaApplication | null>;
   /** Deletes one of the caller's own applications. false = not found / not theirs. */
   deleteApplication(id: string, userId: string): Promise<boolean>;
   createApplication(input: { destinationCountry: string; visaType: string; intendedFrom: string; applicantName: string; purpose?: string; nationality?: string; residenceCountry?: string }, userId?: string): Promise<VisaApplication>;
@@ -90,7 +98,10 @@ export interface ConsultantService {
   /** Every real booking on file, newest first — used to build the consultant
    *  CRM view. Not scoped to one consultant: the product has no per-consultant
    *  login identity yet, so the console shows the platform-wide real queue. */
-  listBookings(): Promise<Array<{ bookingId: string; status: string; consultantId: string; applicationId: string; sessionType: string; userId: string; createdAt: string; slotISO?: string }>>;
+  listBookings(): Promise<BookingRecord[]>;
+  getBooking(bookingId: string): Promise<BookingRecord | null>;
+  /** Attaches the call link created for an appointment. */
+  setBookingMeeting(bookingId: string, meeting: BookingMeeting): Promise<void>;
   /** Cancels one of the caller's own bookings. 'not_found' covers both an unknown id and someone else's booking. */
   cancelBooking(bookingId: string, userId: string): Promise<'cancelled' | 'already_cancelled' | 'not_found'>;
   getConsole(): Promise<{ queue: Array<{ id: string; applicant: string; destination: string; urgency: string; sharedCategories: string[] }>; conversations: Array<{ id: string; applicant: string; lastMessage: string; status: string }>; crm: Array<{ label: string; value: string }> }>;
@@ -105,11 +116,11 @@ export interface ConsultantService {
 }
 
 export interface AccessGrantRepository {
-  createGrant(input: AccessGrantRequest & { grantedBy: string }): Promise<{ grantId: string; status: 'active' } & AccessGrantRequest>;
+  createGrant(input: AccessGrantRequest & { grantedBy: string; termsAcceptedAt?: string; termsVersion?: string }): Promise<{ grantId: string; status: 'active' } & AccessGrantRequest>;
   revokeGrant(grantId: string, requesterUid: string): Promise<{ grantId: string; status: 'revoked' } | null>;
   /** All grants currently active — used to build the real consultant queue
    *  (no per-consultant login identity exists yet, so this is platform-wide). */
-  listActiveGrants(): Promise<Array<AccessGrantRequest & { grantId: string; status: 'active'; grantedBy: string }>>;
+  listActiveGrants(): Promise<Array<AccessGrantRequest & { grantId: string; status: 'active'; grantedBy: string; termsAcceptedAt?: string; termsVersion?: string }>>;
 }
 
 export interface ConsultantMessage {

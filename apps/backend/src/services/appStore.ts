@@ -16,6 +16,8 @@ export interface UserRecord {
   passwordHash: string;
   roles: string[];
   status?: 'active' | 'suspended';
+  /** For role 'consultant': which marketplace consultant this login is (set by a platform admin). */
+  consultantId?: string;
   createdAt?: string;
   /** Marks a record that was never a real signup (the built-in demo login
    *  account, canned audit-log entries below) so admin views can show it's
@@ -563,4 +565,102 @@ export async function listReferralClaimsForReferrer(referrerUid: string): Promis
   if (!db) return [...memReferralClaims.values()].filter((c) => c.referrerUid === referrerUid);
   const snap = await db.collection('referralClaims').where('referrerUid', '==', referrerUid).get();
   return snap.docs.map((d) => d.data() as ReferralClaim);
+}
+
+// ── Face verification ─────────────────────────────────────────────────────
+// One face per account. The template (the SDK's face-feature string) is what makes the lock real: a
+// second, different face can never replace it from the app; only a platform admin can reset it.
+export interface FaceProfile {
+  uid: string;
+  /** SDK face-feature string of the enrolled live face. Only ever returned to its owner. */
+  faceFeature: string;
+  /** Live selfie vs the passport photo, 0-1. */
+  passportSimilarity: number;
+  liveness: number;
+  /** Liveness steps completed during enrolment, e.g. ['blink', 'turn_left', 'turn_right']. */
+  steps: string[];
+  enrolledAt: string;
+  lastVerifiedAt: string;
+  verifiedCount: number;
+}
+const memFaceProfiles = new Map<string, FaceProfile>();
+
+export async function getFaceProfile(uid: string): Promise<FaceProfile | null> {
+  const db = getDb();
+  if (!db) return memFaceProfiles.get(uid) ?? null;
+  const doc = await db.collection('faceProfiles').doc(uid).get();
+  return doc.exists ? (doc.data() as FaceProfile) : null;
+}
+
+export async function saveFaceProfile(profile: FaceProfile): Promise<void> {
+  const db = getDb();
+  if (!db) { memFaceProfiles.set(profile.uid, profile); return; }
+  await db.collection('faceProfiles').doc(profile.uid).set(profile);
+}
+
+export async function deleteFaceProfile(uid: string): Promise<boolean> {
+  const db = getDb();
+  if (!db) return memFaceProfiles.delete(uid);
+  const ref = db.collection('faceProfiles').doc(uid);
+  const doc = await ref.get();
+  if (!doc.exists) return false;
+  await ref.delete();
+  return true;
+}
+
+// ── Passport data read from a scanned passport (the client's own view and, with consent, a consultant's) ──
+const memPassportData = new Map<string, { applicationId: string; data: unknown }>();
+
+export async function savePassportData(documentId: string, applicationId: string, data: unknown): Promise<void> {
+  const db = getDb();
+  if (!db) { memPassportData.set(documentId, { applicationId, data }); return; }
+  await db.collection('passportData').doc(documentId).set({ applicationId, data });
+}
+
+export async function getPassportDataForApplication(applicationId: string): Promise<unknown | null> {
+  const db = getDb();
+  if (!db) {
+    const found = [...memPassportData.values()].find((v) => v.applicationId === applicationId);
+    return found?.data ?? null;
+  }
+  const snap = await db.collection('passportData').where('applicationId', '==', applicationId).limit(1).get();
+  return snap.empty ? null : ((snap.docs[0].data() as { data: unknown }).data ?? null);
+}
+
+// ── Consultant identity ────────────────────────────────────────────────────
+// The built-in demo consultant login maps to a real marketplace consultant so the consultant
+// workspace can be exercised; real consultant accounts are linked by a platform admin.
+const DEMO_CONSULTANTS: Record<string, string> = { 'consultant@demo.visawithease.app': 'c-priya' };
+
+export async function resolveConsultantId(user: { email?: string; uid: string }): Promise<string | null> {
+  if (!user.email) return null;
+  const demo = DEMO_CONSULTANTS[user.email.toLowerCase()];
+  if (demo) return demo;
+  const record = await getUserByEmail(user.email);
+  return record?.consultantId ?? null;
+}
+
+export async function setUserConsultantId(email: string, consultantId: string | null): Promise<boolean> {
+  const key = email.toLowerCase();
+  // Linking a login to a consultant profile is what makes it a consultant: it gains the 'consultant' role
+  // (kept alongside 'consumer', so the same person can also use the app as a client); unlinking removes it.
+  const withRole = (roles: string[]) => {
+    const rest = roles.filter((r) => r !== 'consultant');
+    return consultantId ? [...rest, 'consultant'] : rest;
+  };
+  const db = getDb();
+  if (!db) {
+    const u = memUsers.get(key);
+    if (!u) return false;
+    const next = { ...u, roles: withRole(u.roles) };
+    if (consultantId) next.consultantId = consultantId; else delete next.consultantId;
+    memUsers.set(key, next);
+    return true;
+  }
+  const ref = db.collection('users').doc(key);
+  const doc = await ref.get();
+  if (!doc.exists) return false;
+  const current = (doc.data() as UserRecord).roles ?? ['consumer'];
+  await ref.set({ consultantId: consultantId ?? null, roles: withRole(current) }, { merge: true });
+  return true;
 }

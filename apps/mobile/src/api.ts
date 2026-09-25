@@ -232,6 +232,14 @@ export interface ApiMyBooking {
   sessionType: string;
   slotISO: string | null;
   createdAt: string;
+  call: ApiCallInfo;
+}
+/** What the app may know about an appointment's call. The link itself is only released by joinBookingCall, inside the window. */
+export type ApiCallInfo =
+  | { available: false; reason: string }
+  | { available: true; provider: 'google_meet'; connected: boolean; opensAt: string; closesAt: string; open: boolean };
+export function joinBookingCall(bookingId: string) {
+  return request<{ provider: string; url: string; opensAt: string; closesAt: string }>('GET', `/bookings/${encodeURIComponent(bookingId)}/join`);
 }
 export function fetchMyBookings() {
   return request<{ bookings: ApiMyBooking[] }>('GET', '/bookings');
@@ -246,6 +254,8 @@ export function createAccessGrant(body: {
   consultantId: string;
   categories: string[];
   expiresAt: string;
+  /** Must be true: the client actively accepts the data-sharing terms. */
+  acceptedTerms: true;
 }) {
   return request<{ grantId: string; status: string }>('POST', '/access-grants', body);
 }
@@ -263,6 +273,66 @@ export function fetchMyAccessGrants() {
 }
 export function revokeAccessGrant(grantId: string) {
   return request<{ grantId: string; status: string }>('DELETE', `/access-grants/${encodeURIComponent(grantId)}`);
+}
+
+// ── Consultant workspace ──────────────────────────────────────────────────────
+export interface ApiConsultantMe { linked: boolean; consultantId: string | null; name: string | null; specialty: string | null }
+export interface ApiConsultantAppointment {
+  bookingId: string;
+  status: string;
+  sessionType: string;
+  sessionLabel: string;
+  slotISO: string | null;
+  createdAt: string;
+  applicationId: string;
+  clientName: string;
+  destinationCountry: string | null;
+  visaType: string | null;
+  access: { granted: false } | { granted: true; categories: string[]; expiresAt: string; termsAcceptedAt: string | null };
+  call: ApiCallInfo;
+}
+export interface ApiPassportData {
+  surname: string; givenNames: string; documentNumber: string; nationality: string; issuingState: string;
+  birthDate: string | null; sex: string; expiryDate: string | null; checksumsValid: boolean;
+}
+export interface ApiConsultantCase {
+  bookingId: string;
+  applicationId: string;
+  shared: string[];
+  access: { expiresAt: string; termsAcceptedAt: string | null; termsVersion: string | null };
+  profile?: {
+    applicantName: string; destinationCountry: string; visaType: string; nationality: string | null; residenceCountry: string | null;
+    intendedFrom: string; readinessScore: number; status: string;
+    faceVerified: { verified: false } | { verified: true; passportSimilarity: number; verifiedAt: string; steps: string[] };
+  };
+  documents?: Array<{ type: string; score: number; status: string; checkedAt: string }>;
+  passportData?: ApiPassportData | null;
+  auditFindings?: Array<{ type: string; score: number; status: string; findings: Array<{ id: string; severity: string; title: string; description: string }> }>;
+  requirements?: Array<{ id: string; title: string; required: boolean; met: boolean }>;
+  contact?: { note: string };
+}
+export function fetchConsultantMe() { return request<ApiConsultantMe>('GET', '/consultant/me'); }
+export function fetchConsultantAppointments() { return request<{ consultantId: string; appointments: ApiConsultantAppointment[] }>('GET', '/consultant/appointments'); }
+export function fetchConsultantCase(bookingId: string) { return request<ApiConsultantCase>('GET', `/consultant/appointments/${encodeURIComponent(bookingId)}/case`); }
+
+// ── Face verification ─────────────────────────────────────────────────────────
+export interface ApiFaceStatus {
+  enrolled: boolean;
+  verifiedBadge: boolean;
+  passportSimilarity: number | null;
+  enrolledAt: string | null;
+  lastVerifiedAt: string | null;
+  sessionFresh: boolean;
+  requiredForAnalysis: boolean;
+  thresholds: { similarity: number; liveness: number };
+}
+export function fetchFaceStatus() { return request<ApiFaceStatus>('GET', '/face/status'); }
+export function fetchFaceTemplate() { return request<{ faceFeature: string }>('GET', '/face/template'); }
+export function enrollFace(body: { faceFeature: string; passportSimilarity: number; liveness: number; steps: string[] }) {
+  return request<{ enrolled: boolean; verifiedBadge: boolean; passportSimilarity: number; enrolledAt: string }>('POST', '/face/enroll', body);
+}
+export function confirmFaceCheck(body: { similarity: number; liveness: number }) {
+  return request<{ verified: boolean; lastVerifiedAt: string }>('POST', '/face/verified', body);
 }
 
 // ── Chat ──────────────────────────────────────────────────────────────────────

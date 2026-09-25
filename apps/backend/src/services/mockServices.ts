@@ -13,6 +13,7 @@ import type {
   ApplicationRepository,
   AuditQueue,
   AuthService,
+  BookingRecord,
   ConsultantService,
   NotificationService,
   ProfileService,
@@ -136,6 +137,9 @@ export function createMockServices(): Services {
     },
     async getApplication(id, userId) {
       return getAppsForUser(userId).find((item) => item.id === id) ?? null;
+    },
+    async getApplicationForStaff(id) {
+      return findApplicationById(id);
     },
     async deleteApplication(id, userId) {
       const list = getAppsForUser(userId);
@@ -263,6 +267,13 @@ export function createMockServices(): Services {
     },
     async listBookings() {
       return [...bookingStore.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    },
+    async getBooking(bookingId) {
+      return bookingStore.get(bookingId) ?? null;
+    },
+    async setBookingMeeting(bookingId, meeting) {
+      const b = bookingStore.get(bookingId);
+      if (b) bookingStore.set(bookingId, { ...b, meeting });
     },
     async cancelBooking(bookingId, userId) {
       const b = bookingStore.get(bookingId);
@@ -394,7 +405,7 @@ export function createMockServices(): Services {
   const grantStore = new Map<string, AccessGrantRequest & { grantedBy: string; status: 'active' | 'revoked' }>();
   // bookingId -> record — real persistence for /bookings (previously fabricated
   // a response with nothing stored, so the console/CRM had nothing real to read).
-  const bookingStore = new Map<string, { bookingId: string; status: string; consultantId: string; applicationId: string; sessionType: string; userId: string; createdAt: string; slotISO?: string }>();
+  const bookingStore = new Map<string, BookingRecord>();
 
   const accessGrants: AccessGrantRepository = {
     async createGrant(input) {

@@ -12,6 +12,7 @@ import type {
   AccessGrantRepository,
   ApplicationRepository,
   AuditQueue,
+  BookingRecord,
   ConsultantService,
   NotificationService,
   ProfileService,
@@ -67,6 +68,12 @@ export function createFirestoreServices(db: Firestore): Services {
         const { ownerId: _ownerId, ...rest } = doc.data() as StoredVisaApplication;
         return rest as VisaApplication;
       });
+    },
+    async getApplicationForStaff(id) {
+      const doc = await db.collection('applications').doc(id).get();
+      if (!doc.exists) return null;
+      const { ownerId: _ownerId, ...rest } = doc.data() as StoredVisaApplication;
+      return rest as VisaApplication;
     },
     async deleteApplication(id, userId) {
       const ref = db.collection('applications').doc(id);
@@ -246,7 +253,7 @@ export function createFirestoreServices(db: Firestore): Services {
     },
     async listActiveGrants() {
       const snap = await db.collection('accessGrants').where('status', '==', 'active').get();
-      return snap.docs.map((d) => d.data() as AccessGrantRequest & { grantId: string; status: 'active'; grantedBy: string });
+      return snap.docs.map((d) => d.data() as AccessGrantRequest & { grantId: string; status: 'active'; grantedBy: string; termsAcceptedAt?: string; termsVersion?: string });
     }
   };
 
@@ -277,7 +284,14 @@ export function createFirestoreServices(db: Firestore): Services {
     },
     async listBookings() {
       const snap = await db.collection('bookings').orderBy('createdAt', 'desc').get();
-      return snap.docs.map((d) => d.data() as { bookingId: string; status: string; consultantId: string; applicationId: string; sessionType: string; userId: string; createdAt: string; slotISO?: string });
+      return snap.docs.map((d) => d.data() as BookingRecord);
+    },
+    async getBooking(bookingId) {
+      const doc = await db.collection('bookings').doc(bookingId).get();
+      return doc.exists ? (doc.data() as BookingRecord) : null;
+    },
+    async setBookingMeeting(bookingId, meeting) {
+      await db.collection('bookings').doc(bookingId).set({ meeting }, { merge: true });
     },
     async getConsole() {
       const grantsSnap = await db.collection('accessGrants').where('status', '==', 'active').get();

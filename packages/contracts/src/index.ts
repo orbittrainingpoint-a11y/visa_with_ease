@@ -152,7 +152,10 @@ export const accessGrantRequestSchema = z.object({
   applicationId: z.string().min(1),
   consultantId: z.string().min(1),
   categories: z.array(z.enum(['profile', 'requirements', 'audit_findings', 'documents', 'ai_messages', 'contact'])).min(1),
-  expiresAt: z.string().datetime()
+  expiresAt: z.string().datetime(),
+  // The client must actively accept the sharing terms — a consultant never gets access to anyone's
+  // data by default, only through this explicit grant.
+  acceptedTerms: z.literal(true, { errorMap: () => ({ message: 'You must accept the data-sharing terms to grant access' }) })
 });
 
 // Every field optional at every level — a PUT /profile call sends whichever

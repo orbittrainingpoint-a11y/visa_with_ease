@@ -10,6 +10,8 @@ import {
   createAccessGrant as apiCreateAccessGrant, fetchMyAccessGrants, revokeAccessGrant,
   fetchNotifications, markNotificationRead, fetchDocuments, fetchAuditResult, fetchExchangeRates,
   fetchMyBookings, cancelMyBooking, deleteApplication as apiDeleteApplication, type ApiMyBooking,
+  fetchConsultantMe, fetchConsultantAppointments, fetchConsultantCase, joinBookingCall,
+  type ApiCallInfo, type ApiConsultantMe, type ApiConsultantAppointment, type ApiConsultantCase, type ApiPassportData, type ApiAccessGrant,
   createUploadSlot, enqueueAudit, fetchRequirements, verificationLabel, fetchPartners,
   fetchProfile, updateProfile,
   forgotPassword, verifyEmailOtp, sendVerificationEmail, fetchBookingSlots, fetchVisaWaiver,
@@ -18,7 +20,7 @@ import {
   sendMessage as apiSendMessage, fetchMessages, fetchMyConversations,
   type AuthUser, type AuthSession, type UserProfile,
   type ApiApplication, type ApiConsultant, type ApiSessionOption, type ApiBooking,
-  type ApiNotification, type ApiDocument, type ApiRequirement, type ApiMessage, type ApiConversationThread, type ApiAccessGrant,
+  type ApiNotification, type ApiDocument, type ApiRequirement, type ApiMessage, type ApiConversationThread,
 } from './src/api';
 import { GoogleSignin, statusCodes } from '@react-native-google-signin/google-signin';
 import { ActivityIndicator, Alert, Animated, BackHandler, Dimensions, Image, Keyboard, Linking, Platform, Pressable, ScrollView, StatusBar, Modal, StyleSheet, Text, TextInput, useWindowDimensions, View } from 'react-native';
@@ -143,7 +145,9 @@ type Route =
   | { name: 'consultant'; id: string }
   | { name: 'booking'; consultantId: string; optionId?: string }
   | { name: 'calendarPicker'; consultantId: string; optionId: string }
-  | { name: 'consent'; consultantId: string; optionId: string; slotISO?: string }
+  | { name: 'consent'; consultantId: string; optionId: string; slotISO?: string; shareFor?: { applicationId: string } }
+  | { name: 'ctabs'; tab: ConsultantTabId }
+  | { name: 'ccase'; bookingId: string }
   | { name: 'confirmation'; consultantId: string }
   | { name: 'notifications' }
   | { name: 'search' }
@@ -238,6 +242,8 @@ function AppInner() {
       consultantConsole: ['consultant', 'platform_admin'],
       hrPortal: ['hr_admin', 'platform_admin'],
       adminOverview: ['platform_admin'],
+      ctabs: ['consultant', 'platform_admin'],
+      ccase: ['consultant', 'platform_admin'],
     };
     const required = requiresOneOf[route.name];
     if (required && !required.some((r) => roles.includes(r))) {
@@ -356,7 +362,8 @@ function AppInner() {
     });
   }, []);
 
-  const activeTab = route.name === 'tabs' ? route.tab : route.name === 'howTo' ? 'profile' : ['consultants', 'consultant', 'booking', 'calendarPicker', 'consent', 'confirmation'].includes(route.name) ? 'bookings' : route.name === 'application' ? 'apps' : route.name === 'newApp' ? 'apps' : route.name === 'upload' ? 'docs' : 'home';
+  const inConsultantWorkspace = route.name === 'ctabs' || route.name === 'ccase';
+  const activeTab: string = route.name === 'ctabs' ? route.tab : route.name === 'ccase' ? 'schedule' : route.name === 'tabs' ? route.tab : route.name === 'howTo' ? 'profile' : ['consultants', 'consultant', 'booking', 'calendarPicker', 'consent', 'confirmation'].includes(route.name) ? 'bookings' : route.name === 'application' ? 'apps' : route.name === 'newApp' ? 'apps' : route.name === 'upload' ? 'docs' : 'home';
   const isChatRoute = route.name === 'tabs' && route.tab === 'chat';
   // Tab bar hides while the keyboard is up: it would otherwise sit between the
   // keyboard and the field/button being typed into, eating a fifth of the
@@ -375,8 +382,11 @@ function AppInner() {
   }, []);
 
   useEffect(() => {
-    if (authUser && route.name === 'tabs' && route.tab === 'bookings') void loadBookings();
+    if (authUser && route.name === 'tabs' && route.tab === 'bookings') { void loadBookings(); void loadGrants(); }
   }, [route.name === 'tabs' && route.tab === 'bookings', authUser?.uid]);
+  useEffect(() => {
+    if (authUser && (route.name === 'ctabs' || route.name === 'ccase')) void loadConsultantData();
+  }, [route.name === 'ctabs' || route.name === 'ccase', authUser?.uid, route.name === 'ctabs' ? route.tab : '']);
 
   const goHome = () => setRoute({ name: 'tabs', tab: 'home' });
   const goChat = () => setRoute({ name: 'tabs', tab: 'chat' });
@@ -409,7 +419,7 @@ function AppInner() {
   // for that bug is that THIS function stays referentially stable, since
   // handleLogin depends on it and WelcomeScreen's sticky-footer effect
   // depends on handleLogin in turn — see the comment on handleLogin.
-  const routeAfterAuth = useCallback(async (resumed = false) => {
+  const routeAfterAuth = useCallback(async (resumed = false, roles: string[] = []) => {
     setLoadingApps(true);
     setLoadAppsError('');
     let firstAppId: string | undefined;
@@ -417,14 +427,15 @@ function AppInner() {
       const { applications } = await fetchApplications();
       firstAppId = applications[0]?.id;
       setAppList(applications.map(normalizeApp));
-      setRoute(applications.length === 0 && !resumed ? { name: 'onboarding', step: 0 } : { name: 'tabs', tab: 'home' });
+      // A consultant lands in their own workspace; a client lands on Home (or onboarding when new).
+      setRoute(roles.includes('consultant') ? { name: 'ctabs', tab: 'schedule' } : applications.length === 0 && !resumed ? { name: 'onboarding', step: 0 } : { name: 'tabs', tab: 'home' });
     } catch (e: any) {
       setLoadAppsError(e?.message ?? 'Failed to load applications. Please try again.');
-      setRoute({ name: 'tabs', tab: 'home' });
+      setRoute(roles.includes('consultant') ? { name: 'ctabs', tab: 'schedule' } : { name: 'tabs', tab: 'home' });
     } finally {
       setLoadingApps(false);
     }
-    void Promise.all([loadConsultants(), loadSessionOpts(), loadNotifications(), loadDocuments(firstAppId), loadBookings()]);
+    void Promise.all([loadConsultants(), loadSessionOpts(), loadNotifications(), loadDocuments(firstAppId), loadBookings(), loadGrants(), ...(roles.includes('consultant') ? [loadConsultantData()] : [])]);
   }, []);
 
   // Registers this device for real push notifications once signed in.
@@ -487,6 +498,27 @@ function AppInner() {
       setBookingsError(e?.message ?? 'Could not load your appointments.');
     } finally {
       setBookingsLoading(false);
+    }
+  };
+  const [myGrants, setMyGrants] = useState<ApiAccessGrant[]>([]);
+  const loadGrants = async () => {
+    try { setMyGrants((await fetchMyAccessGrants()).grants); } catch { /* the Bookings tab still works; sharing state just won't show */ }
+  };
+  const [consultantMe, setConsultantMe] = useState<ApiConsultantMe | null>(null);
+  const [consultantAppts, setConsultantAppts] = useState<ApiConsultantAppointment[]>([]);
+  const [consultantLoading, setConsultantLoading] = useState(false);
+  const [consultantError, setConsultantError] = useState('');
+  const loadConsultantData = async () => {
+    setConsultantLoading(true);
+    setConsultantError('');
+    try {
+      const [me, list] = await Promise.all([fetchConsultantMe(), fetchConsultantAppointments().catch((e: any) => { if (/not linked/i.test(e?.message ?? '')) return { appointments: [] as ApiConsultantAppointment[] }; throw e; })]);
+      setConsultantMe(me);
+      setConsultantAppts(list.appointments);
+    } catch (e: any) {
+      setConsultantError(e?.message ?? 'Could not load your schedule.');
+    } finally {
+      setConsultantLoading(false);
     }
   };
   // When a reschedule is confirmed, the old appointment is cancelled only after the new one exists.
@@ -552,7 +584,8 @@ function AppInner() {
       if (categories.length > 0) {
         await apiCreateAccessGrant({
           applicationId: appId, consultantId, categories,
-          expiresAt: new Date(Date.now() + 7 * 86400000).toISOString()
+          expiresAt: new Date(Date.now() + 7 * 86400000).toISOString(),
+          acceptedTerms: true // the consent screen only lets you continue once the terms are ticked
         });
       }
       setLastBooking(booking);
@@ -565,6 +598,29 @@ function AppInner() {
     } catch (err) {
       Alert.alert('Could not confirm booking', err instanceof Error ? err.message : 'Please check your connection and try again.');
     }
+  };
+
+  // Grant a consultant access to an existing appointment's application (without booking again).
+  const handleShareCase = async (applicationId: string, consultantId: string, categories: string[]) => {
+    try {
+      await apiCreateAccessGrant({ applicationId, consultantId, categories, expiresAt: new Date(Date.now() + 7 * 86400000).toISOString(), acceptedTerms: true });
+      await loadGrants();
+      setRoute({ name: 'tabs', tab: 'bookings' });
+      Alert.alert('Access granted', 'Your consultant can now see what you selected. You can revoke it any time from Bookings.');
+    } catch (err) {
+      Alert.alert('Could not grant access', err instanceof Error ? err.message : 'Please check your connection and try again.');
+    }
+  };
+  const signOutNow = () => {
+    void endSession();
+    setAuthUser(null);
+    setAppList([]);
+    setSessionMessages([]);
+    setMyBookings([]);
+    setMyGrants([]);
+    setConsultantMe(null);
+    setConsultantAppts([]);
+    setRoute({ name: 'welcome' });
   };
 
   // Deleting an application removes it for good, and the server also cancels its upcoming
@@ -600,7 +656,7 @@ function AppInner() {
       const session = await apiLogin(authEmail, authPassword, true);
       await startSession(session);
       setAuthUser(session.user);
-      await routeAfterAuth();
+      await routeAfterAuth(false, session.user.roles);
     } catch (e: any) {
       setLoginError(e?.message ?? 'Login failed. Check your connection.');
     } finally {
@@ -620,7 +676,7 @@ function AppInner() {
       const session = await apiGoogleLogin(idToken);
       await startSession(session);
       setAuthUser(session.user);
-      await routeAfterAuth();
+      await routeAfterAuth(false, session.user.roles);
     } catch (e: any) {
       if (e?.code === statusCodes.SIGN_IN_CANCELLED) return;
       if (e?.code === statusCodes.IN_PROGRESS) return;
@@ -736,7 +792,7 @@ function AppInner() {
             const session = await restoreSession();
             if (!session) { setRoute({ name: 'welcome' }); return; }
             setAuthUser(session.user);
-            await routeAfterAuth(true);
+            await routeAfterAuth(true, session.user.roles);
           })(); }} />
         )}
         {route.name === 'welcome' && (
@@ -787,6 +843,18 @@ function AppInner() {
             }}
           />
         )}
+        {route.name === 'ctabs' && route.tab === 'schedule' && (
+          <ConsultantScheduleScreen me={consultantMe} appointments={consultantAppts} loading={consultantLoading} error={consultantError} retry={loadConsultantData} openCase={(bookingId) => setRoute({ name: 'ccase', bookingId })} />
+        )}
+        {route.name === 'ctabs' && route.tab === 'clients' && (
+          <ConsultantClientsScreen appointments={consultantAppts} openCase={(bookingId) => setRoute({ name: 'ccase', bookingId })} />
+        )}
+        {route.name === 'ctabs' && route.tab === 'cprofile' && (
+          <ConsultantWorkspaceProfileScreen me={consultantMe} authUser={authUser} canSwitch={!!authUser?.roles.includes('consumer')} switchToPersonal={() => setRoute({ name: 'tabs', tab: 'home' })} onSignOut={signOutNow} />
+        )}
+        {route.name === 'ccase' && (
+          <ConsultantCaseScreen bookingId={route.bookingId} appointment={consultantAppts.find((a) => a.bookingId === route.bookingId) ?? null} back={() => setRoute({ name: 'ctabs', tab: 'schedule' })} />
+        )}
         {route.name === 'tabs' && route.tab === 'home' && (
           <DashboardScreen
             appList={appList}
@@ -817,6 +885,11 @@ function AppInner() {
             error={bookingsError}
             retry={loadBookings}
             sessionOpts={sessionOpts}
+            grants={myGrants}
+            shareCase={(b) => setRoute({ name: 'consent', consultantId: b.consultantId, optionId: b.sessionType, shareFor: { applicationId: b.applicationId } })}
+            revokeGrant={async (g) => {
+              try { await revokeAccessGrant(g.grantId); await loadGrants(); } catch (e: any) { Alert.alert('Could not revoke', e?.message ?? 'Please try again.'); }
+            }}
             findConsultant={() => { rescheduleOf.current = null; setRoute({ name: 'consultants' }); }}
             openConsultant={(id) => { rescheduleOf.current = null; setRoute({ name: 'consultant', id }); }}
             reschedule={(b) => { rescheduleOf.current = b.bookingId; setRoute({ name: 'calendarPicker', consultantId: b.consultantId, optionId: b.sessionType }); }}
@@ -854,7 +927,7 @@ function AppInner() {
             authUser={authUser}
             openSettings={() => setRoute({ name: 'settings' })}
             openConsultants={() => setRoute({ name: 'consultants' })}
-            openConsole={() => setRoute({ name: 'consultantConsole' })}
+            openConsole={() => setRoute({ name: 'ctabs', tab: 'schedule' })}
             openHr={() => setRoute({ name: 'hrPortal' })}
             openEmployee={() => setRoute({ name: 'employeePortal' })}
             openAdmin={() => setRoute({ name: 'adminOverview' })}
@@ -873,13 +946,7 @@ function AppInner() {
             openPartners={() => setRoute({ name: 'ecosystemPartners', score: appList[0]?.readinessScore ?? 0 })}
             openMyMessages={() => setRoute({ name: 'myMessages' })}
             openAccessGrants={() => setRoute({ name: 'accessGrants' })}
-            onSignOut={() => {
-              void endSession();
-              setAuthUser(null);
-              setAppList([]);
-              setSessionMessages([]);
-              setRoute({ name: 'welcome' });
-            }}
+            onSignOut={signOutNow}
           />
         )}
         {route.name === 'application' && (
@@ -1003,10 +1070,12 @@ function AppInner() {
         )}
         {route.name === 'consent' && (
           <ConsentScreen
-            consultantId={route.consultantId}
-            optionId={route.optionId}
-            back={() => openBooking(route.consultantId, route.optionId)}
-            confirm={(consultantId, optionId, categories) => handleConfirmBooking(consultantId, optionId, route.slotISO, categories)}
+            consultantName={consultantList.find((c) => c.id === route.consultantId)?.name ?? 'your consultant'}
+            mode={route.shareFor ? 'share' : 'book'}
+            back={() => (route.shareFor ? setRoute({ name: 'tabs', tab: 'bookings' }) : openBooking(route.consultantId, route.optionId))}
+            confirm={(categories) => (route.shareFor
+              ? handleShareCase(route.shareFor.applicationId, route.consultantId, categories)
+              : handleConfirmBooking(route.consultantId, route.optionId, route.slotISO, categories))}
           />
         )}
         {route.name === 'confirmation' && (
@@ -1039,13 +1108,7 @@ function AppInner() {
             back={() => setRoute({ name: 'tabs', tab: 'profile' })}
             authUser={authUser}
             openProfileHub={() => setRoute({ name: 'profileHub' })}
-            onSignOut={() => {
-              void endSession();
-              setAuthUser(null);
-              setAppList([]);
-              setSessionMessages([]);
-              setRoute({ name: 'welcome' });
-            }}
+            onSignOut={signOutNow}
           />
         )}
         {route.name === 'consultantConsole' && <ConsultantConsoleScreen back={() => setRoute({ name: 'tabs', tab: 'profile' })} />}
@@ -1110,7 +1173,8 @@ function AppInner() {
           {bottomNavVisible && (
             <BottomNav
               activeTab={activeTab}
-              setTab={(tab) => setRoute({ name: 'tabs', tab })}
+              items={inConsultantWorkspace ? CONSULTANT_TABS : undefined}
+              setTab={(tab) => setRoute(inConsultantWorkspace ? { name: 'ctabs', tab } : { name: 'tabs', tab })}
               unreadCount={notificationList.filter(n => !n.read && n.type === 'booking').length}
               style={{ position: 'relative' }}
             />
@@ -3171,48 +3235,412 @@ function BookingScreen({ consultantId, consultantList, sessionOpts, loadError, r
   );
 }
 
+// ─── Consent (grant access + accept terms) ────────────────────────────────────
+const SHARE_TERMS_VERSION = '2026-09';
 const CONSENT_ITEMS = [
-  { label: 'Contact details', category: 'contact' },
-  { label: 'Requirements snapshot', category: 'requirements' },
-  { label: 'Audit summary', category: 'audit_findings' },
-  { label: 'Selected chat messages', category: 'ai_messages' },
+  { label: 'Profile & identity check', category: 'profile', detail: 'Name, nationality, destination, readiness score and whether your face was verified against your passport.', on: true },
+  { label: 'Documents & passport details', category: 'documents', detail: 'Which documents you uploaded and the passport details read from it. Original files are not shared.', on: true },
+  { label: 'Audit findings', category: 'audit_findings', detail: 'The score and findings for each document.', on: true },
+  { label: 'Requirements checklist', category: 'requirements', detail: 'Which requirements you have met and which are missing.', on: true },
+  { label: 'Contact details', category: 'contact', detail: 'How to reach you through the platform.', on: false },
+  { label: 'Selected chat messages', category: 'ai_messages', detail: 'Your assistant conversation about this application.', on: false },
 ] as const;
 
-function ConsentScreen({ consultantId, optionId, back, confirm }: {
-  consultantId: string;
-  optionId: string;
+function ConsentScreen({ consultantName, mode, back, confirm }: {
+  consultantName: string;
+  /** 'book' finishes a booking; 'share' only grants access for an existing appointment. */
+  mode: 'book' | 'share';
   back: () => void;
-  confirm: (consultantId: string, optionId: string, categories: string[]) => void;
+  confirm: (categories: string[]) => Promise<void> | void;
 }) {
   const [confirming, setConfirming] = useState(false);
-  const [consent, setConsent] = useState([true, true, true, false]);
+  const [consent, setConsent] = useState<boolean[]>(CONSENT_ITEMS.map((c) => c.on));
+  const [accepted, setAccepted] = useState(false);
+  const [showTerms, setShowTerms] = useState(false);
+  const chosen = CONSENT_ITEMS.filter((_, i) => consent[i]).map((c) => c.category as string);
+  const canConfirm = accepted && chosen.length > 0 && !confirming;
 
   const handleConfirm = async () => {
+    if (!canConfirm) return;
     setConfirming(true);
-    const categories = CONSENT_ITEMS.filter((_, i) => consent[i]).map((c) => c.category);
-    await confirm(consultantId, optionId, categories);
-    setConfirming(false);
+    try { await confirm(chosen); } finally { setConfirming(false); }
   };
 
   return (
-    <View>
-      <BackButton label="Booking" onPress={back} />
-      <Text style={styles.eyebrow}>Consent-controlled sharing</Text>
-      <Text style={styles.title}>Choose what to share</Text>
-      {CONSENT_ITEMS.map(({ label: item }, index) => (
-        <Pressable key={item} style={styles.consentRow} onPress={() => setConsent(prev => prev.map((v, i) => i === index ? !v : v))}>
+    <View style={{ gap: 14 }}>
+      <BackButton label={mode === 'book' ? 'Booking' : 'Bookings'} onPress={back} />
+      <View>
+        <Text style={styles.eyebrow}>You stay in control</Text>
+        <Text style={[styles.title, { marginBottom: 4 }]}>Share your case with {consultantName}?</Text>
+        <Text style={[styles.rowMeta, { lineHeight: 19 }]}>{consultantName} can see nothing about you until you grant access. Choose exactly what to share — you can revoke it at any time.</Text>
+      </View>
+      {CONSENT_ITEMS.map((item, index) => (
+        <Pressable key={item.category} style={styles.consentRow} onPress={() => setConsent((prev) => prev.map((v, i) => (i === index ? !v : v)))} accessibilityLabel={item.label}>
           <View style={[styles.checkbox, consent[index] && styles.checkboxOn]}>
             {consent[index] && <Ionicons name="checkmark" size={16} color="#fff" />}
           </View>
           <View style={styles.flex}>
-            <Text style={styles.rowTitle}>{item}</Text>
-            <Text style={styles.rowMeta}>{consent[index] ? 'Selected for this booking' : 'Off — tap to include'}</Text>
+            <Text style={styles.rowTitle}>{item.label}</Text>
+            <Text style={styles.rowMeta}>{item.detail}</Text>
           </View>
         </Pressable>
       ))}
-      <View style={styles.notice}><Text style={styles.noticeText}>No original documents are shared unless selected. Access can be revoked from Profile.</Text></View>
-      <Pressable style={[styles.primaryButton, confirming && styles.disabledButton]} onPress={confirming ? undefined : handleConfirm}>
-        {confirming ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryButtonText}>Confirm booking</Text>}
+
+      <View style={{ backgroundColor: colors.slate50, borderRadius: 14, padding: 14, gap: 10, borderWidth: 1, borderColor: colors.slate100 }}>
+        <Pressable onPress={() => setAccepted((v) => !v)} style={{ flexDirection: 'row', gap: 12, alignItems: 'flex-start' }} accessibilityLabel="I accept the data sharing terms">
+          <View style={[styles.checkbox, accepted && styles.checkboxOn, { marginTop: 2 }]}>
+            {accepted && <Ionicons name="checkmark" size={16} color="#fff" />}
+          </View>
+          <Text style={{ flex: 1, color: colors.slate800, fontSize: 13.5, lineHeight: 20 }}>
+            I accept the data-sharing terms and grant {consultantName} access to the items I selected above.
+          </Text>
+        </Pressable>
+        <Pressable onPress={() => setShowTerms((v) => !v)} hitSlop={6}>
+          <Text style={{ color: colors.royal600, fontWeight: '700', fontSize: 13 }}>{showTerms ? 'Hide the terms' : 'Read the terms'}</Text>
+        </Pressable>
+        {showTerms && (
+          <View style={{ gap: 6 }}>
+            {[
+              `${consultantName} may view only the items you selected, for this application, to prepare for and hold your appointment.`,
+              'Access ends automatically after 7 days, and you can revoke it at any time from Bookings or Profile → Privacy and access.',
+              'They must not copy, store outside this platform, or share what they see with anyone else.',
+              'Every time a consultant opens your case it is recorded.',
+              'Nothing you do not select is shared, and your original document files are never shared.',
+            ].map((t, i) => (
+              <View key={i} style={{ flexDirection: 'row', gap: 8 }}>
+                <Text style={{ color: colors.slate500 }}>•</Text>
+                <Text style={{ flex: 1, color: colors.slate600, fontSize: 12.5, lineHeight: 18 }}>{t}</Text>
+              </View>
+            ))}
+            <Text style={{ color: colors.slate500, fontSize: 11 }}>Terms version {SHARE_TERMS_VERSION}</Text>
+          </View>
+        )}
+      </View>
+
+      <Pressable style={[styles.primaryButton, { marginTop: 0 }, !canConfirm && styles.disabledButton]} onPress={canConfirm ? handleConfirm : undefined} accessibilityLabel={mode === 'book' ? 'Confirm booking' : 'Grant access'}>
+        {confirming ? <ActivityIndicator color="#fff" /> : <Text style={[styles.primaryButtonText, !canConfirm && styles.disabledButtonText]}>{mode === 'book' ? 'Grant access & confirm booking' : 'Grant access'}</Text>}
+      </Pressable>
+      {!accepted && <Text style={{ color: colors.slate500, fontSize: 12, textAlign: 'center' }}>Accept the terms to continue.</Text>}
+    </View>
+  );
+}
+
+// ─── Call button (Google Meet) ────────────────────────────────────────────────
+function CallButton({ bookingId, call, compact }: { bookingId: string; call: ApiCallInfo; compact?: boolean }) {
+  const [joining, setJoining] = useState(false);
+  if (!call.available) return null;
+  const opensAt = new Date(call.opensAt);
+  const closed = Date.now() > Date.parse(call.closesAt);
+  const join = async () => {
+    setJoining(true);
+    try {
+      const { url } = await joinBookingCall(bookingId);
+      openUrlSafely(url);
+    } catch (e: any) {
+      Alert.alert('Can’t join yet', e?.message ?? 'Please try again in a moment.');
+    } finally {
+      setJoining(false);
+    }
+  };
+  if (closed) return null;
+  return (
+    <View style={{ gap: 4 }}>
+      <Pressable
+        disabled={!call.open || joining}
+        onPress={join}
+        accessibilityLabel="Join call"
+        style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, paddingVertical: compact ? 10 : 12, borderRadius: 12, backgroundColor: call.open ? colors.green500 : colors.slate100 }}
+      >
+        {joining ? <ActivityIndicator size="small" color="#fff" /> : <Ionicons name="videocam" size={18} color={call.open ? '#fff' : colors.slate500} />}
+        <Text style={{ color: call.open ? '#fff' : colors.slate500, fontWeight: '800', fontSize: 13.5 }}>
+          {call.open ? 'Join call' : `Call opens ${opensAt.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}`}
+        </Text>
+      </Pressable>
+      {call.open && <Text style={{ color: colors.slate500, fontSize: 11, textAlign: 'center' }}>Opens Google Meet — turn your camera off there for a voice-only call.</Text>}
+    </View>
+  );
+}
+
+// ─── Consultant workspace ─────────────────────────────────────────────────────
+const CONSULTANT_TABS = [
+  { id: 'schedule', label: 'Schedule', icon: 'calendar' as IoniconName, iconOff: 'calendar-outline' as IoniconName },
+  { id: 'clients', label: 'Clients', icon: 'people' as IoniconName, iconOff: 'people-outline' as IoniconName },
+  { id: 'cprofile', label: 'Profile', icon: 'person' as IoniconName, iconOff: 'person-outline' as IoniconName },
+] as const;
+type ConsultantTabId = (typeof CONSULTANT_TABS)[number]['id'];
+
+function WorkspaceBadge() {
+  return (
+    <View style={{ alignSelf: 'flex-start', flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: colors.navy900, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 10, marginBottom: 10 }}>
+      <Ionicons name="briefcase" size={12} color="#fff" />
+      <Text style={{ color: '#fff', fontSize: 10.5, fontWeight: '800', letterSpacing: 0.8 }}>CONSULTANT WORKSPACE</Text>
+    </View>
+  );
+}
+
+function AccessChip({ access }: { access: ApiConsultantAppointment['access'] }) {
+  const granted = access.granted;
+  return (
+    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: granted ? '#DCFCE7' : '#FEF3C7', paddingHorizontal: 9, paddingVertical: 4, borderRadius: 10, alignSelf: 'flex-start' }}>
+      <Ionicons name={granted ? 'lock-open' : 'lock-closed'} size={11} color={granted ? '#15803D' : '#B45309'} />
+      <Text style={{ color: granted ? '#15803D' : '#B45309', fontSize: 11, fontWeight: '800' }}>{granted ? 'Case shared' : 'Waiting for client access'}</Text>
+    </View>
+  );
+}
+
+function ConsultantScheduleScreen({ me, appointments, loading, error, retry, openCase }: {
+  me: ApiConsultantMe | null;
+  appointments: ApiConsultantAppointment[];
+  loading: boolean;
+  error: string;
+  retry: () => void;
+  openCase: (bookingId: string) => void;
+}) {
+  const [filter, setFilter] = useState<'upcoming' | 'past'>('upcoming');
+  const now = Date.now();
+  const isPast = (a: ApiConsultantAppointment) => a.status === 'cancelled' || (!!a.slotISO && Date.parse(a.slotISO) < now);
+  const upcoming = appointments.filter((a) => !isPast(a)).sort((x, y) => (x.slotISO ?? '9').localeCompare(y.slotISO ?? '9'));
+  const past = appointments.filter(isPast).sort((x, y) => (y.slotISO ?? y.createdAt).localeCompare(x.slotISO ?? x.createdAt));
+  const shown = filter === 'upcoming' ? upcoming : past;
+  const today = upcoming.filter((a) => a.slotISO && new Date(a.slotISO).toDateString() === new Date().toDateString());
+  return (
+    <View style={{ gap: 14 }}>
+      <View>
+        <WorkspaceBadge />
+        <Text style={[styles.title, { marginBottom: 2 }]}>{me?.name ? `Hi, ${me.name.split(' ')[0]}` : 'Your schedule'}</Text>
+        <Text style={styles.rowMeta}>{today.length ? `${today.length} appointment${today.length === 1 ? '' : 's'} today` : upcoming.length ? `${upcoming.length} upcoming` : 'No upcoming appointments'}{me?.specialty ? ` · ${me.specialty}` : ''}</Text>
+      </View>
+      <View style={{ flexDirection: 'row', backgroundColor: colors.slate100, borderRadius: 14, padding: 4 }}>
+        {([['upcoming', `Upcoming${upcoming.length ? ` (${upcoming.length})` : ''}`], ['past', 'Past & cancelled']] as const).map(([id, label]) => (
+          <Pressable key={id} onPress={() => setFilter(id)} style={{ flex: 1, alignItems: 'center', paddingVertical: 9, borderRadius: 11, backgroundColor: filter === id ? colors.white : 'transparent' }}>
+            <Text style={{ color: filter === id ? colors.navy900 : colors.slate500, fontWeight: '800', fontSize: 13 }}>{label}</Text>
+          </Pressable>
+        ))}
+      </View>
+      {loading && appointments.length === 0 && <View style={{ padding: 30, alignItems: 'center' }}><ActivityIndicator size="large" color={colors.royal600} /></View>}
+      {!!error && (
+        <View style={{ backgroundColor: '#FEF2F2', borderRadius: 14, borderWidth: 1, borderColor: '#FECACA', padding: 16, alignItems: 'center', gap: 10 }}>
+          <Text style={{ color: '#991B1B', fontWeight: '700', textAlign: 'center' }}>{error}</Text>
+          <Pressable style={[styles.smallButton, { backgroundColor: '#DC2626' }]} onPress={retry}><Text style={[styles.smallButtonText, { color: '#fff' }]}>Retry</Text></Pressable>
+        </View>
+      )}
+      {!loading && !error && shown.length === 0 && (
+        <View style={{ alignItems: 'center', gap: 8, paddingVertical: 30, backgroundColor: colors.white, borderRadius: 18, borderWidth: 1, borderColor: colors.slate100 }}>
+          <Ionicons name="calendar-outline" size={30} color={colors.royal600} />
+          <Text style={{ color: colors.slate900, fontWeight: '900', fontSize: 16 }}>{filter === 'upcoming' ? 'Nothing scheduled' : 'Nothing here yet'}</Text>
+          <Text style={{ color: colors.slate500, textAlign: 'center', fontSize: 13, paddingHorizontal: 28 }}>Appointments clients book with you will appear here.</Text>
+        </View>
+      )}
+      {shown.map((a) => {
+        const slot = formatSlot(a.slotISO);
+        const cancelled = a.status === 'cancelled';
+        return (
+          <Pressable key={a.bookingId} onPress={() => openCase(a.bookingId)} accessibilityLabel={`Open ${a.clientName}`} style={{ backgroundColor: colors.white, borderRadius: 18, borderWidth: 1, borderColor: colors.slate100, padding: 14, gap: 10, opacity: cancelled ? 0.7 : 1 }}>
+            <View style={{ flexDirection: 'row', gap: 12, alignItems: 'center' }}>
+              <View style={{ width: 52, borderRadius: 14, backgroundColor: colors.royal50, alignItems: 'center', paddingVertical: 8 }}>
+                <Text style={{ color: colors.royal600, fontSize: 11, fontWeight: '800', textTransform: 'uppercase' }}>{slot ? slot.weekday : '—'}</Text>
+                <Text style={{ color: colors.navy900, fontSize: 20, fontWeight: '900' }}>{slot ? slot.dayNum : '?'}</Text>
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={{ color: colors.slate900, fontWeight: '800', fontSize: 15 }} numberOfLines={1}>{a.clientName}</Text>
+                <Text style={{ color: colors.slate500, fontSize: 12.5 }} numberOfLines={1}>{a.sessionLabel}{a.destinationCountry ? ` · ${a.destinationCountry}` : ''}</Text>
+                <Text style={{ color: colors.slate700, fontSize: 12.5, fontWeight: '700', marginTop: 2 }}>{slot ? `${slot.day} · ${slot.time}` : 'Time to be confirmed'}</Text>
+              </View>
+              {cancelled ? <Text style={{ color: '#B91C1C', fontWeight: '800', fontSize: 11 }}>Cancelled</Text> : <Ionicons name="chevron-forward" size={18} color={colors.slate300} />}
+            </View>
+            {!cancelled && <AccessChip access={a.access} />}
+            {!cancelled && filter === 'upcoming' && <CallButton bookingId={a.bookingId} call={a.call} compact />}
+          </Pressable>
+        );
+      })}
+    </View>
+  );
+}
+
+function ConsultantClientsScreen({ appointments, openCase }: { appointments: ApiConsultantAppointment[]; openCase: (bookingId: string) => void }) {
+  // One row per client application (their latest active appointment), so a consultant sees who they
+  // are working with and whether they can open the case.
+  const byApp = new Map<string, ApiConsultantAppointment>();
+  for (const a of appointments.filter((x) => x.status !== 'cancelled')) {
+    const cur = byApp.get(a.applicationId);
+    if (!cur || (a.slotISO ?? '') > (cur.slotISO ?? '')) byApp.set(a.applicationId, a);
+  }
+  const clients = [...byApp.values()];
+  return (
+    <View style={{ gap: 14 }}>
+      <View>
+        <WorkspaceBadge />
+        <Text style={[styles.title, { marginBottom: 2 }]}>Clients</Text>
+        <Text style={styles.rowMeta}>You can open a client’s case only after they grant you access.</Text>
+      </View>
+      {clients.length === 0 && <Text style={[styles.rowMeta, { textAlign: 'center', paddingVertical: 30 }]}>No clients yet.</Text>}
+      {clients.map((a) => (
+        <Pressable key={a.applicationId} onPress={() => openCase(a.bookingId)} style={{ backgroundColor: colors.white, borderRadius: 16, borderWidth: 1, borderColor: colors.slate100, padding: 14, gap: 8 }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+            <View style={{ width: 42, height: 42, borderRadius: 21, backgroundColor: colors.royal50, alignItems: 'center', justifyContent: 'center' }}>
+              <Text style={{ color: colors.royal600, fontWeight: '900' }}>{a.clientName.split(' ').map((w) => w[0]).join('').slice(0, 2).toUpperCase()}</Text>
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={{ color: colors.slate900, fontWeight: '800', fontSize: 15 }}>{a.clientName}</Text>
+              <Text style={{ color: colors.slate500, fontSize: 12.5 }}>{a.destinationCountry ?? '—'}{a.visaType ? ` · ${a.visaType}` : ''}</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color={colors.slate300} />
+          </View>
+          <AccessChip access={a.access} />
+        </Pressable>
+      ))}
+    </View>
+  );
+}
+
+function ApiPassportCard({ data }: { data: ApiPassportData }) {
+  const months = data.expiryDate ? monthsUntil(data.expiryDate) : null;
+  const rows: Array<[string, string]> = [
+    ['Name', `${data.givenNames} ${data.surname}`.trim()],
+    ['Passport no.', data.documentNumber],
+    ['Nationality', data.nationality],
+    ['Date of birth', data.birthDate ?? '—'],
+    ['Expiry', data.expiryDate ? `${data.expiryDate}${months !== null ? (months < 0 ? ' · expired' : ` · ${months} mo left`) : ''}` : '—'],
+  ];
+  return (
+    <View style={{ backgroundColor: colors.navy900, borderRadius: 16, padding: 14, gap: 6 }}>
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 2 }}>
+        <Ionicons name="id-card-outline" size={16} color="#93C5FD" />
+        <Text style={{ color: '#fff', fontWeight: '900', fontSize: 13, flex: 1 }}>Passport details (read on the client’s phone)</Text>
+        <Text style={{ color: data.checksumsValid ? '#34D399' : '#F59E0B', fontSize: 11, fontWeight: '800' }}>{data.checksumsValid ? 'Checksums valid' : 'Some unclear'}</Text>
+      </View>
+      {rows.map(([k, v]) => (
+        <View key={k} style={{ flexDirection: 'row', justifyContent: 'space-between', gap: 12 }}>
+          <Text style={{ color: 'rgba(255,255,255,0.55)', fontSize: 12 }}>{k}</Text>
+          <Text style={{ color: '#fff', fontSize: 12.5, fontWeight: '700', flexShrink: 1, textAlign: 'right' }}>{v}</Text>
+        </View>
+      ))}
+    </View>
+  );
+}
+
+function FaceBadge({ face }: { face: { verified: false } | { verified: true; passportSimilarity: number } }) {
+  return face.verified ? (
+    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#DCFCE7', paddingHorizontal: 10, paddingVertical: 5, borderRadius: 12, alignSelf: 'flex-start' }}>
+      <Ionicons name="shield-checkmark" size={14} color="#15803D" />
+      <Text style={{ color: '#15803D', fontSize: 12, fontWeight: '800' }}>Face verified · {Math.round(face.passportSimilarity * 100)}% match to passport</Text>
+    </View>
+  ) : (
+    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#FEF3C7', paddingHorizontal: 10, paddingVertical: 5, borderRadius: 12, alignSelf: 'flex-start' }}>
+      <Ionicons name="shield-outline" size={14} color="#B45309" />
+      <Text style={{ color: '#B45309', fontSize: 12, fontWeight: '800' }}>Face not verified yet</Text>
+    </View>
+  );
+}
+
+function ConsultantCaseScreen({ bookingId, appointment, back }: { bookingId: string; appointment: ApiConsultantAppointment | null; back: () => void }) {
+  const [data, setData] = useState<ApiConsultantCase | null>(null);
+  const [error, setError] = useState<{ code?: string; message: string } | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [attempt, setAttempt] = useState(0);
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true); setError(null);
+    fetchConsultantCase(bookingId)
+      .then((d) => { if (!cancelled) setData(d); })
+      .catch((e: any) => { if (!cancelled) setError({ message: e?.message ?? 'Could not load the case.' }); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [bookingId, attempt]);
+  const slot = formatSlot(appointment?.slotISO ?? null);
+  const sevColor = (sev: string) => (sev === 'red_flag' ? '#DC2626' : sev === 'warn' ? '#D97706' : sev === 'pass' ? '#16A34A' : colors.royal600);
+  return (
+    <View style={{ gap: 14 }}>
+      <BackButton label="Schedule" onPress={back} />
+      <View>
+        <WorkspaceBadge />
+        <Text style={[styles.title, { marginBottom: 2 }]}>{appointment?.clientName ?? 'Client case'}</Text>
+        <Text style={styles.rowMeta}>{appointment ? `${appointment.sessionLabel}${appointment.destinationCountry ? ` · ${appointment.destinationCountry}` : ''}${slot ? ` · ${slot.day}, ${slot.time}` : ''}` : ''}</Text>
+      </View>
+      {appointment && appointment.status !== 'cancelled' && <CallButton bookingId={appointment.bookingId} call={appointment.call} />}
+
+      {loading && <View style={{ padding: 30, alignItems: 'center' }}><ActivityIndicator size="large" color={colors.royal600} /></View>}
+
+      {!loading && error && (
+        <View style={{ backgroundColor: '#FEF3C7', borderRadius: 16, padding: 18, gap: 8, alignItems: 'center' }}>
+          <Ionicons name="lock-closed" size={30} color="#B45309" />
+          <Text style={{ color: '#92400E', fontWeight: '900', fontSize: 16, textAlign: 'center' }}>Access not granted</Text>
+          <Text style={{ color: '#92400E', fontSize: 13, textAlign: 'center', lineHeight: 19 }}>
+            This client hasn’t granted you access to their case. They can share it from their Bookings screen — you’ll see it here the moment they do.
+          </Text>
+          <Pressable style={[styles.smallButton, { marginTop: 4 }]} onPress={() => setAttempt((a) => a + 1)}><Text style={styles.smallButtonText}>Check again</Text></Pressable>
+        </View>
+      )}
+
+      {!loading && data && (
+        <View style={{ gap: 14 }}>
+          <View style={{ backgroundColor: '#ECFDF5', borderRadius: 14, padding: 12, flexDirection: 'row', gap: 10, alignItems: 'center' }}>
+            <Ionicons name="lock-open" size={18} color="#047857" />
+            <Text style={{ flex: 1, color: '#065F46', fontSize: 12.5, lineHeight: 18 }}>
+              Shared by the client: {data.shared.map((c) => c.replace('_', ' ')).join(', ')}. Access ends {new Date(data.access.expiresAt).toLocaleDateString()}. Your view is recorded.
+            </Text>
+          </View>
+
+          {data.profile && (
+            <Section title="Applicant">
+              <FaceBadge face={data.profile.faceVerified} />
+              <Finding title={data.profile.applicantName} meta={`${data.profile.destinationCountry} · ${data.profile.visaType}`} />
+              <Finding title="Nationality / residence" meta={`${data.profile.nationality ?? '—'} · ${data.profile.residenceCountry ?? '—'}`} />
+              <Finding title={`Readiness ${data.profile.readinessScore}/100`} meta={`Status: ${data.profile.status} · travel ${data.profile.intendedFrom}`} />
+            </Section>
+          )}
+          {data.passportData && <ApiPassportCard data={data.passportData} />}
+          {data.documents && (
+            <Section title="Documents">
+              {data.documents.length === 0 && <Text style={styles.rowMeta}>No documents uploaded yet.</Text>}
+              {data.documents.map((d) => <Finding key={d.type} title={documentTypeLabel(d.type)} meta={`Score ${d.score}/100 · ${AUDIT_STATUS_LABEL[d.status] ?? d.status}`} />)}
+            </Section>
+          )}
+          {data.requirements && (
+            <Section title="Requirements">
+              {data.requirements.map((r) => <TaskRow key={r.id} title={r.title} meta={r.required ? 'Required' : 'Optional'} done={r.met} />)}
+            </Section>
+          )}
+          {data.auditFindings && data.auditFindings.map((doc) => (
+            <Section key={doc.type} title={`${documentTypeLabel(doc.type)} — findings`}>
+              {doc.findings.length === 0 && <Text style={styles.rowMeta}>No findings.</Text>}
+              {doc.findings.map((f) => (
+                <View key={f.id} style={{ paddingVertical: 8, borderTopWidth: 1, borderTopColor: colors.slate100 }}>
+                  <Text style={{ color: sevColor(f.severity), fontWeight: '800', fontSize: 13 }}>{f.title}</Text>
+                  <Text style={{ color: colors.slate600, fontSize: 12.5, lineHeight: 18, marginTop: 2 }}>{f.description}</Text>
+                </View>
+              ))}
+            </Section>
+          ))}
+          {data.contact && <Section title="Contact"><Text style={styles.rowMeta}>{data.contact.note}</Text></Section>}
+        </View>
+      )}
+    </View>
+  );
+}
+
+function ConsultantWorkspaceProfileScreen({ me, authUser, canSwitch, switchToPersonal, onSignOut }: { me: ApiConsultantMe | null; authUser: AuthUser | null; canSwitch: boolean; switchToPersonal: () => void; onSignOut: () => void }) {
+  return (
+    <View style={{ gap: 14 }}>
+      <WorkspaceBadge />
+      <Text style={[styles.title, { marginBottom: 0 }]}>{me?.name ?? authUser?.name ?? 'Consultant'}</Text>
+      <Text style={styles.rowMeta}>{me?.specialty ?? 'Consultant'} · {authUser?.email}</Text>
+      {me && !me.linked && (
+        <View style={{ backgroundColor: '#FEF3C7', borderRadius: 14, padding: 14 }}>
+          <Text style={{ color: '#92400E', fontWeight: '800' }}>Your login isn’t linked to a consultant profile yet.</Text>
+          <Text style={{ color: '#92400E', fontSize: 12.5, marginTop: 4 }}>Ask a platform admin to link {authUser?.email} so clients can book you.</Text>
+        </View>
+      )}
+      <Section title="How client data works">
+        <TaskRow title="Nothing is visible by default" meta="You see a client’s name and destination for your appointments — nothing more." done />
+        <TaskRow title="Clients grant access explicitly" meta="After they accept the sharing terms and choose what to share." done />
+        <TaskRow title="Every view is recorded" meta="Access expires automatically and clients can revoke it any time." done />
+      </Section>
+      {canSwitch && (
+        <Pressable style={styles.secondaryButton} onPress={switchToPersonal}><Text style={styles.secondaryButtonText}>Switch to my personal account</Text></Pressable>
+      )}
+      <Pressable style={[styles.secondaryButton, { borderColor: '#FECACA' }]} onPress={() => Alert.alert('Sign out', 'Are you sure you want to sign out?', [{ text: 'Cancel', style: 'cancel' }, { text: 'Sign out', style: 'destructive', onPress: onSignOut }])}>
+        <Text style={[styles.secondaryButtonText, { color: '#B91C1C' }]}>Sign out</Text>
       </Pressable>
     </View>
   );
@@ -4077,12 +4505,12 @@ function SettingsScreen({ back, authUser, onSignOut, openProfileHub }: { back: (
   );
 }
 
-function BottomNav({ activeTab, setTab, unreadCount = 0, style }: { activeTab: TabId; setTab: (tab: TabId) => void; unreadCount?: number; style?: object }) {
+function BottomNav({ activeTab, setTab, unreadCount = 0, style, items }: { activeTab: string; setTab: (tab: any) => void; unreadCount?: number; style?: object; items?: ReadonlyArray<{ id: string; label: string; icon: IoniconName; iconOff: IoniconName }> }) {
   const chatUnread = unreadCount;
   const insets = useSafeAreaInsets();
   return (
     <View style={[styles.bottomNav, { height: 64 + insets.bottom, paddingBottom: insets.bottom }, style]}>
-      {tabs.map((item) => {
+      {(items ?? tabs).map((item) => {
         const active = activeTab === item.id;
         const badge = item.id === 'chat' ? chatUnread : 0;
         return (
@@ -6301,7 +6729,10 @@ function relativeSlot(slotISO: string | null): string {
   return days === 1 ? 'Tomorrow' : `In ${days} days`;
 }
 
-function BookingCard({ booking, sessionLabel, onCancel, onReschedule, onOpenConsultant, cancelling }: {
+function BookingCard({ booking, sessionLabel, onCancel, onReschedule, onOpenConsultant, cancelling, grant, onShare, onRevoke }: {
+  grant?: ApiAccessGrant | null;
+  onShare?: () => void;
+  onRevoke?: (grant: ApiAccessGrant) => void;
   booking: ApiMyBooking;
   sessionLabel: string;
   onCancel?: () => void;
@@ -6333,6 +6764,18 @@ function BookingCard({ booking, sessionLabel, onCancel, onReschedule, onOpenCons
         </View>
       </View>
       {!cancelled && !past && <Text style={{ color: colors.royal600, fontSize: 12, fontWeight: '800' }}>{relativeSlot(booking.slotISO)}</Text>}
+      {!cancelled && !past && <CallButton bookingId={booking.bookingId} call={booking.call} />}
+      {!cancelled && !past && onShare && (
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: grant ? '#F0FDF4' : '#FFFBEB', borderRadius: 12, padding: 10 }}>
+          <Ionicons name={grant ? 'lock-open' : 'lock-closed'} size={16} color={grant ? '#15803D' : '#B45309'} />
+          <Text style={{ flex: 1, color: grant ? '#166534' : '#92400E', fontSize: 12.5, lineHeight: 17 }}>
+            {grant ? `Shared with ${booking.consultantName}: ${grant.categories.map((c) => c.replace('_', ' ')).join(', ')}` : `${booking.consultantName} can’t see your case yet.`}
+          </Text>
+          <Pressable onPress={() => (grant ? onRevoke?.(grant) : onShare())} hitSlop={6} accessibilityLabel={grant ? 'Revoke access' : 'Share my case'}>
+            <Text style={{ color: grant ? '#B91C1C' : colors.royal600, fontWeight: '800', fontSize: 12.5 }}>{grant ? 'Revoke' : 'Share case'}</Text>
+          </Pressable>
+        </View>
+      )}
       <View style={{ flexDirection: 'row', gap: 8 }}>
         <Pressable onPress={onOpenConsultant} style={{ flex: 1, alignItems: 'center', paddingVertical: 10, borderRadius: 12, backgroundColor: colors.slate50, borderWidth: 1, borderColor: colors.slate100 }} accessibilityLabel={`View ${booking.consultantName}`}>
           <Text style={{ color: colors.slate700, fontWeight: '700', fontSize: 13 }}>{cancelled || past ? 'Book again' : 'View expert'}</Text>
@@ -6352,7 +6795,10 @@ function BookingCard({ booking, sessionLabel, onCancel, onReschedule, onOpenCons
   );
 }
 
-function BookingsScreen({ bookings, loading, error, retry, sessionOpts, findConsultant, openConsultant, reschedule, cancelBooking }: {
+function BookingsScreen({ bookings, loading, error, retry, sessionOpts, grants, shareCase, revokeGrant, findConsultant, openConsultant, reschedule, cancelBooking }: {
+  grants: ApiAccessGrant[];
+  shareCase: (booking: ApiMyBooking) => void;
+  revokeGrant: (grant: ApiAccessGrant) => Promise<void>;
   bookings: ApiMyBooking[];
   loading: boolean;
   error: string;
@@ -6431,6 +6877,9 @@ function BookingsScreen({ bookings, loading, error, retry, sessionOpts, findCons
           sessionLabel={labelFor(b.sessionType)}
           cancelling={cancellingId === b.bookingId}
           onOpenConsultant={() => openConsultant(b.consultantId)}
+          grant={grants.find((g) => g.consultantId === b.consultantId && g.applicationId === b.applicationId && Date.parse(g.expiresAt) > Date.now()) ?? null}
+          onShare={filter === 'upcoming' ? () => shareCase(b) : undefined}
+          onRevoke={(g) => revokeGrant(g)}
           onCancel={filter === 'upcoming' ? () => confirmCancel(b) : undefined}
           onReschedule={filter === 'upcoming' ? () => reschedule(b) : undefined}
         />

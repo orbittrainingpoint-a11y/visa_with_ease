@@ -54,8 +54,17 @@ import {
   scheduleAccountDeletion,
   getAccountDeletionStatus,
   cancelAccountDeletion,
-  listOverduePendingDeletions
+  listOverduePendingDeletions,
+  getFaceProfile,
+  saveFaceProfile,
+  deleteFaceProfile,
+  savePassportData,
+  getPassportDataForApplication,
+  resolveConsultantId,
+  setUserConsultantId
 } from './services/appStore.js';
+import { createMeetEvent, isMeetConfigured, joinWindow } from './services/meetings.js';
+import { parsePassportData } from './services/passportMrz.js';
 import { isEmailConfigured, send2faCodeEmail, sendPasswordResetEmail, sendVerificationEmail } from './services/email.js';
 import { isFirestoreConfigured } from './services/firestore.js';
 import { getSignedReadUrl, saveDocumentImage } from './services/storage.js';
@@ -561,6 +570,15 @@ export function createApp(services: Services = createServices()) {
       if (!owned) {
         return res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Application not found' } });
       }
+      // Only the verified person may analyse: when enabled, the account's face must have been verified
+      // recently (liveness + passport match at enrolment, and a fresh check each session window).
+      if (faceRequiredForAudit()) {
+        const face = await getFaceProfile(req.user!.uid);
+        if (!face) return res.status(403).json({ error: { code: 'FACE_VERIFICATION_REQUIRED', message: 'Verify your face first — analysis is limited to the verified applicant.' } });
+        if (Date.now() - Date.parse(face.lastVerifiedAt) >= faceSessionMs()) {
+          return res.status(403).json({ error: { code: 'FACE_REVERIFICATION_REQUIRED', message: 'Confirm it is still you — do a quick face check to continue.' } });
+        }
+      }
       if (!(await claimAuditOwner(documentId, applicationId))) {
         return res.status(409).json({ error: { code: 'CONFLICT', message: 'This document ID is already associated with a different application' } });
       }
@@ -574,6 +592,13 @@ export function createApp(services: Services = createServices()) {
         if (storagePath) await saveDocumentFilePath(documentId, storagePath);
       }
       const auditResponse = await services.auditQueue.enqueueAudit(req.body);
+      // Keep what was read from a passport as structured data (name, number, dates) so it can be shown
+      // back to the client and — only with their grant — to a consultant.
+      const { extractedText: passportText, documentType: passportDocType } = req.body as { extractedText?: string; documentType?: string };
+      if ((passportDocType ?? '').toLowerCase() === 'passport' && passportText) {
+        const parsed = parsePassportData(passportText);
+        if (parsed) void savePassportData(documentId, applicationId, parsed).catch(() => {});
+      }
       res.status(202).json(auditResponse);
       // Real trigger for a real push — fires after the response is already
       // sent so a slow/unreachable device doesn't add latency to the audit
@@ -762,6 +787,300 @@ export function createApp(services: Services = createServices()) {
     }
   });
 
+  // ── Calls (Google Meet) ───────────────────────────────────────────────────
+  // What a client/consultant may know about an appointment's call. The link itself is only released by
+  // GET /bookings/:id/join, inside the join window — never in a list.
+  function callInfo(b: { slotISO?: string; status: string; sessionType: string; meeting?: unknown }, sessionOptions: Array<{ id: string; durationMinutes: number }>) {
+    if (b.status === 'cancelled' || !b.slotISO) return { available: false as const, reason: b.status === 'cancelled' ? 'cancelled' : 'no_time' };
+    const minutes = sessionOptions.find((o) => o.id === b.sessionType)?.durationMinutes ?? 30;
+    const w = joinWindow(b.slotISO, minutes);
+    return {
+      available: true as const,
+      provider: 'google_meet' as const,
+      connected: isMeetConfigured() || !!b.meeting,
+      opensAt: w.opensAt,
+      closesAt: w.closesAt,
+      open: Date.now() >= Date.parse(w.opensAt) && Date.now() <= Date.parse(w.closesAt)
+    };
+  }
+
+  // The call link: released to the client who booked it or the consultant it is booked with, only inside
+  // the join window. Creates the Meet room on first use if it wasn't created at booking time.
+  app.get('/bookings/:bookingId/join', requireAuth, async (req, res, next) => {
+    try {
+      const b = await services.consultants.getBooking(req.params.bookingId as string);
+      const myConsultantId = await resolveConsultantId(req.user!);
+      const allowed = !!b && (b.userId === req.user!.uid || (!!myConsultantId && b.consultantId === myConsultantId));
+      if (!b || !allowed) throw notFound('Booking not found');
+      const sessionOptions = await services.consultants.listSessionOptions();
+      const info = callInfo(b, sessionOptions);
+      if (!info.available) return res.status(409).json({ error: { code: 'NO_CALL', message: info.reason === 'cancelled' ? 'This appointment was cancelled.' : 'This appointment has no time yet.' } });
+      if (!info.open) {
+        return res.status(409).json({ error: { code: 'JOIN_NOT_OPEN', message: Date.now() < Date.parse(info.opensAt) ? 'The call opens 10 minutes before the appointment.' : 'This appointment has ended.', opensAt: info.opensAt, closesAt: info.closesAt } });
+      }
+      let meeting = b.meeting;
+      if (!meeting) {
+        if (!isMeetConfigured()) {
+          return res.status(503).json({ error: { code: 'MEETING_PROVIDER_NOT_CONFIGURED', message: 'Video calls are not connected yet. Your consultant will contact you another way.' } });
+        }
+        const consultant = await services.consultants.getConsultant(b.consultantId);
+        meeting = await createMeetEvent({
+          summary: `Visa With Ease — ${consultant?.name ?? 'consultant'} session`,
+          description: 'Visa consultation booked through Visa With Ease.',
+          startISO: b.slotISO!,
+          durationMinutes: sessionOptions.find((o) => o.id === b.sessionType)?.durationMinutes ?? 30,
+          attendeeEmails: [req.user!.email ?? '']
+        });
+        await services.consultants.setBookingMeeting(b.bookingId, meeting);
+      }
+      res.json({ provider: meeting.provider, url: meeting.url, opensAt: info.opensAt, closesAt: info.closesAt });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // ── Consultant workspace ─────────────────────────────────────────────────
+  // A consultant sees only appointments booked with THEM, and a client's data only through an active,
+  // terms-accepted grant from that client. requireRole alone is not enough: a consultant login must also
+  // be linked to a marketplace consultant identity.
+  async function consultantIdFor(req: express.Request): Promise<string | null> {
+    const linked = await resolveConsultantId(req.user!);
+    if (linked) return linked;
+    // platform_admin may act as any consultant for support, by naming it explicitly
+    if (req.user!.roles.includes('platform_admin') && typeof req.query.consultantId === 'string') return req.query.consultantId;
+    return null;
+  }
+
+  app.get('/consultant/me', requireAuth, requireRole('consultant', 'platform_admin'), async (req, res, next) => {
+    try {
+      const id = await consultantIdFor(req);
+      const profile = id ? await services.consultants.getConsultant(id) : null;
+      res.json({ linked: !!id, consultantId: id, name: profile?.name ?? null, specialty: profile?.specialty ?? null });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  async function activeGrantFor(consultantId: string, applicationId: string) {
+    const grants = await services.accessGrants.listActiveGrants();
+    return grants.find((g) => g.consultantId === consultantId && g.applicationId === applicationId && Date.parse(g.expiresAt) > Date.now()) ?? null;
+  }
+
+  app.get('/consultant/appointments', requireAuth, requireRole('consultant', 'platform_admin'), async (req, res, next) => {
+    try {
+      const consultantId = await consultantIdFor(req);
+      if (!consultantId) return res.status(403).json({ error: { code: 'NOT_LINKED', message: 'This login is not linked to a consultant profile yet. Ask a platform admin to link it.' } });
+      const [all, sessionOptions] = await Promise.all([services.consultants.listBookings(), services.consultants.listSessionOptions()]);
+      const mine = all.filter((b) => b.consultantId === consultantId);
+      const rows = await Promise.all(mine.map(async (b) => {
+        const application = await services.applications.getApplicationForStaff(b.applicationId);
+        const grant = await activeGrantFor(consultantId, b.applicationId);
+        return {
+          bookingId: b.bookingId,
+          status: b.status,
+          sessionType: b.sessionType,
+          sessionLabel: sessionOptions.find((o) => o.id === b.sessionType)?.label ?? b.sessionType,
+          slotISO: b.slotISO ?? null,
+          createdAt: b.createdAt,
+          applicationId: b.applicationId,
+          // Name and destination are what a consultant needs to recognise the booking; nothing else about
+          // the client is exposed until they grant access.
+          clientName: application?.applicantName ?? 'Client',
+          destinationCountry: application?.destinationCountry ?? null,
+          visaType: application?.visaType ?? null,
+          access: grant ? { granted: true as const, categories: grant.categories, expiresAt: grant.expiresAt, termsAcceptedAt: grant.termsAcceptedAt ?? null } : { granted: false as const },
+          call: callInfo(b, sessionOptions)
+        };
+      }));
+      rows.sort((a, b) => (a.slotISO ?? '9').localeCompare(b.slotISO ?? '9'));
+      res.json({ consultantId, appointments: rows });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  app.get('/consultant/appointments/:bookingId/case', requireAuth, requireRole('consultant', 'platform_admin'), async (req, res, next) => {
+    try {
+      const consultantId = await consultantIdFor(req);
+      if (!consultantId) return res.status(403).json({ error: { code: 'NOT_LINKED', message: 'This login is not linked to a consultant profile yet.' } });
+      const booking = await services.consultants.getBooking(req.params.bookingId as string);
+      if (!booking || booking.consultantId !== consultantId) throw notFound('Appointment not found');
+      const grant = await activeGrantFor(consultantId, booking.applicationId);
+      if (!grant) {
+        return res.status(403).json({ error: { code: 'ACCESS_NOT_GRANTED', message: 'The client has not granted you access to their case. Ask them to share it from their Bookings screen.' } });
+      }
+      const application = await services.applications.getApplicationForStaff(booking.applicationId);
+      if (!application) throw notFound('Application not found');
+      const has = (c: string) => (grant.categories as string[]).includes(c);
+      const out: Record<string, unknown> = {
+        bookingId: booking.bookingId,
+        applicationId: booking.applicationId,
+        shared: grant.categories,
+        access: { expiresAt: grant.expiresAt, termsAcceptedAt: grant.termsAcceptedAt ?? null, termsVersion: grant.termsVersion ?? null }
+      };
+      const documentIds = has('documents') || has('audit_findings') || has('requirements') ? await listAuditOwnerDocumentIds(booking.applicationId) : [];
+      const results = documentIds.length ? await services.auditQueue.getAuditResultsByIds(documentIds) : [];
+      const latestByType = new Map<string, (typeof results)[number]>();
+      for (const r of results) {
+        const key = (r.documentType || 'other').toLowerCase();
+        const existing = latestByType.get(key);
+        if (!existing || r.generatedAt > existing.generatedAt) latestByType.set(key, r);
+      }
+
+      if (has('profile')) {
+        const face = await getFaceProfile(booking.userId);
+        out.profile = {
+          applicantName: application.applicantName,
+          destinationCountry: application.destinationCountry,
+          visaType: application.visaType,
+          nationality: application.nationality ?? null,
+          residenceCountry: application.residenceCountry ?? null,
+          intendedFrom: application.intendedFrom,
+          readinessScore: application.readinessScore,
+          status: application.status,
+          // The badge a consultant can rely on: the client passed liveness and matched their own passport photo.
+          faceVerified: face ? { verified: true, passportSimilarity: face.passportSimilarity, verifiedAt: face.enrolledAt, steps: face.steps } : { verified: false }
+        };
+      }
+      if (has('documents')) {
+        out.documents = [...latestByType.values()].map((r) => ({ type: r.documentType, score: r.score, status: r.status, checkedAt: r.generatedAt }));
+        out.passportData = await getPassportDataForApplication(booking.applicationId);
+      }
+      if (has('audit_findings')) {
+        out.auditFindings = [...latestByType.values()].map((r) => ({ type: r.documentType, score: r.score, status: r.status, findings: r.findings }));
+      }
+      if (has('requirements')) {
+        const reqs = await services.requirements.getRequirementsForCountry(application.destinationCountry);
+        const uploaded = (...types: string[]) => types.some((t) => (latestByType.get(t)?.score ?? 0) >= 50);
+        out.requirements = reqs.requirements.map((r) => {
+          const text = `${r.id} ${r.title}`.toLowerCase();
+          const met = text.includes('passport') ? uploaded('passport')
+            : (text.includes('bank') || text.includes('financ') || text.includes('fund')) ? uploaded('bank', 'finance')
+              : text.includes('insur') ? uploaded('insurance')
+                : (text.includes('itinerary') || text.includes('flight') || text.includes('hotel') || text.includes('reserv')) ? uploaded('itinerary')
+                  : text.includes('photo') ? uploaded('photo')
+                    : (text.includes('employ') || text.includes('student') || text.includes('enroll')) ? uploaded('employment') : false;
+          return { id: r.id, title: r.title, required: r.required, met };
+        });
+      }
+      if (has('contact')) {
+        const owner = booking.userId;
+        out.contact = { note: 'Contact details are shared through the platform.', clientId: owner };
+      }
+      if (has('ai_messages')) out.aiMessages = [];
+      await appendAuditLog({ actor: req.user!.email ?? req.user!.uid, action: 'CONSULTANT_VIEW_CASE', resource: booking.applicationId, ip: req.ip ?? '?' });
+      res.json(out);
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // Platform admin links a consultant login to a marketplace consultant profile.
+  app.put('/admin/consultant-link', requireAuth, requireRole('platform_admin'), async (req, res, next) => {
+    try {
+      const { email, consultantId } = (req.body ?? {}) as { email?: string; consultantId?: string | null };
+      if (!email) return res.status(400).json({ error: { code: 'INVALID_BODY', message: 'email is required' } });
+      if (consultantId && !(await services.consultants.getConsultant(consultantId))) throw notFound('Consultant profile not found');
+      const ok = await setUserConsultantId(email, consultantId ?? null);
+      if (!ok) throw notFound('User not found');
+      await appendAuditLog({ actor: req.user!.email ?? req.user!.uid, action: 'LINK_CONSULTANT', resource: `${email}:${consultantId ?? 'none'}`, ip: req.ip ?? '?' });
+      res.json({ email, consultantId: consultantId ?? null });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // ── Face verification ────────────────────────────────────────────────────
+  // The face SDK runs on the phone (liveness, face match). The server keeps the one enrolled template per
+  // account so a different face can never replace it, and records the outcome. Scores may arrive as 0-1 or
+  // 0-100 depending on the SDK build, so they are normalised; thresholds are env-tunable and need calibrating
+  // against real devices and passports.
+  const norm = (n: number) => (n > 1 ? n / 100 : n);
+  const faceMinSimilarity = () => Number(process.env.FACE_MIN_SIMILARITY ?? 0.7);
+  const faceMinLiveness = () => Number(process.env.FACE_MIN_LIVENESS ?? 0.6);
+  const faceSessionMs = () => Number(process.env.FACE_SESSION_HOURS ?? 24) * 3600_000;
+  const faceRequiredForAudit = () => process.env.FACE_REQUIRED_FOR_AUDIT === 'true';
+
+  app.get('/face/status', requireAuth, async (req, res, next) => {
+    try {
+      const f = await getFaceProfile(req.user!.uid);
+      res.json({
+        enrolled: !!f,
+        verifiedBadge: !!f,
+        passportSimilarity: f?.passportSimilarity ?? null,
+        enrolledAt: f?.enrolledAt ?? null,
+        lastVerifiedAt: f?.lastVerifiedAt ?? null,
+        // Fresh = verified again within the session window (bank-app style re-check).
+        sessionFresh: !!f && Date.now() - Date.parse(f.lastVerifiedAt) < faceSessionMs(),
+        requiredForAnalysis: faceRequiredForAudit(),
+        thresholds: { similarity: faceMinSimilarity(), liveness: faceMinLiveness() }
+      });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // The owner's own template, so a new phone can verify against it. Never returned to anyone else.
+  app.get('/face/template', requireAuth, async (req, res, next) => {
+    try {
+      const f = await getFaceProfile(req.user!.uid);
+      if (!f) throw notFound('No face enrolled');
+      res.json({ faceFeature: f.faceFeature });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  app.post('/face/enroll', requireAuth, async (req, res, next) => {
+    try {
+      const b = (req.body ?? {}) as { faceFeature?: unknown; passportSimilarity?: unknown; liveness?: unknown; steps?: unknown };
+      if (typeof b.faceFeature !== 'string' || b.faceFeature.length < 16 || b.faceFeature.length > 20000) return res.status(400).json({ error: { code: 'INVALID_BODY', message: 'faceFeature is required' } });
+      if (typeof b.passportSimilarity !== 'number' || typeof b.liveness !== 'number') return res.status(400).json({ error: { code: 'INVALID_BODY', message: 'passportSimilarity and liveness are required numbers' } });
+      const steps = Array.isArray(b.steps) ? b.steps.filter((x): x is string => typeof x === 'string').slice(0, 10) : [];
+      if (steps.length < 2) return res.status(400).json({ error: { code: 'INVALID_BODY', message: 'At least two liveness steps must be completed' } });
+      const existing = await getFaceProfile(req.user!.uid);
+      if (existing) return res.status(409).json({ error: { code: 'FACE_ALREADY_ENROLLED', message: 'A face is already verified for this account and cannot be replaced. Contact support to reset it.' } });
+      const similarity = norm(b.passportSimilarity);
+      const liveness = norm(b.liveness);
+      if (liveness < faceMinLiveness()) return res.status(422).json({ error: { code: 'LIVENESS_FAILED', message: 'The liveness check did not pass. Try again in good light, following each instruction.' } });
+      if (similarity < faceMinSimilarity()) return res.status(422).json({ error: { code: 'FACE_MISMATCH', message: 'Your face does not match the photo in your passport closely enough.', similarity } });
+      const now = new Date().toISOString();
+      await saveFaceProfile({ uid: req.user!.uid, faceFeature: b.faceFeature, passportSimilarity: similarity, liveness, steps, enrolledAt: now, lastVerifiedAt: now, verifiedCount: 1 });
+      await appendAuditLog({ actor: req.user!.email ?? req.user!.uid, action: 'FACE_ENROLLED', resource: req.user!.uid, ip: req.ip ?? '?' });
+      res.status(201).json({ enrolled: true, verifiedBadge: true, passportSimilarity: similarity, enrolledAt: now });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // A returning check (new session or device) against the already-enrolled face.
+  app.post('/face/verified', requireAuth, async (req, res, next) => {
+    try {
+      const f = await getFaceProfile(req.user!.uid);
+      if (!f) throw notFound('No face enrolled');
+      const b = (req.body ?? {}) as { similarity?: unknown; liveness?: unknown };
+      if (typeof b.similarity !== 'number' || typeof b.liveness !== 'number') return res.status(400).json({ error: { code: 'INVALID_BODY', message: 'similarity and liveness are required numbers' } });
+      if (norm(b.liveness) < faceMinLiveness()) return res.status(422).json({ error: { code: 'LIVENESS_FAILED', message: 'The liveness check did not pass.' } });
+      if (norm(b.similarity) < faceMinSimilarity()) return res.status(422).json({ error: { code: 'FACE_MISMATCH', message: 'This face does not match the verified face on this account.' } });
+      const now = new Date().toISOString();
+      await saveFaceProfile({ ...f, lastVerifiedAt: now, verifiedCount: f.verifiedCount + 1 });
+      res.json({ verified: true, lastVerifiedAt: now });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  app.delete('/admin/face/:uid', requireAuth, requireRole('platform_admin'), async (req, res, next) => {
+    try {
+      const removed = await deleteFaceProfile(req.params.uid as string);
+      if (!removed) throw notFound('No face enrolled for that account');
+      await appendAuditLog({ actor: req.user!.email ?? req.user!.uid, action: 'FACE_RESET', resource: req.params.uid as string, ip: req.ip ?? '?' });
+      res.json({ uid: req.params.uid, reset: true });
+    } catch (err) {
+      next(err);
+    }
+  });
+
   // The caller's own appointments, newest first, with the consultant's name and the
   // application's destination joined in so a client can render a card without extra calls.
   app.get('/bookings', requireAuth, async (req, res, next) => {
@@ -770,6 +1089,7 @@ export function createApp(services: Services = createServices()) {
       const [all, apps] = await Promise.all([services.consultants.listBookings(), services.applications.listApplications(uid)]);
       const mine = all.filter((b) => b.userId === uid);
       const appById = new Map(apps.map((a) => [a.id, a]));
+      const sessionOptions = await services.consultants.listSessionOptions();
       const consultantIds = [...new Set(mine.map((b) => b.consultantId))];
       const consultants = new Map<string, { name: string; specialty: string } | null>();
       await Promise.all(consultantIds.map(async (id) => {
@@ -787,7 +1107,8 @@ export function createApp(services: Services = createServices()) {
           destinationCountry: appById.get(b.applicationId)?.destinationCountry ?? null,
           sessionType: b.sessionType,
           slotISO: b.slotISO ?? null,
-          createdAt: b.createdAt
+          createdAt: b.createdAt,
+          call: callInfo(b, sessionOptions)
         }))
       });
     } catch (err) {
@@ -1087,7 +1408,10 @@ export function createApp(services: Services = createServices()) {
       // surface the real owner's data in the consultant console.
       const owned = await services.applications.getApplication(req.body.applicationId, req.user!.uid);
       if (!owned) throw notFound('Application not found');
-      const grant = await services.accessGrants.createGrant({ ...req.body, grantedBy: req.user!.uid });
+      // acceptedTerms is validated (must be literally true) by the request schema; the server stamps
+      // when it was accepted so the consent is a real record, not a client-supplied claim.
+      const grant = await services.accessGrants.createGrant({ ...req.body, grantedBy: req.user!.uid, termsAcceptedAt: new Date().toISOString(), termsVersion: '2026-09' });
+      await appendAuditLog({ actor: req.user!.email ?? req.user!.uid, action: 'GRANT_CONSULTANT_ACCESS', resource: `${req.body.applicationId}:${req.body.consultantId}`, ip: req.ip ?? '?' });
       res.status(201).json(grant);
     } catch (err) {
       next(err);

@@ -47,6 +47,7 @@ import {
   WifiOff,
   Zap,
 } from 'lucide-react';
+import { DOC_GUIDES, HOW_TO_SECTIONS } from './guides';
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, NavLink, Navigate, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import LandingPage from './LandingPage';
@@ -127,6 +128,7 @@ const nav: { to: string; label: string; icon: typeof Home; roles?: string[] }[] 
   { to: '/upload', label: 'Upload', icon: Upload },
   { to: '/requirements', label: 'Requirements', icon: Globe2 },
   { to: '/chat', label: 'AI Assistant', icon: Bot },
+  { to: '/guide', label: 'How to use', icon: BookOpen },
   { to: '/consultants', label: 'Consultants', icon: Users },
   { to: '/consultant-console', label: 'Console', icon: MessageCircle, roles: ['consultant', 'platform_admin'] },
   { to: '/hr', label: 'HR portal', icon: LockKeyhole, roles: ['hr_admin', 'platform_admin'] },
@@ -268,6 +270,7 @@ export function App() {
           <Route path="/upload" element={<UploadFlow />} />
           <Route path="/audit/:docId" element={<AuditReport />} />
           <Route path="/requirements" element={<Requirements />} />
+          <Route path="/guide" element={<HowToUse />} />
           <Route path="/chat" element={<Chat />} />
           <Route path="/consultants" element={<Consultants />} />
           <Route path="/consultants/:id" element={<ConsultantProfile />} />
@@ -1456,6 +1459,53 @@ const DOCUMENT_TYPE_OPTIONS: { id: string; label: string; icon: typeof Upload }[
   { id: 'other',      label: 'Other supporting document',   icon: FileText },
 ];
 
+function DocGuideBlock({ kind }: { kind: string }) {
+  const g = DOC_GUIDES[kind] ?? DOC_GUIDES.other;
+  return (
+    <div>
+      <h2 style={{ marginTop: 0, fontSize: 16 }}>Before you upload — {g.title}</h2>
+      <p style={{ color: '#475569', fontSize: 13.5, margin: '4px 0 10px' }}>{g.intro}</p>
+      <ol style={{ margin: '0 0 12px', paddingLeft: 20, fontSize: 13.5, color: '#334155', lineHeight: 1.6 }}>
+        {g.steps.map((step) => <li key={step}>{step}</li>)}
+      </ol>
+      <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: 1, textTransform: 'uppercase', color: '#64748B', marginBottom: 4 }}>Avoid</div>
+      <ul style={{ margin: 0, paddingLeft: 20, fontSize: 13.5, color: '#B91C1C', lineHeight: 1.6 }}>
+        {g.avoid.map((item) => <li key={item}><span style={{ color: '#334155' }}>{item}</span></li>)}
+      </ul>
+    </div>
+  );
+}
+
+function HowToUse() {
+  return (
+    <section className="page">
+      <div className="page-title">
+        <div>
+          <p>Guide</p>
+          <h1>How to use Visa With Ease</h1>
+        </div>
+        <Link className="primary-button" to="/applications">Start an application</Link>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 16 }}>
+        {HOW_TO_SECTIONS.map((section) => (
+          <article className="panel" key={section.title}>
+            <h2 style={{ marginTop: 0, fontSize: 16 }}>{section.title}</h2>
+            <ul style={{ margin: 0, paddingLeft: 20, fontSize: 13.5, color: '#334155', lineHeight: 1.7 }}>
+              {section.items.map((item) => <li key={item}>{item}</li>)}
+            </ul>
+          </article>
+        ))}
+      </div>
+      <h2 style={{ fontSize: 18, margin: '24px 0 12px' }}>Document guides</h2>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 16 }}>
+        {Object.keys(DOC_GUIDES).filter((k) => k !== 'other').map((kind) => (
+          <article className="panel" key={kind}><DocGuideBlock kind={kind} /></article>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function UploadFlow() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -1577,6 +1627,11 @@ function UploadFlow() {
         </div>
         <Link className="primary-button" to={`/audit/${reportId}`}>View latest report</Link>
       </div>
+      {docType && DOC_GUIDES[docType] && (
+        <article className="panel" style={{ marginBottom: 16 }}>
+          <DocGuideBlock kind={docType} />
+        </article>
+      )}
       <div className="upload-layout">
         <article className="upload-drop">
           <Upload size={34} />

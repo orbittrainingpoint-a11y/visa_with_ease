@@ -206,6 +206,24 @@ test.describe('Requirements', () => {
   });
 });
 
+// ─── Guides ───────────────────────────────────────────────────────────────────
+
+test.describe('Guides', () => {
+  test.beforeEach(async ({ page }) => {
+    await loginAsDemo(page, 'consumer');
+  });
+
+  test('how-to page explains the app and has a guide for every document type', async ({ page }) => {
+    await page.goto('/guide');
+    await expect(page.getByRole('heading', { name: /how to use visa with ease/i })).toBeVisible();
+    await expect(page.getByText('What your score means')).toBeVisible();
+    for (const title of ['Passport photo page', 'Bank statement', 'Employment / student letter', 'Travel medical insurance', 'Flight & hotel reservation', 'Biometric photo']) {
+      await expect(page.getByText(new RegExp(`Before you upload — ${title}`)).first()).toBeVisible();
+    }
+    await assertNoUndefined(page);
+  });
+});
+
 // ─── Chat ─────────────────────────────────────────────────────────────────────
 
 test.describe('Chat', () => {

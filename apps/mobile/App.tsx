@@ -20,7 +20,7 @@ import {
   type ApiNotification, type ApiDocument, type ApiRequirement, type ApiMessage, type ApiConversationThread, type ApiAccessGrant,
 } from './src/api';
 import { GoogleSignin, statusCodes } from '@react-native-google-signin/google-signin';
-import { ActivityIndicator, Alert, Animated, BackHandler, Dimensions, Image, Keyboard, Linking, Platform, Pressable, ScrollView, StatusBar, StyleSheet, Text, TextInput, useWindowDimensions, View } from 'react-native';
+import { ActivityIndicator, Alert, Animated, BackHandler, Dimensions, Image, Keyboard, Linking, Platform, Pressable, ScrollView, StatusBar, Modal, StyleSheet, Text, TextInput, useWindowDimensions, View } from 'react-native';
 import { SafeAreaProvider, SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -65,7 +65,8 @@ for (const Comp of [Text, TextInput] as any[]) {
 import { getCacheSnapshot, clearCache } from './src/offlineCache';
 import { loadPreferences, savePreferences, DEFAULT_PREFERENCES, type SettingsPreferences } from './src/preferences';
 import { colors, scoreColor } from './src/theme';
-import { DOC_KIND_LABEL, judge, probeFrame, recognise, similarity, type DocKind, type OcrLike, type FaceLike, type Verdict } from './src/documentRecognition';
+import { HOW_TO_SECTIONS, TOUR_STEPS, hasSeenTour, markTourSeen, type TourTarget } from './src/tour';
+import { DOC_GUIDES, DOC_KIND_LABEL, judge, liveChecks, monthsUntil, parsePassportMrz, recognise, similarity, tokensOf, type DocKind, type FaceLike, type LiveCheck, type MrzResult, type OcrLike, type Verdict } from './src/documentRecognition';
 
 // ─── Device metrics — dynamic safe area support ───────────────────────────────
 // Status-bar / cutout / gesture-bar space always comes from safe-area insets (real
@@ -114,7 +115,7 @@ type Route =
   | { name: 'register' }
   | { name: 'verify'; email: string }
   | { name: 'forgotPassword' }
-  | { name: 'camera'; docType: string }
+  | { name: 'camera'; docType: string; uri?: string; mime?: string }
   | { name: 'liveAnalysis'; docTitle: string }
   | { name: 'profileHub' }
   | { name: 'visaWaiver' }
@@ -149,7 +150,8 @@ type Route =
   | { name: 'employeePortal' }
   | { name: 'adminOverview' }
   | { name: 'myMessages' }
-  | { name: 'accessGrants' };
+  | { name: 'accessGrants' }
+  | { name: 'howTo' };
 
 // ── Data normalizers (API → mobile display format) ────────────────────────────
 const STATUS_LABEL: Record<string, string> = {
@@ -284,6 +286,15 @@ function AppInner() {
     });
     return () => sub.remove();
   }, [route]);
+  // First-run tour: once per install, the first time the signed-in user lands on Home.
+  const [tourVisible, setTourVisible] = useState(false);
+  const tourChecked = useRef(false);
+  useEffect(() => {
+    if (!authUser || tourChecked.current || route.name !== 'tabs' || route.tab !== 'home') return;
+    tourChecked.current = true;
+    hasSeenTour().then((seen) => { if (!seen) setTourVisible(true); });
+  }, [authUser, route]);
+  const closeTour = useCallback(() => { setTourVisible(false); void markTourSeen(); }, []);
   const [loginError, setLoginError] = useState('');
   const [loginLoading, setLoginLoading] = useState(false);
   const [message, setMessage] = useState('');
@@ -342,7 +353,7 @@ function AppInner() {
     });
   }, []);
 
-  const activeTab = route.name === 'tabs' ? route.tab : route.name === 'application' ? 'apps' : route.name === 'newApp' ? 'apps' : route.name === 'upload' ? 'docs' : 'home';
+  const activeTab = route.name === 'tabs' ? route.tab : route.name === 'howTo' ? 'profile' : route.name === 'application' ? 'apps' : route.name === 'newApp' ? 'apps' : route.name === 'upload' ? 'docs' : 'home';
   const isChatRoute = route.name === 'tabs' && route.tab === 'chat';
   // Tab bar hides while the keyboard is up: it would otherwise sit between the
   // keyboard and the field/button being typed into, eating a fifth of the
@@ -612,6 +623,8 @@ function AppInner() {
       {route.name === 'camera' && (
         <CameraScreen
           docType={route.docType}
+          initialUri={route.uri}
+          initialMime={route.mime}
           back={() => setRoute({ name: 'upload', state: 'select' })}
           onCapture={(extractedText, imageBase64, mimeType) => {
             setPendingDocumentId(`doc-passport-${Date.now()}`);
@@ -777,6 +790,8 @@ function AppInner() {
             openBankBalance={() => setRoute({ name: 'bankBalance' })}
             openEmbassy={() => setRoute({ name: 'embassyFinder' })}
             openFaceVerification={() => setRoute({ name: 'faceVerification' })}
+            openHowTo={() => setRoute({ name: 'howTo' })}
+            startTour={() => setTourVisible(true)}
             openTimeline={() => setRoute({ name: 'timelineTracker' })}
             openComparison={() => setRoute({ name: 'countryComparison' })}
             openVisaWaiver={() => setRoute({ name: 'visaWaiver' })}
@@ -843,10 +858,11 @@ function AppInner() {
             openNewApplication={() => setRoute({ name: 'newApp', step: 0 })}
             back={() => setRoute({ name: 'tabs', tab: 'docs' })}
             onCamera={(docType) => setRoute({ name: 'camera', docType })}
+            onReview={(docType, uri, mime) => setRoute({ name: 'camera', docType, uri, mime })}
             onPicked={(documentType, extractedText, imageBase64, mimeType) => { setPendingDocType(documentType); setPendingExtractedText(extractedText); setPendingImageBase64(imageBase64); setPendingMimeType(mimeType); }}
             next={(documentId) => {
               if (documentId) setPendingDocumentId(documentId);
-              const nextState = route.state === 'select' ? 'uploading' : route.state === 'uploading' ? 'auditing' : 'done';
+              const nextState = route.state === 'select' ? 'uploading' : 'done';
               setRoute(nextState === 'done' ? { name: 'liveAnalysis', docTitle: 'Document' } : { name: 'upload', state: nextState });
             }}
           />
@@ -994,6 +1010,7 @@ function AppInner() {
             setStickyFooter={setStickyFooter}
           />
         )}
+        {route.name === 'howTo' && <HowToUseScreen back={() => setRoute({ name: 'tabs', tab: 'profile' })} startTour={() => setTourVisible(true)} />}
         {route.name === 'verify' && <VerifyEmailScreen email={route.email} onDone={() => setRoute({ name: 'onboarding', step: 0 })} />}
       </ScrollView>
       )}
@@ -1025,6 +1042,19 @@ function AppInner() {
         </View>
       )}
       </View>
+      <AppTour
+        visible={tourVisible}
+        onClose={closeTour}
+        onGo={(target: TourTarget) => {
+          closeTour();
+          if (target === 'newApp') setRoute({ name: 'newApp', step: 0 });
+          else if (target === 'requirements') setRoute({ name: 'requirements' });
+          else if (target === 'upload') setRoute({ name: 'upload', state: 'select' });
+          else if (target === 'chat') setRoute({ name: 'tabs', tab: 'chat' });
+          else if (target === 'consultants') setRoute({ name: 'consultants' });
+          else setRoute({ name: 'howTo' });
+        }}
+      />
     </SafeAreaView>
   );
 }
@@ -1786,7 +1816,7 @@ const DOCUMENT_TYPE_OPTIONS: { id: string; label: string; icon: IoniconName }[] 
   { id: 'other',      label: 'Other supporting document',   icon: 'document-outline' },
 ];
 
-function UploadScreen({ state, activeApplicationId, openNewApplication, back, next, onCamera, onPicked }: {
+function UploadScreen({ state, activeApplicationId, openNewApplication, back, next, onCamera, onReview, onPicked }: {
   state: 'select' | 'uploading' | 'auditing' | 'done';
   activeApplicationId?: string;
   openNewApplication: () => void;
@@ -1794,6 +1824,8 @@ function UploadScreen({ state, activeApplicationId, openNewApplication, back, ne
   next: (documentId?: string) => void;
   onCamera?: (docType: string) => void;
   onPicked: (documentType: string, extractedText?: string, imageBase64?: string, mimeType?: string) => void;
+  /** Images go to the same review screen as a camera capture (verdict + parsed passport data) before upload. */
+  onReview?: (documentType: string, uri: string, mimeType: string) => void;
 }) {
   const [docType, setDocType] = useState<string | null>(null);
   const copy: Record<typeof state, [string, string]> = {
@@ -1822,25 +1854,7 @@ function UploadScreen({ state, activeApplicationId, openNewApplication, back, ne
       const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ImagePicker.MediaTypeOptions.Images, quality: 0.9 });
       if (result.canceled || !result.assets?.[0]) return;
       const asset = result.assets[0];
-      const mimeType = asset.mimeType || 'image/jpeg';
-      // Real on-device OCR (Google ML Kit) on the picked image — not simulated.
-      // A failure here is a legitimate "couldn't read this" signal, not hidden.
-      let extractedText: string | undefined;
-      let ocrBlocks: OcrLike['blocks'];
-      try {
-        const { default: TextRecognition } = await import('@react-native-ml-kit/text-recognition');
-        const ocr = await TextRecognition.recognize(asset.uri);
-        extractedText = ocr?.text?.trim() || undefined;
-        ocrBlocks = ocr?.blocks;
-      } catch { /* extractedText stays undefined — backend treats this honestly */ }
-      // The real file bytes — lets the backend run actual AI vision on it.
-      let imageBase64: string | undefined;
-      try {
-        imageBase64 = await FileSystem.readAsStringAsync(asset.uri, { encoding: FileSystem.EncodingType.Base64 });
-      } catch { /* imageBase64 stays undefined — falls back to OCR-text analysis */ }
-      if (docType && !(await confirmDocumentMatch(docType, extractedText ? { text: extractedText, blocks: ocrBlocks } : null))) return;
-      onPicked(docType ?? 'other', extractedText, imageBase64, mimeType);
-      next(slugifyDocumentId(asset.fileName));
+      onReview?.(docType ?? 'other', asset.uri, asset.mimeType || 'image/jpeg');
     } catch { next(); }
   };
   const pickDocument = async () => {
@@ -1850,6 +1864,7 @@ function UploadScreen({ state, activeApplicationId, openNewApplication, back, ne
       const asset = result.assets[0];
       const isImage = /\.(jpe?g|png|heic)$/i.test(asset.name ?? '') || (asset.mimeType?.startsWith('image/') ?? false);
       const mimeType = asset.mimeType || (isImage ? 'image/jpeg' : 'application/pdf');
+      if (isImage && onReview) { onReview(docType ?? 'other', asset.uri, mimeType); return; }
       // On-device OCR only runs on images — PDFs skip straight to the real
       // file bytes below, which Gemini can read directly (including PDFs).
       let extractedText: string | undefined;
@@ -1914,17 +1929,20 @@ function UploadScreen({ state, activeApplicationId, openNewApplication, back, ne
           ))}
         </Section>
       )}
+      {state === 'select' && !!docType && (
+        <Section title={`Before you scan or upload — ${DOC_GUIDES[toDocKind(docType)].title}`}>
+          <DocGuideCard kind={toDocKind(docType)} />
+        </Section>
+      )}
       {state !== 'select' && (
+        // Nothing has been analysed yet at this step, so nothing is claimed as done.
         <View style={styles.timelineCard}>
-          {['File received and encrypted', 'OCR text extracted', 'Identity fields compared', 'Visa rules checked', 'Validated findings published'].map((item, index) => {
-            const done = index < 2 || state === 'auditing' || state === 'done';
-            return <TaskRow key={item} title={item} meta={done ? 'Complete' : 'Pending'} done={done} />;
-          })}
+          <TaskRow title="File ready" meta="The audit reads your file and checks it against this application's requirements when you start it." />
         </View>
       )}
       {state !== 'select' && (
         <Pressable style={styles.primaryButton} onPress={() => next()}>
-          <Text style={styles.primaryButtonText}>{state === 'uploading' ? 'Start audit' : 'View report'}</Text>
+          <Text style={styles.primaryButtonText}>Start audit</Text>
         </Pressable>
       )}
     </View>
@@ -2936,6 +2954,7 @@ function ProfileScreen({
   authUser, openSettings, openConsultants, openConsole, openHr, openEmployee, openAdmin,
   openCalculator, openBankBalance, openEmbassy, openFaceVerification, openTimeline, openComparison,
   openVisaWaiver, openRejectionAnalyzer, openProfileHub, openProTier, openPartners, openMyMessages, openAccessGrants, onSignOut,
+  openHowTo, startTour,
 }: {
   authUser: AuthUser | null;
   openSettings: () => void; openConsultants: () => void; openConsole: () => void;
@@ -2944,6 +2963,7 @@ function ProfileScreen({
   openTimeline: () => void; openComparison: () => void;
   openVisaWaiver: () => void; openRejectionAnalyzer: () => void; openProfileHub: () => void; openProTier: () => void;
   openPartners: () => void; openMyMessages: () => void; openAccessGrants: () => void; onSignOut: () => void;
+  openHowTo: () => void; startTour: () => void;
 }) {
   const confirmSignOut = () => {
     Alert.alert('Sign out', 'Are you sure you want to sign out?', [
@@ -2971,6 +2991,22 @@ function ProfileScreen({
       <Section title="Account">
         <Finding title="Email" meta={authUser?.email ?? '—'} />
         <Finding title="Account ID" meta={authUser?.uid ?? '—'} />
+      </Section>
+      <Section title="Help and guides">
+        {([
+          ['compass-outline', 'Take a tour of the app', startTour, colors.royal600],
+          ['book-outline', 'How to use Visa With Ease', openHowTo, colors.teal500],
+        ] as [IoniconName, string, () => void, string][]).map(([icon, label, onPress, color]) => (
+          <Pressable key={label} style={styles.taskRow} onPress={onPress}>
+            <View style={[styles.quickIconBox, { backgroundColor: `${color}18`, width: 36, height: 36 }]}>
+              <Ionicons name={icon} size={18} color={color} />
+            </View>
+            <View style={styles.flex}>
+              <Text style={styles.rowTitle}>{label}</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color={colors.slate300} />
+          </Pressable>
+        ))}
       </Section>
       <Section title="AI Tools">
         {tools.map(([icon, label, onPress, color]) => (
@@ -5283,9 +5319,77 @@ function confirmDocumentMatch(docTypeId: string, ocr: OcrLike | null): Promise<b
   });
 }
 
-function CameraScreen({ docType, back, onCapture }: { docType: string; back: () => void; onCapture: (extractedText?: string, imageBase64?: string, mimeType?: string) => void }) {
+/** Numbered how-to for one document type — used before scanning and before uploading. */
+function DocGuideCard({ kind, dark }: { kind: DocKind; dark?: boolean }) {
+  const guide = DOC_GUIDES[kind];
+  const text = dark ? 'rgba(255,255,255,0.9)' : colors.slate700;
+  const muted = dark ? 'rgba(255,255,255,0.6)' : colors.slate500;
+  return (
+    <View style={{ gap: 10 }}>
+      <Text style={{ color: muted, fontSize: 13, lineHeight: 19 }}>{guide.intro}</Text>
+      {guide.steps.map((step, i) => (
+        <View key={i} style={{ flexDirection: 'row', gap: 10, alignItems: 'flex-start' }}>
+          <View style={{ width: 22, height: 22, borderRadius: 11, backgroundColor: dark ? 'rgba(255,255,255,0.16)' : colors.royal50, alignItems: 'center', justifyContent: 'center', marginTop: 1 }}>
+            <Text style={{ color: dark ? '#fff' : colors.royal600, fontSize: 11, fontWeight: '900' }}>{i + 1}</Text>
+          </View>
+          <Text style={{ flex: 1, color: text, fontSize: 13.5, lineHeight: 19 }}>{step}</Text>
+        </View>
+      ))}
+      <View style={{ height: 1, backgroundColor: dark ? 'rgba(255,255,255,0.14)' : colors.slate100, marginVertical: 2 }} />
+      <Text style={{ color: muted, fontSize: 11, fontWeight: '900', letterSpacing: 1, textTransform: 'uppercase' }}>Avoid</Text>
+      {guide.avoid.map((item, i) => (
+        <View key={i} style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
+          <Ionicons name="close-circle" size={16} color="#F87171" />
+          <Text style={{ flex: 1, color: text, fontSize: 13, lineHeight: 18 }}>{item}</Text>
+        </View>
+      ))}
+    </View>
+  );
+}
+
+/** What was actually read from the passport's machine-readable zone, with the checks that back it. */
+function PassportDetailsCard({ mrz }: { mrz: MrzResult }) {
+  const f = mrz.fields;
+  const months = f.expiryDate ? monthsUntil(f.expiryDate) : null;
+  const validity = months === null
+    ? { text: 'Expiry unreadable', color: '#F59E0B' }
+    : months < 0 ? { text: 'Expired', color: '#F87171' }
+      : months < 6 ? { text: `Expires in ${months} month${months === 1 ? '' : 's'} — many countries need 6+`, color: '#F59E0B' }
+        : { text: `Valid for ${months >= 24 ? `${Math.floor(months / 12)} years` : `${months} months`}`, color: '#34D399' };
+  const rows: Array<[string, string]> = [
+    ['Name', `${f.givenNames} ${f.surname}`.trim() || '—'],
+    ['Passport no.', f.documentNumber || '—'],
+    ['Nationality', f.nationality || '—'],
+    ['Date of birth', f.birthDate ?? '—'],
+    ['Expiry', f.expiryDate ?? '—'],
+  ];
+  return (
+    <View style={{ backgroundColor: 'rgba(11,31,75,0.92)', borderRadius: 16, padding: 14, gap: 6 }}>
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 2 }}>
+        <Ionicons name="id-card-outline" size={16} color="#93C5FD" />
+        <Text style={{ color: '#fff', fontWeight: '900', fontSize: 13, flex: 1 }}>Read from your passport</Text>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+          <Ionicons name={mrz.valid ? 'shield-checkmark' : 'alert-circle'} size={14} color={mrz.valid ? '#34D399' : '#F59E0B'} />
+          <Text style={{ color: mrz.valid ? '#34D399' : '#F59E0B', fontSize: 11, fontWeight: '800' }}>{mrz.valid ? (mrz.checks.personalNumber === null || mrz.checks.composite === null ? 'Key checksums valid' : 'Checksums valid') : 'Some characters unclear'}</Text>
+        </View>
+      </View>
+      {rows.map(([k, v]) => (
+        <View key={k} style={{ flexDirection: 'row', justifyContent: 'space-between', gap: 12 }}>
+          <Text style={{ color: 'rgba(255,255,255,0.55)', fontSize: 12 }}>{k}</Text>
+          <Text style={{ color: '#fff', fontSize: 12.5, fontWeight: '700', flexShrink: 1, textAlign: 'right' }}>{v}</Text>
+        </View>
+      ))}
+      <Text style={{ color: validity.color, fontSize: 12, fontWeight: '800', marginTop: 4 }}>{validity.text}</Text>
+      {!mrz.valid && <Text style={{ color: 'rgba(255,255,255,0.6)', fontSize: 11 }}>A check digit did not match, so a character was probably misread. Retake in sharper light for an exact reading.</Text>}
+    </View>
+  );
+}
+
+function CameraScreen({ docType, back, onCapture, initialUri, initialMime }: { docType: string; back: () => void; onCapture: (extractedText?: string, imageBase64?: string, mimeType?: string) => void; initialUri?: string; initialMime?: string }) {
   const insets = useSafeAreaInsets();
+  const { height: winH } = useWindowDimensions();
   const docKind = toDocKind(docType);
+  const guide = DOC_GUIDES[docKind];
   const docLabel = DOC_KIND_LABEL[docKind];
   const [permission, requestPermission] = useCameraPermissions();
   const [flash, setFlash] = useState<'off' | 'on'>('off');
@@ -5293,28 +5397,45 @@ function CameraScreen({ docType, back, onCapture }: { docType: string; back: () 
   const [captured, setCaptured] = useState<string | null>(null);
   const [analysing, setAnalysing] = useState(false);
   const [verdict, setVerdict] = useState<Verdict | null>(null);
+  const [mrzRead, setMrzRead] = useState<MrzResult | null>(null);
   const [checkUnavailable, setCheckUnavailable] = useState(false);
   const [detectedText, setDetectedText] = useState('');
   const [imageBase64, setImageBase64] = useState<string | undefined>(undefined);
   const [auto, setAuto] = useState(true);
-  const [liveHint, setLiveHint] = useState('Align the document within the frame');
-  const [liveReady, setLiveReady] = useState(false);
+  const [showGuide, setShowGuide] = useState(true);
   const [capturing, setCapturing] = useState(false);
+  const [captureError, setCaptureError] = useState<string | null>(null);
   // Bumping this remounts the camera view, which drops any picture request a
   // background preview probe left hanging on the native side.
   const [cameraKey, setCameraKey] = useState(0);
-  const [captureError, setCaptureError] = useState<string | null>(null);
+  const [liveHint, setLiveHint] = useState('Point the camera at the document');
+  const [liveChecksState, setLiveChecksState] = useState<LiveCheck[]>([]);
+  const [liveReady, setLiveReady] = useState(false);
+  const [streak, setStreak] = useState(0);
   const cameraRef = useRef<CameraView>(null);
   const busyRef = useRef(false);
+  // A picture requested before the camera reports ready (right after mounting or a
+  // reset) can hang forever, so capture waits for this — and never waits unbounded.
+  const readyRef = useRef(false);
+  const waitForCamera = async (ms: number) => {
+    for (let waited = 0; !readyRef.current && waited < ms; waited += 100) await new Promise((r) => setTimeout(r, 100));
+  };
+  const resetCamera = () => { readyRef.current = false; setCameraKey((k) => k + 1); };
+  const withTimeout = <T,>(work: Promise<T>, ms: number, label: string): Promise<T> =>
+    Promise.race([work, new Promise<never>((_, reject) => setTimeout(() => reject(new Error(label)), ms))]);
 
-  // Frame shape follows the document: landscape card for passport/ID, tall
-  // page for letters and statements, portrait for a face photo.
-  const frameW = docKind === 'photo' ? SCAN_BOX * 0.72 : ['passport', 'other'].includes(docKind) ? SCAN_BOX : SCAN_BOX * 0.82;
-  const frameH = docKind === 'photo' ? frameW * 1.3 : docKind === 'passport' ? SCAN_BOX * 0.7 : docKind === 'other' ? SCAN_BOX * 0.75 : frameW * 1.3;
+  // Frame shape follows the document, and is capped so the checklist and the
+  // shutter always fit on short screens instead of being pushed off.
+  const maxFrameH = Math.max(150, winH - insets.top - insets.bottom - 470);
+  const wantW = guide.frame === 'face' ? SCAN_BOX * 0.7 : guide.frame === 'landscape' ? SCAN_BOX : SCAN_BOX * 0.78;
+  const wantH = guide.frame === 'face' ? wantW * 1.3 : guide.frame === 'landscape' ? SCAN_BOX * 0.7 : wantW * 1.3;
+  const frameH = Math.min(wantH, maxFrameH);
+  const frameW = wantH > maxFrameH ? wantW * (maxFrameH / wantH) : wantW;
 
   const analyse = async (uri: string) => {
     setAnalysing(true);
     setVerdict(null);
+    setMrzRead(null);
     setCheckUnavailable(false);
     try {
       setImageBase64(await FileSystem.readAsStringAsync(uri, { encoding: FileSystem.EncodingType.Base64 }));
@@ -5325,8 +5446,6 @@ function CameraScreen({ docType, back, onCapture }: { docType: string; back: () 
       const { default: TextRecognition } = await import('@react-native-ml-kit/text-recognition');
       const ocr = await TextRecognition.recognize(uri);
       setDetectedText((ocr?.text ?? '').trim());
-      // Faces matter for the passport photo and the biometric photo; skip the
-      // extra native call for document types that have none.
       let faces: FaceLike[] = [];
       if (docKind === 'photo' || docKind === 'passport') {
         try {
@@ -5334,7 +5453,16 @@ function CameraScreen({ docType, back, onCapture }: { docType: string; back: () 
           faces = await FaceDetection.detect(uri, { performanceMode: 'fast', minFaceSize: 0.05 });
         } catch { /* face check unavailable — text signals still apply */ }
       }
-      setVerdict(judge(docKind, recognise(ocr, faces)));
+      let result = judge(docKind, recognise(ocr, faces));
+      if (docKind === 'passport') {
+        const parsed = parsePassportMrz(ocr?.text ?? '');
+        setMrzRead(parsed);
+        // An expired passport is a hard stop for an application — say so instead of a plain tick.
+        if (parsed?.fields.expiryDate && monthsUntil(parsed.fields.expiryDate) < 0) {
+          result = { status: 'mismatch', title: 'This passport has expired', detail: `It expired on ${parsed.fields.expiryDate}. A valid passport is needed to apply — use a current one.` };
+        }
+      }
+      setVerdict(result);
     } catch {
       setCheckUnavailable(true);
     } finally {
@@ -5346,15 +5474,17 @@ function CameraScreen({ docType, back, onCapture }: { docType: string; back: () 
     if (!cameraRef.current || busyRef.current) return;
     busyRef.current = true;
     try {
-      // A preview probe taken a moment earlier can leave the camera busy for a
-      // beat, so one automatic retry keeps the first tap from being lost.
+      // Up to three attempts: each waits for the camera to be ready and gives up after
+      // 15s, then resets the camera view — a hung request can never freeze the screen.
       let uri: string | null = null;
-      for (let attempt = 0; attempt < 2 && !uri; attempt++) {
+      for (let attempt = 0; attempt < 3 && !uri; attempt++) {
         try {
-          const photo = await cameraRef.current?.takePictureAsync({ quality: 0.85, base64: false });
+          await waitForCamera(6000);
+          const photo = await withTimeout(cameraRef.current!.takePictureAsync({ quality: 0.85, base64: false }), 15000, 'capture timeout');
           uri = photo?.uri ?? null;
         } catch {
-          await new Promise((r) => setTimeout(r, 600));
+          resetCamera();
+          await new Promise((r) => setTimeout(r, 900));
         }
       }
       if (!uri) {
@@ -5370,41 +5500,47 @@ function CameraScreen({ docType, back, onCapture }: { docType: string; back: () 
   };
 
   // Manual shutter: stop the auto loop, let any in-flight preview probe finish
-  // (it holds the camera), then take the real shot — a tap is never dropped.
+  // (it holds the camera), and reset the camera if it doesn't — a tap is never dropped.
   const onShutter = async () => {
     if (capturing) return;
     setCapturing(true);
     setCaptureError(null);
     setAuto(false);
-    // A preview probe may still hold the camera: give it a moment to finish, and
-    // if it doesn't, reset the camera rather than queue behind a request that may never return.
     for (let waited = 0; busyRef.current && waited < 2500; waited += 150) await new Promise((r) => setTimeout(r, 150));
-    if (busyRef.current) {
-      busyRef.current = false;
-      setCameraKey((k) => k + 1);
-      await new Promise((r) => setTimeout(r, 1200));
-    }
+    busyRef.current = false; // a probe that will not finish must not block the user's own shutter press
     await capturePhoto();
     setCapturing(false);
   };
 
+  // A picked photo/file skips the live camera and goes straight to the same review.
+  useEffect(() => {
+    if (!initialUri) return;
+    setShowGuide(false);
+    setAuto(false);
+    setCaptured(initialUri);
+    void analyse(initialUri);
+  }, [initialUri]);
+
   const retake = () => {
+    if (initialUri) { back(); return; } // picked file: "retake" means choose another
+    readyRef.current = false;
     setAuto(true);
     setCaptureError(null);
-    setCaptured(null); setVerdict(null); setCheckUnavailable(false); setDetectedText(''); setImageBase64(undefined);
-    setLiveReady(false); setLiveHint('Align the document within the frame');
+    setCaptured(null); setVerdict(null); setMrzRead(null); setCheckUnavailable(false); setDetectedText(''); setImageBase64(undefined);
+    setLiveReady(false); setStreak(0); setLiveChecksState([]); setLiveHint('Point the camera at the document');
   };
 
-  // Auto-capture: every ~1s grab a small preview frame, run the same on-device
-  // recognition as the post-capture check, and fire the real shutter once the
-  // SAME recognisable document has been in frame for two frames in a row.
-  // Manual shutter stays available the whole time.
+  // Live detection, like a dedicated scanner app: about twice a second a small
+  // preview frame is read on-device and scored against this document's own
+  // checklist. The shutter fires by itself once EVERY required check has held
+  // for two frames in a row (the same page, not a passing glance) — the
+  // multi-frame confirmation that stops flicker triggering a blurry shot.
   useEffect(() => {
-    if (!permission?.granted || captured || !auto) return;
+    if (!permission?.granted || captured || !auto || showGuide) return;
     let stopped = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let prev: Set<string> | null = null;
-    let streak = 0;
+    let run = 0;
     let failures = 0;
 
     const tick = async () => {
@@ -5412,50 +5548,68 @@ function CameraScreen({ docType, back, onCapture }: { docType: string; back: () 
       try {
         if (cameraRef.current && !busyRef.current) {
           busyRef.current = true;
-          let probe: ReturnType<typeof probeFrame> | undefined;
+          let outcome: { checks: LiveCheck[]; ready: boolean; hint: string; tokens: Set<string> } | undefined;
           try {
-            const shot = await Promise.race([
-              cameraRef.current.takePictureAsync({ quality: 0.3, base64: false, shutterSound: false }),
-              new Promise<never>((_, reject) => setTimeout(() => reject(new Error('probe timeout')), 8000)),
-            ]);
+            await waitForCamera(3000);
+            if (!readyRef.current) return;
+            const shot = await withTimeout(cameraRef.current.takePictureAsync({ quality: 0.3, base64: false, shutterSound: false }), 8000, 'probe timeout');
             if (stopped || !shot?.uri) return;
             const { default: TextRecognition } = await import('@react-native-ml-kit/text-recognition');
             const ocr = await TextRecognition.recognize(shot.uri);
             let faces: FaceLike[] = [];
-            if (docKind === 'photo') {
-              const { default: FaceDetection } = await import('@react-native-ml-kit/face-detection');
-              faces = await FaceDetection.detect(shot.uri, { performanceMode: 'fast', minFaceSize: 0.05 });
+            if (docKind === 'photo' || docKind === 'passport') {
+              try {
+                const { default: FaceDetection } = await import('@react-native-ml-kit/face-detection');
+                faces = await FaceDetection.detect(shot.uri, { performanceMode: 'fast', minFaceSize: 0.05 });
+              } catch { /* face detection optional for passports */ }
             }
-            probe = probeFrame(docKind, ocr, faces, { width: shot.width, height: shot.height });
+            const size = { width: shot.width, height: shot.height };
+            const rec = recognise(ocr, faces, size);
+            const mrz = docKind === 'passport' ? parsePassportMrz(ocr?.text ?? '') : null;
+            const checks = liveChecks(docKind, rec, faces, size, mrz);
+            const failing = checks.find((c) => !c.optional && !c.ok);
+            const wrongKind = rec.kind !== 'unknown' && rec.kind !== 'photo' && docKind !== 'other' && docKind !== 'photo' && rec.kind !== docKind;
+            outcome = {
+              checks,
+              ready: !failing && rec.textLength >= 15 || (docKind === 'photo' && !failing),
+              hint: rec.textLength < 15 && docKind !== 'photo'
+                ? 'Point the camera at the document — more light or closer'
+                : wrongKind ? `This looks like a ${DOC_KIND_LABEL[rec.kind as DocKind]} — not a ${docLabel}` : failing ? failing.hint : 'Hold steady…',
+              tokens: tokensOf(ocr?.text ?? ''),
+            };
           } finally {
             busyRef.current = false;
           }
-          if (stopped || !probe) return;
+          if (stopped || !outcome) return;
           failures = 0;
-          setLiveHint(probe.hint);
-          setLiveReady(probe.ready);
-          if (probe.ready) {
-            const same = prev !== null && (docKind === 'photo' || similarity(prev, probe.tokens) >= 0.5);
-            streak = same ? streak + 1 : 1;
-            prev = probe.tokens;
-            if (streak >= 2) { stopped = true; await capturePhoto(); return; }
+          setLiveChecksState(outcome.checks);
+          setLiveHint(outcome.hint);
+          setLiveReady(outcome.ready);
+          if (outcome.ready) {
+            const same = prev !== null && (docKind === 'photo' || similarity(prev, outcome.tokens) >= 0.5);
+            run = same ? run + 1 : 1;
+            prev = outcome.tokens;
+            setStreak(run);
+            if (run >= 2) { stopped = true; await capturePhoto(); return; }
           } else {
-            streak = 0; prev = null;
+            run = 0; prev = null; setStreak(0);
           }
         }
-      } catch {
+      } catch (err) {
         failures += 1;
+        // A probe that hangs leaves the camera wedged; reset it so scanning (and the shutter) recover.
+        if (err instanceof Error && err.message === 'probe timeout') { resetCamera(); return; }
         if (failures >= 3) {
           setLiveHint('Auto-detect unavailable — tap the shutter to capture');
           setAuto(false);
           return;
         }
       }
-      if (!stopped) timer = setTimeout(tick, 900);
+      if (!stopped) timer = setTimeout(tick, 500);
     };
-    timer = setTimeout(tick, 1200);
+    timer = setTimeout(tick, 900);
     return () => { stopped = true; if (timer) clearTimeout(timer); };
-  }, [permission?.granted, captured, auto, docKind, facing]);
+  }, [permission?.granted, captured, auto, showGuide, docKind, facing, cameraKey]);
 
   if (!permission) return <View style={{ flex: 1, backgroundColor: '#000', alignItems: 'center', justifyContent: 'center' }}><ActivityIndicator color="#fff" /></View>;
   if (!permission.granted) {
@@ -5467,12 +5621,12 @@ function CameraScreen({ docType, back, onCapture }: { docType: string; back: () 
         <Pressable style={[styles.primaryButton, { width: '100%' }]} onPress={requestPermission}>
           <Text style={styles.primaryButtonText}>Allow camera</Text>
         </Pressable>
-        <Pressable onPress={back}><Text style={{ color: 'rgba(255,255,255,0.5)', fontWeight: '700' }}>Cancel</Text></Pressable>
+        <Pressable onPress={back}><Text style={{ color: 'rgba(255,255,255,0.5)', fontWeight: '700' }}>Upload a file instead</Text></Pressable>
       </View>
     );
   }
 
-  const frameColor = liveReady ? '#10B981' : '#0EA5E9';
+  const frameColor = liveReady ? '#10B981' : liveChecksState.some((c) => c.ok) ? '#38BDF8' : 'rgba(255,255,255,0.9)';
   const verdictTone = verdict?.status === 'match'
     ? { bg: 'rgba(16,185,129,0.95)', icon: 'checkmark-circle' as IoniconName }
     : verdict?.status === 'mismatch'
@@ -5483,73 +5637,126 @@ function CameraScreen({ docType, back, onCapture }: { docType: string; back: () 
   return (
     <View style={{ flex: 1, backgroundColor: '#000' }}>
       <StatusBar barStyle="light-content" />
-      {/* Camera viewfinder */}
       {!captured ? (
-        <CameraView key={cameraKey} ref={cameraRef} style={{ flex: 1 }} facing={facing} flash={facing === 'back' ? flash : 'off'}>
+        // The preview is a plain sibling behind the UI, not the parent of it: UI drawn as
+        // children of the camera surface can keep stale pixels (e.g. a dismissed
+        // overlay's dimming) on some devices.
+        <View style={{ flex: 1 }}>
+        <CameraView key={cameraKey} ref={cameraRef} style={StyleSheet.absoluteFillObject} facing={facing} flash={facing === 'back' ? flash : 'off'} onCameraReady={() => { readyRef.current = true; }} />
+        <View style={{ flex: 1 }} pointerEvents="box-none">
           {/* Top bar */}
           <View style={{ flexDirection: 'row', alignItems: 'center', padding: 16, gap: 8 }}>
-            <Pressable onPress={back} style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(0,0,0,0.4)', alignItems: 'center', justifyContent: 'center' }}>
+            <Pressable onPress={back} accessibilityLabel="Close scanner" style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(0,0,0,0.5)', alignItems: 'center', justifyContent: 'center' }}>
               <Ionicons name="arrow-back" size={22} color="#fff" />
             </Pressable>
             <View style={{ flex: 1, alignItems: 'center' }}>
               <Text style={{ color: '#fff', fontWeight: '900', fontSize: 15, backgroundColor: 'rgba(0,0,0,0.55)', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 14, overflow: 'hidden' }} numberOfLines={1}>Scan {docLabel}</Text>
             </View>
-            <Pressable onPress={() => setFacing(f => f === 'back' ? 'front' : 'back')} style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(0,0,0,0.4)', alignItems: 'center', justifyContent: 'center' }}>
-              <Ionicons name="camera-reverse-outline" size={22} color="#fff" />
-            </Pressable>
-            <Pressable onPress={() => setFlash(f => f === 'off' ? 'on' : 'off')} style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(0,0,0,0.4)', alignItems: 'center', justifyContent: 'center' }}>
+            {facing === 'front' || docKind === 'photo' ? (
+              <Pressable onPress={() => { readyRef.current = false; setFacing((f) => (f === 'back' ? 'front' : 'back')); }} accessibilityLabel="Switch camera" style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(0,0,0,0.5)', alignItems: 'center', justifyContent: 'center' }}>
+                <Ionicons name="camera-reverse-outline" size={22} color="#fff" />
+              </Pressable>
+            ) : null}
+            <Pressable onPress={() => setFlash((f) => (f === 'off' ? 'on' : 'off'))} accessibilityLabel="Toggle flash" style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(0,0,0,0.5)', alignItems: 'center', justifyContent: 'center' }}>
               <Ionicons name={flash === 'on' ? 'flash' : 'flash-off'} size={20} color={flash === 'on' ? '#F59E0B' : '#fff'} />
             </Pressable>
           </View>
-          {/* Live guidance — says what the scanner sees right now */}
+          {/* Live guidance — what the scanner sees right now */}
           <View style={{ alignItems: 'center', paddingHorizontal: 20 }}>
-            <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center', backgroundColor: liveReady ? 'rgba(16,185,129,0.92)' : 'rgba(0,0,0,0.6)', paddingHorizontal: 14, paddingVertical: 8, borderRadius: 20, maxWidth: '100%' }}>
+            <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center', backgroundColor: liveReady ? 'rgba(16,185,129,0.92)' : 'rgba(0,0,0,0.62)', paddingHorizontal: 14, paddingVertical: 8, borderRadius: 20, maxWidth: '100%' }}>
               <Ionicons name={liveReady ? 'checkmark-circle' : 'scan-outline'} size={16} color="#fff" />
               <Text style={{ color: '#fff', fontWeight: '700', fontSize: 12.5, flexShrink: 1 }}>{capturing ? 'Capturing…' : captureError ?? (auto ? liveHint : 'Auto-capture off — tap the shutter')}</Text>
             </View>
           </View>
           {/* Frame guide */}
           <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
-            <View style={{ width: frameW, height: frameH, position: 'relative' }}>
-              {[[-1,-1],[-1,1],[1,-1],[1,1]].map(([h,v], i) => (
-                <View key={i} style={{ position: 'absolute', top: v < 0 ? 0 : undefined, bottom: v > 0 ? 0 : undefined, left: h < 0 ? 0 : undefined, right: h > 0 ? 0 : undefined, width: 28, height: 28, borderTopWidth: v < 0 ? 4 : 0, borderBottomWidth: v > 0 ? 4 : 0, borderLeftWidth: h < 0 ? 4 : 0, borderRightWidth: h > 0 ? 4 : 0, borderColor: frameColor, borderRadius: 4 }} />
+            <View style={{ width: frameW, height: frameH, position: 'relative', alignItems: 'center', justifyContent: 'flex-end' }}>
+              {[[-1, -1], [-1, 1], [1, -1], [1, 1]].map(([h, v], i) => (
+                <View key={i} style={{ position: 'absolute', top: v < 0 ? 0 : undefined, bottom: v > 0 ? 0 : undefined, left: h < 0 ? 0 : undefined, right: h > 0 ? 0 : undefined, width: 30, height: 30, borderTopWidth: v < 0 ? 4 : 0, borderBottomWidth: v > 0 ? 4 : 0, borderLeftWidth: h < 0 ? 4 : 0, borderRightWidth: h > 0 ? 4 : 0, borderColor: frameColor, borderRadius: 5 }} />
               ))}
+              {guide.frame === 'face' && (
+                <View style={{ position: 'absolute', top: '8%', bottom: '8%', left: '12%', right: '12%', borderRadius: 999, borderWidth: 2, borderColor: frameColor, borderStyle: 'dashed', opacity: 0.85 }} />
+              )}
               {docKind === 'passport' && (
-                <Text style={{ position: 'absolute', bottom: 8, left: 0, right: 0, textAlign: 'center', color: 'rgba(255,255,255,0.75)', fontSize: 10, fontWeight: '700', letterSpacing: 1 }}>KEEP THE TWO &lt;&lt;&lt; LINES INSIDE</Text>
+                <Text style={{ marginBottom: 8, textAlign: 'center', color: 'rgba(255,255,255,0.8)', fontSize: 10, fontWeight: '800', letterSpacing: 1, backgroundColor: 'rgba(0,0,0,0.35)', paddingHorizontal: 6, borderRadius: 4 }}>KEEP THE TWO &lt;&lt;&lt; LINES INSIDE</Text>
+              )}
+              {liveReady && (
+                <View style={{ position: 'absolute', top: 10, flexDirection: 'row', gap: 6, alignItems: 'center', backgroundColor: 'rgba(16,185,129,0.9)', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12 }}>
+                  <Text style={{ color: '#fff', fontSize: 11, fontWeight: '800' }}>Hold steady</Text>
+                  {[0, 1].map((i) => <View key={i} style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: i < streak ? '#fff' : 'rgba(255,255,255,0.35)' }} />)}
+                </View>
               )}
             </View>
           </View>
+          {/* Live checklist — each requirement ticks the moment it is actually met */}
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', gap: 6, paddingHorizontal: 14, paddingBottom: 10, minHeight: 34 }}>
+            {(liveChecksState.length ? liveChecksState : []).map((c) => (
+              <View key={c.id} style={{ flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 9, paddingVertical: 5, borderRadius: 14, backgroundColor: c.ok ? 'rgba(16,185,129,0.92)' : 'rgba(0,0,0,0.55)', opacity: c.optional && !c.ok ? 0.75 : 1 }}>
+                <Ionicons name={c.ok ? 'checkmark-circle' : 'ellipse-outline'} size={13} color="#fff" />
+                <Text style={{ color: '#fff', fontSize: 11, fontWeight: '700' }}>{c.label}</Text>
+              </View>
+            ))}
+          </View>
           {/* Capture controls — paddingBottom clears the Android nav bar/gesture pill */}
-          <View style={{ paddingBottom: 32 + insets.bottom, alignItems: 'center', gap: 14 }}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 28 }}>
-              <Pressable onPress={() => setAuto(a => !a)} style={{ width: 64, alignItems: 'center', gap: 4 }}>
+          <View style={{ paddingBottom: 20 + insets.bottom, alignItems: 'center', gap: 10 }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 26 }}>
+              <Pressable onPress={() => setAuto((a) => !a)} accessibilityLabel="Toggle auto capture" style={{ width: 64, alignItems: 'center', gap: 4 }}>
                 <View style={{ width: 44, height: 44, borderRadius: 22, backgroundColor: auto ? colors.royal600 : 'rgba(255,255,255,0.2)', alignItems: 'center', justifyContent: 'center' }}>
                   <Ionicons name="scan-circle-outline" size={26} color="#fff" />
                 </View>
                 <Text style={{ color: '#fff', fontSize: 11, fontWeight: '700' }}>Auto {auto ? 'on' : 'off'}</Text>
               </Pressable>
-              <Pressable onPress={onShutter} style={{ width: 72, height: 72, borderRadius: 36, backgroundColor: '#fff', borderWidth: 4, borderColor: 'rgba(255,255,255,0.4)', alignItems: 'center', justifyContent: 'center' }}>
+              <Pressable onPress={onShutter} accessibilityLabel="Take photo" style={{ width: 72, height: 72, borderRadius: 36, backgroundColor: '#fff', borderWidth: 4, borderColor: 'rgba(255,255,255,0.4)', alignItems: 'center', justifyContent: 'center' }}>
                 <View style={{ width: 56, height: 56, borderRadius: 28, backgroundColor: '#fff' }} />
               </Pressable>
-              <View style={{ width: 64 }} />
+              <Pressable onPress={() => setShowGuide(true)} accessibilityLabel="Show scanning guide" style={{ width: 64, alignItems: 'center', gap: 4 }}>
+                <View style={{ width: 44, height: 44, borderRadius: 22, backgroundColor: 'rgba(255,255,255,0.2)', alignItems: 'center', justifyContent: 'center' }}>
+                  <Ionicons name="help-circle-outline" size={26} color="#fff" />
+                </View>
+                <Text style={{ color: '#fff', fontSize: 11, fontWeight: '700' }}>Guide</Text>
+              </Pressable>
             </View>
-            <Text style={{ color: 'rgba(255,255,255,0.6)', fontSize: 12 }}>{auto ? 'Captures on its own once the document is in frame' : 'Tap to capture · Hold steady'}</Text>
           </View>
-        </CameraView>
+          {/* Guide sheet: shown first, and again from the Guide button */}
+          {showGuide && (
+            <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(8,20,54,0.96)' }}>
+              <ScrollView contentContainerStyle={{ padding: 22, paddingTop: 28, paddingBottom: 24 }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 14 }}>
+                  <View style={{ width: 44, height: 44, borderRadius: 14, backgroundColor: 'rgba(255,255,255,0.12)', alignItems: 'center', justifyContent: 'center' }}>
+                    <Ionicons name="scan-outline" size={24} color="#fff" />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={{ color: 'rgba(255,255,255,0.55)', fontSize: 11, fontWeight: '900', letterSpacing: 1, textTransform: 'uppercase' }}>How to scan</Text>
+                    <Text style={{ color: '#fff', fontSize: 20, fontWeight: '900' }}>{guide.title}</Text>
+                  </View>
+                </View>
+                <DocGuideCard kind={docKind} dark />
+              </ScrollView>
+              <View style={{ padding: 18, paddingBottom: 18 + insets.bottom, gap: 10, borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,0.1)' }}>
+                <Pressable style={[styles.primaryButton, { marginTop: 0 }]} onPress={() => setShowGuide(false)}>
+                  <Text style={styles.primaryButtonText}>Start scanning</Text>
+                </Pressable>
+                <Pressable onPress={back} style={{ alignItems: 'center', paddingVertical: 8 }}>
+                  <Text style={{ color: 'rgba(255,255,255,0.65)', fontWeight: '700' }}>I’ll upload a file instead</Text>
+                </Pressable>
+              </View>
+            </View>
+          )}
+        </View>
+        </View>
       ) : (
-        // Preview captured image
         <View style={{ flex: 1 }}>
           <Image source={{ uri: captured }} style={{ flex: 1, resizeMode: 'contain', backgroundColor: '#000' }} />
           {/* What the scanner actually recognised — never a bare "text found" tick */}
-          <View style={{ position: 'absolute', top: 16, left: 0, right: 0, alignItems: 'center', paddingHorizontal: 20 }}>
+          <ScrollView style={{ position: 'absolute', top: 0, left: 0, right: 0, maxHeight: '62%' }} contentContainerStyle={{ padding: 16, gap: 10 }}>
             {analysing && (
-              <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.75)', padding: 12, borderRadius: 20 }}>
+              <View style={{ alignSelf: 'center', flexDirection: 'row', gap: 8, alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.75)', padding: 12, borderRadius: 20 }}>
                 <ActivityIndicator size="small" color="#0EA5E9" />
                 <Text style={{ color: '#fff', fontWeight: '700' }}>Checking what this is…</Text>
               </View>
             )}
             {!analysing && verdict && (
-              <View style={{ flexDirection: 'row', gap: 10, alignItems: 'flex-start', backgroundColor: verdictTone.bg, padding: 14, borderRadius: 16, width: '100%' }}>
+              <View style={{ flexDirection: 'row', gap: 10, alignItems: 'flex-start', backgroundColor: verdictTone.bg, padding: 14, borderRadius: 16 }}>
                 <Ionicons name={verdictTone.icon} size={24} color="#fff" />
                 <View style={{ flex: 1 }}>
                   <Text style={{ color: '#fff', fontWeight: '900', fontSize: 14 }}>{verdict.title}</Text>
@@ -5557,22 +5764,23 @@ function CameraScreen({ docType, back, onCapture }: { docType: string; back: () 
                 </View>
               </View>
             )}
+            {!analysing && mrzRead && <PassportDetailsCard mrz={mrzRead} />}
             {!analysing && !verdict && checkUnavailable && (
-              <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center', backgroundColor: 'rgba(100,116,139,0.92)', padding: 12, borderRadius: 20 }}>
+              <View style={{ alignSelf: 'center', flexDirection: 'row', gap: 8, alignItems: 'center', backgroundColor: 'rgba(100,116,139,0.92)', padding: 12, borderRadius: 20 }}>
                 <Ionicons name="information-circle-outline" size={18} color="#fff" />
                 <Text style={{ color: '#fff', fontWeight: '700' }}>Captured — on-device check unavailable</Text>
               </View>
             )}
-          </View>
+          </ScrollView>
           {/* Action buttons — same Android nav-bar clearance as the capture button above */}
-          <View style={{ position: 'absolute', bottom: 32 + insets.bottom, left: 24, right: 24, flexDirection: 'row', gap: 12 }}>
+          <View style={{ position: 'absolute', bottom: 24 + insets.bottom, left: 24, right: 24, flexDirection: 'row', gap: 12 }}>
             <Pressable onPress={retake} style={{ flex: 1, height: 52, borderRadius: 14, backgroundColor: problem ? colors.royal600 : 'rgba(255,255,255,0.15)', alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: 8 }}>
               <Ionicons name="refresh-outline" size={20} color="#fff" />
-              <Text style={{ color: '#fff', fontWeight: '700' }}>Retake</Text>
+              <Text style={{ color: '#fff', fontWeight: '700' }}>{initialUri ? 'Choose another' : 'Retake'}</Text>
             </Pressable>
             <Pressable
               disabled={analysing}
-              onPress={() => onCapture(detectedText || undefined, imageBase64, 'image/jpeg')}
+              onPress={() => onCapture(detectedText || undefined, imageBase64, initialMime ?? 'image/jpeg')}
               style={{ flex: 1, height: 52, borderRadius: 14, opacity: analysing ? 0.5 : 1, backgroundColor: verdict?.status === 'match' ? colors.green500 : problem ? 'rgba(255,255,255,0.15)' : colors.royal600, alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: 8 }}
             >
               <Ionicons name="cloud-upload-outline" size={20} color="#fff" />
@@ -5581,6 +5789,100 @@ function CameraScreen({ docType, back, onCapture }: { docType: string; back: () 
           </View>
         </View>
       )}
+    </View>
+  );
+}
+
+// ─── App tour + How-to guide ──────────────────────────────────────────────────
+function AppTour({ visible, onClose, onGo }: { visible: boolean; onClose: () => void; onGo: (target: TourTarget) => void }) {
+  const insets = useSafeAreaInsets();
+  const [index, setIndex] = useState(0);
+  useEffect(() => { if (visible) setIndex(0); }, [visible]);
+  const step = TOUR_STEPS[index];
+  const last = index === TOUR_STEPS.length - 1;
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose} statusBarTranslucent>
+      <View style={{ flex: 1, backgroundColor: 'rgba(8,20,54,0.72)', justifyContent: 'flex-end' }}>
+        <View style={{ backgroundColor: '#fff', borderTopLeftRadius: 26, borderTopRightRadius: 26, padding: 22, paddingBottom: 18 + insets.bottom, gap: 12 }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+            <View style={{ width: 52, height: 52, borderRadius: 16, backgroundColor: colors.royal50, alignItems: 'center', justifyContent: 'center' }}>
+              <Ionicons name={step.icon as IoniconName} size={28} color={colors.royal600} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={{ color: colors.slate500, fontSize: 11, fontWeight: '900', letterSpacing: 1, textTransform: 'uppercase' }}>Step {index + 1} of {TOUR_STEPS.length}</Text>
+              <Text style={{ color: colors.slate900, fontSize: 20, fontWeight: '900' }}>{step.title}</Text>
+            </View>
+          </View>
+          <Text style={{ color: colors.slate700, fontSize: 14.5, lineHeight: 22 }}>{step.body}</Text>
+          {step.action && (
+            <Pressable onPress={() => onGo(step.action!.target)} style={{ alignSelf: 'flex-start', flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 8, paddingHorizontal: 14, borderRadius: 14, backgroundColor: colors.royal50 }}>
+              <Text style={{ color: colors.royal600, fontWeight: '800', fontSize: 13 }}>{step.action.label}</Text>
+              <Ionicons name="arrow-forward" size={14} color={colors.royal600} />
+            </Pressable>
+          )}
+          <View style={{ flexDirection: 'row', justifyContent: 'center', gap: 6, marginTop: 2 }}>
+            {TOUR_STEPS.map((_, i) => <View key={i} style={{ width: i === index ? 20 : 7, height: 7, borderRadius: 4, backgroundColor: i === index ? colors.royal600 : colors.slate200 }} />)}
+          </View>
+          <View style={{ flexDirection: 'row', gap: 10, alignItems: 'center' }}>
+            {!last ? (
+              <Pressable onPress={onClose} style={{ paddingVertical: 14, paddingHorizontal: 12 }} accessibilityLabel="Skip tour">
+                <Text style={{ color: colors.slate500, fontWeight: '800' }}>Skip</Text>
+              </Pressable>
+            ) : null}
+            {index > 0 && (
+              <Pressable onPress={() => setIndex((i) => i - 1)} style={{ paddingVertical: 14, paddingHorizontal: 12 }} accessibilityLabel="Previous step">
+                <Text style={{ color: colors.royal600, fontWeight: '800' }}>Back</Text>
+              </Pressable>
+            )}
+            <Pressable onPress={() => (last ? onClose() : setIndex((i) => i + 1))} style={[styles.primaryButton, { flex: 1, marginTop: 0 }]} accessibilityLabel={last ? 'Finish tour' : 'Next step'}>
+              <Text style={styles.primaryButtonText}>{last ? 'Done' : 'Next'}</Text>
+            </Pressable>
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+function HowToUseScreen({ back, startTour }: { back: () => void; startTour: () => void }) {
+  const [openGuide, setOpenGuide] = useState<DocKind | null>(null);
+  const guideKinds: DocKind[] = ['passport', 'bank', 'employment', 'insurance', 'itinerary', 'photo'];
+  return (
+    <View>
+      <BackButton label="Profile" onPress={back} />
+      <Text style={styles.eyebrow}>Guide</Text>
+      <Text style={styles.title}>How to use Visa With Ease</Text>
+      <Pressable onPress={startTour} style={[styles.primaryButton, { marginTop: 0, marginBottom: 16, flexDirection: 'row', gap: 8 }]}>
+        <Ionicons name="compass-outline" size={18} color="#fff" />
+        <Text style={styles.primaryButtonText}>Take the app tour</Text>
+      </Pressable>
+      {HOW_TO_SECTIONS.map((section) => (
+        <Section key={section.title} title={section.title}>
+          {section.items.map((item, i) => (
+            <View key={i} style={{ flexDirection: 'row', gap: 10, alignItems: 'flex-start', paddingVertical: 6 }}>
+              <Ionicons name={section.icon as IoniconName} size={16} color={colors.royal600} style={{ marginTop: 2 }} />
+              <Text style={[styles.bodyText, { flex: 1, marginBottom: 0 }]}>{item}</Text>
+            </View>
+          ))}
+        </Section>
+      ))}
+      <Section title="Document scanning guides">
+        {guideKinds.map((kind) => {
+          const open = openGuide === kind;
+          return (
+            <View key={kind}>
+              <Pressable style={styles.taskRow} onPress={() => setOpenGuide(open ? null : kind)} accessibilityLabel={`${DOC_GUIDES[kind].title} guide`}>
+                <View style={styles.flex}>
+                  <Text style={styles.rowTitle}>{DOC_GUIDES[kind].title}</Text>
+                  <Text style={styles.rowMeta} numberOfLines={open ? undefined : 1}>{DOC_GUIDES[kind].intro}</Text>
+                </View>
+                <Ionicons name={open ? 'chevron-up' : 'chevron-down'} size={18} color={colors.slate300} />
+              </Pressable>
+              {open && <View style={{ paddingBottom: 12, paddingHorizontal: 4 }}><DocGuideCard kind={kind} /></View>}
+            </View>
+          );
+        })}
+      </Section>
     </View>
   );
 }

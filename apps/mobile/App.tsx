@@ -1267,6 +1267,9 @@ function ForgotPasswordScreen({ back }: { back: () => void }) {
 }
 
 
+// Banner slides on Home. Each promotes something the app really does and jumps to it.
+type DashboardBanner = { id: string; eyebrow: string; title: string; body: string; cta: string; colors: [string, string]; icon: IoniconName };
+
 function DashboardScreen({ appList, loadingApps, loadAppsError, userName, openApplication, openUpload, openAnalysis, openRequirements, openChat, openConsultants, openCalculator, openFaceVerification, newApplication, retryLoad }: {
   appList: ReturnType<typeof normalizeApp>[];
   loadingApps: boolean;
@@ -1283,23 +1286,96 @@ function DashboardScreen({ appList, loadingApps, loadAppsError, userName, openAp
   newApplication: () => void;
   retryLoad: () => void;
 }) {
+  const { width: winW } = useWindowDimensions();
   const app = appList[0] ?? null;
   const countdown = app ? tripCountdown(app.intendedFrom) : '';
   const firstName = userName ? userName.split(' ')[0] : null;
+  const [showMore, setShowMore] = useState(false);
+
+  // Banner carousel: one slide per real feature, paged, auto-advancing, with dots.
+  const bannerW = winW - 36;
+  const banners: DashboardBanner[] = [
+    { id: 'scan', eyebrow: 'New', title: 'Scan documents in seconds', body: 'The camera reads each page, checks it and captures automatically.', cta: 'Start scanning', colors: ['#0B1F4B', '#1A56DB'], icon: 'scan-outline' },
+    { id: 'reqs', eyebrow: 'Know before you apply', title: 'What does your visa need?', body: 'Every requirement comes with why it matters and its official source.', cta: 'See requirements', colors: ['#0F766E', '#0EA5E9'], icon: 'list-outline' },
+    { id: 'expert', eyebrow: 'Verified experts', title: 'Get an expert to review your case', body: 'Choose which documents they can see. Revoke access any time.', cta: 'Find a consultant', colors: ['#4C1D95', '#7C3AED'], icon: 'people-outline' },
+  ];
+  const bannerActions: Record<string, () => void> = { scan: openUpload, reqs: openRequirements, expert: openConsultants };
+  const [bannerIndex, setBannerIndex] = useState(0);
+  const bannerRef = useRef<ScrollView>(null);
+  const userDragging = useRef(false);
+  useEffect(() => {
+    const timer = setInterval(() => {
+      if (userDragging.current) return;
+      setBannerIndex((i) => {
+        const next = (i + 1) % banners.length;
+        bannerRef.current?.scrollTo({ x: next * (bannerW + 12), animated: true });
+        return next;
+      });
+    }, 6000);
+    return () => clearInterval(timer);
+  }, [bannerW, banners.length]);
+
+  const quick: Array<{ icon: IoniconName; label: string; bg: string; color: string; onPress: () => void }> = [
+    { icon: 'cloud-upload-outline', label: 'Upload', bg: '#EFF6FF', color: colors.royal600, onPress: openUpload },
+    { icon: 'analytics-outline', label: 'Analyze', bg: '#EDE9FE', color: colors.purple600, onPress: openAnalysis },
+    { icon: 'chatbubble-ellipses-outline', label: 'Ask AI', bg: '#E0F2FE', color: colors.teal500, onPress: openChat },
+    { icon: 'add-circle-outline', label: 'New application', bg: '#D1FAE5', color: colors.green500, onPress: newApplication },
+    { icon: 'calculator-outline', label: 'Score calculator', bg: '#EDE9FE', color: colors.purple600, onPress: openCalculator },
+    { icon: 'scan-outline', label: 'Face verify', bg: '#CCFBF1', color: colors.teal500, onPress: openFaceVerification },
+  ];
+  const visibleQuick = showMore ? quick : quick.slice(0, 4);
+
   return (
-    <View>
-      <Text style={styles.eyebrow}>{firstName ? `Hello, ${firstName}` : 'Welcome'}</Text>
-      <Text style={styles.title}>{app ? 'Your next visa journey' : 'Get started'}</Text>
+    <View style={{ gap: 18 }}>
+      <View>
+        <Text style={[styles.eyebrow, { marginBottom: 2 }]}>{firstName ? `Hi, ${firstName}` : 'Welcome'}</Text>
+        <Text style={[styles.title, { marginBottom: 0, fontSize: 26 }]}>{app ? 'Your visa journey' : 'Get started'}</Text>
+      </View>
+
+      {/* Banner carousel */}
+      <View>
+        <ScrollView
+          ref={bannerRef}
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          snapToInterval={bannerW + 12}
+          decelerationRate="fast"
+          contentContainerStyle={{ gap: 12 }}
+          onScrollBeginDrag={() => { userDragging.current = true; }}
+          onMomentumScrollEnd={(e) => {
+            userDragging.current = false;
+            setBannerIndex(Math.round(e.nativeEvent.contentOffset.x / (bannerW + 12)));
+          }}
+        >
+          {banners.map((b) => (
+            <LinearGradient key={b.id} colors={b.colors} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={{ width: bannerW, borderRadius: 20, padding: 18, minHeight: 150, justifyContent: 'space-between', overflow: 'hidden' }}>
+              <Ionicons name={b.icon} size={84} color="rgba(255,255,255,0.12)" style={{ position: 'absolute', right: -6, top: 8 }} />
+              <View style={{ gap: 4, paddingRight: 70 }}>
+                <Text style={{ color: 'rgba(255,255,255,0.75)', fontSize: 11, fontWeight: '800', letterSpacing: 0.8, textTransform: 'uppercase' }}>{b.eyebrow}</Text>
+                <Text style={{ color: '#fff', fontSize: 19, fontWeight: '900', lineHeight: 24 }}>{b.title}</Text>
+                <Text style={{ color: 'rgba(255,255,255,0.85)', fontSize: 12.5, lineHeight: 18 }}>{b.body}</Text>
+              </View>
+              <Pressable onPress={bannerActions[b.id]} accessibilityLabel={b.cta} style={{ alignSelf: 'flex-start', flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#fff', paddingVertical: 9, paddingHorizontal: 14, borderRadius: 14, marginTop: 10 }}>
+                <Text style={{ color: colors.navy900, fontWeight: '800', fontSize: 13 }}>{b.cta}</Text>
+                <Ionicons name="arrow-forward" size={14} color={colors.navy900} />
+              </Pressable>
+            </LinearGradient>
+          ))}
+        </ScrollView>
+        <View style={{ flexDirection: 'row', justifyContent: 'center', gap: 6, marginTop: 10 }}>
+          {banners.map((b, i) => <View key={b.id} style={{ width: i === bannerIndex ? 18 : 6, height: 6, borderRadius: 3, backgroundColor: i === bannerIndex ? colors.royal600 : colors.slate200 }} />)}
+        </View>
+      </View>
 
       {loadingApps && (
-        <View style={{ alignItems: 'center', paddingVertical: 32 }}>
+        <View style={{ alignItems: 'center', paddingVertical: 24 }}>
           <ActivityIndicator size="large" color={colors.royal600} />
           <Text style={[styles.rowMeta, { marginTop: 12 }]}>Loading your applications…</Text>
         </View>
       )}
 
       {!loadingApps && loadAppsError ? (
-        <View style={{ backgroundColor: '#FEF2F2', borderRadius: 12, borderWidth: 1, borderColor: '#FECACA', padding: 16, marginBottom: 12, alignItems: 'center', gap: 10 }}>
+        <View style={{ backgroundColor: '#FEF2F2', borderRadius: 14, borderWidth: 1, borderColor: '#FECACA', padding: 16, alignItems: 'center', gap: 10 }}>
           <Ionicons name="alert-circle-outline" size={28} color="#DC2626" />
           <Text style={{ color: '#991B1B', fontWeight: '700', textAlign: 'center' }}>{loadAppsError}</Text>
           <Pressable style={[styles.smallButton, { backgroundColor: '#DC2626' }]} onPress={retryLoad}>
@@ -1309,66 +1385,93 @@ function DashboardScreen({ appList, loadingApps, loadAppsError, userName, openAp
       ) : null}
 
       {!loadingApps && !app && (
-        <View style={{ backgroundColor: colors.royal50, borderRadius: 20, borderWidth: 1.5, borderColor: '#93C5FD', borderStyle: 'dashed', padding: 32, alignItems: 'center', gap: 14, marginBottom: 16 }}>
-          <Ionicons name="document-text-outline" size={48} color={colors.royal600} />
+        <View style={{ backgroundColor: colors.white, borderRadius: 18, borderWidth: 1, borderColor: colors.slate100, padding: 22, alignItems: 'center', gap: 10 }}>
+          <Ionicons name="document-text-outline" size={38} color={colors.royal600} />
           <Text style={[styles.rowTitle, { textAlign: 'center' }]}>No applications yet</Text>
-          <Text style={[styles.rowMeta, { textAlign: 'center' }]}>Create your first visa application to get AI-powered readiness scoring and document guidance.</Text>
-          <Pressable style={styles.primaryButton} onPress={newApplication}>
+          <Text style={[styles.rowMeta, { textAlign: 'center' }]}>Create your first visa application to get a readiness score and a personal document checklist.</Text>
+          <Pressable style={[styles.primaryButton, { alignSelf: 'stretch' }]} onPress={newApplication}>
             <Text style={styles.primaryButtonText}>+ Create application</Text>
           </Pressable>
         </View>
       )}
 
+      {/* Score + status: two compact portrait tiles, not one wide hero */}
       {!loadingApps && app && (
-        <Pressable onPress={() => openApplication(app.id)}>
-          <LinearGradient colors={['#0B1F4B', '#1A56DB']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.heroCard}>
-            <View style={styles.heroTop}>
-              <View style={styles.flex}>
-                <Text style={styles.heroMeta}>NEXT TRIP · {countdown}</Text>
-                <Text style={styles.heroTitle}>{app.destinationFlag} {app.destinationCountry}</Text>
-                <Text style={styles.heroCopy}>{app.visaType}</Text>
+        <View style={{ flexDirection: 'row', gap: 12 }}>
+          <Pressable onPress={() => openApplication(app.id)} accessibilityLabel="Application readiness score" style={{ flex: 1, backgroundColor: colors.white, borderRadius: 18, borderWidth: 1, borderColor: colors.slate100, padding: 14, alignItems: 'center', gap: 6, minHeight: 176, justifyContent: 'center' }}>
+            <ScoreRing value={app.readinessScore} size={84} />
+            <Text style={{ color: colors.slate900, fontWeight: '800', fontSize: 14 }}>Readiness</Text>
+            <Text style={{ color: colors.slate500, fontSize: 12 }} numberOfLines={1}>{app.destinationFlag} {app.destinationCountry}</Text>
+          </Pressable>
+          <Pressable onPress={() => openApplication(app.id)} accessibilityLabel="Application status" style={{ flex: 1, backgroundColor: colors.white, borderRadius: 18, borderWidth: 1, borderColor: colors.slate100, padding: 14, gap: 8, minHeight: 176, justifyContent: 'space-between' }}>
+            <View style={{ gap: 6 }}>
+              <Text style={{ color: colors.slate500, fontSize: 11, fontWeight: '800', letterSpacing: 0.8, textTransform: 'uppercase' }}>Status</Text>
+              <View style={[styles.statusPill, { backgroundColor: `${app.statusColor}18`, alignSelf: 'flex-start' }]}>
+                <View style={[styles.statusDot, { backgroundColor: app.statusColor }]} />
+                <Text style={[styles.statusText, { color: app.statusColor }]}>{app.status}</Text>
               </View>
-              <ScoreRing value={app.readinessScore} large subLabel={app.status} />
+              <Text style={{ color: colors.slate600, fontSize: 12 }} numberOfLines={1}>{app.visaType}</Text>
             </View>
-            <View style={styles.heroPills}>
-              <Badge tone="light" label={`${app.documentsUploaded}/${app.documentsRequired} docs`} />
-              <Badge tone={app.issuesCount > 0 ? 'warn' : 'light'} label={`${app.issuesCount} issues`} />
+            <View style={{ gap: 4 }}>
+              <Text style={{ color: colors.slate900, fontWeight: '800', fontSize: 14 }}>{app.documentsUploaded}/{app.documentsRequired} documents</Text>
+              <Text style={{ color: app.issuesCount > 0 ? '#B45309' : colors.slate500, fontSize: 12 }}>{app.issuesCount} issue{app.issuesCount === 1 ? '' : 's'} · {countdown.toLowerCase()}</Text>
             </View>
-            <View style={styles.heroCta}>
-              <Text style={styles.heroCtaText}>Complete checklist</Text>
-              <Ionicons name="arrow-forward" size={16} color="#fff" />
-            </View>
-          </LinearGradient>
-        </Pressable>
+          </Pressable>
+        </View>
       )}
 
-      <View style={styles.quickGrid}>
-        <QuickAction icon="cloud-upload-outline"        label="Upload"      bg="#EFF6FF" iconColor={colors.royal600}  onPress={openUpload} />
-        <QuickAction icon="analytics-outline"           label="Analyze"     bg="#EDE9FE" iconColor={colors.purple600} onPress={openAnalysis} />
-        <QuickAction icon="chatbubble-ellipses-outline" label="Ask AI"      bg="#E0F2FE" iconColor={colors.teal500}   onPress={openChat} />
-        <QuickAction icon="ribbon-outline"              label="Book expert" bg="#FEF3C7" iconColor={colors.gold500}   onPress={openConsultants} />
-        <QuickAction icon="calculator-outline"          label="Calc score"  bg="#EDE9FE" iconColor={colors.purple600} onPress={openCalculator} />
-        <QuickAction icon="add-circle-outline"          label="New app"     bg="#D1FAE5" iconColor={colors.green500}  onPress={newApplication} />
-        <QuickAction icon="scan-outline"                label="Face verify" bg="#CCFBF1" iconColor={colors.teal500}   onPress={openFaceVerification} />
+      {/* Book a consultant */}
+      <View style={{ backgroundColor: colors.white, borderRadius: 18, borderWidth: 1, borderColor: colors.slate100, padding: 16, flexDirection: 'row', alignItems: 'center', gap: 14 }}>
+        <View style={{ width: 46, height: 46, borderRadius: 14, backgroundColor: '#FEF3C7', alignItems: 'center', justifyContent: 'center' }}>
+          <Ionicons name="ribbon-outline" size={24} color={colors.gold500} />
+        </View>
+        <View style={{ flex: 1 }}>
+          <Text style={{ color: colors.slate900, fontWeight: '900', fontSize: 15 }}>Book a consultant</Text>
+          <Text style={{ color: colors.slate500, fontSize: 12, lineHeight: 17, marginTop: 2 }}>A verified expert reviews your case and your documents.</Text>
+        </View>
+        <Pressable onPress={openConsultants} accessibilityLabel="Book a consultant" style={{ backgroundColor: colors.royal600, paddingVertical: 10, paddingHorizontal: 14, borderRadius: 12 }}>
+          <Text style={{ color: '#fff', fontWeight: '800', fontSize: 13 }}>Book</Text>
+        </Pressable>
+      </View>
+
+      {/* Other options — minimal grid, the rest behind "More" */}
+      <View>
+        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+          <Text style={{ color: colors.slate900, fontWeight: '900', fontSize: 16 }}>Quick actions</Text>
+          <Pressable onPress={() => setShowMore((v) => !v)} hitSlop={8} accessibilityLabel={showMore ? 'Show fewer actions' : 'Show more actions'} style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+            <Text style={{ color: colors.royal600, fontWeight: '700', fontSize: 13 }}>{showMore ? 'Less' : 'More'}</Text>
+            <Ionicons name={showMore ? 'chevron-up' : 'chevron-down'} size={15} color={colors.royal600} />
+          </Pressable>
+        </View>
+        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10 }}>
+          {visibleQuick.map((q) => (
+            <Pressable key={q.label} onPress={q.onPress} style={{ width: (winW - 36 - 10) / 2, flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: colors.white, borderRadius: 14, borderWidth: 1, borderColor: colors.slate100, padding: 12 }}>
+              <View style={{ width: 34, height: 34, borderRadius: 10, backgroundColor: q.bg, alignItems: 'center', justifyContent: 'center' }}>
+                <Ionicons name={q.icon} size={18} color={q.color} />
+              </View>
+              <Text style={{ flex: 1, color: colors.slate800, fontWeight: '700', fontSize: 13 }} numberOfLines={1}>{q.label}</Text>
+            </Pressable>
+          ))}
+        </View>
       </View>
 
       {!loadingApps && appList.length > 1 && (
-        <Section title="All applications">
-          <View style={{ flexDirection: 'row', gap: 10, flexWrap: 'wrap' }}>
-            {appList.map(a => (
-              <Pressable key={a.id} onPress={() => openApplication(a.id)}
-                style={{ width: '30%', backgroundColor: colors.white, borderRadius: 14, borderWidth: 1, borderColor: colors.slate100, padding: 12, alignItems: 'center', gap: 8 }}>
+        <View>
+          <Text style={{ color: colors.slate900, fontWeight: '900', fontSize: 16, marginBottom: 10 }}>Other applications</Text>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 10 }}>
+            {appList.slice(1).map((a) => (
+              <Pressable key={a.id} onPress={() => openApplication(a.id)} style={{ width: 130, backgroundColor: colors.white, borderRadius: 16, borderWidth: 1, borderColor: colors.slate100, padding: 12, alignItems: 'center', gap: 6 }}>
                 <Text style={{ fontSize: 22 }}>{a.destinationFlag}</Text>
                 <ScoreRing value={a.readinessScore} />
-                <Text style={[styles.rowMeta, { fontSize: 11, textAlign: 'center' }]} numberOfLines={1}>{a.destinationCountry}</Text>
+                <Text style={[styles.rowMeta, { fontSize: 12, textAlign: 'center' }]} numberOfLines={1}>{a.destinationCountry}</Text>
                 <View style={[styles.statusPill, { backgroundColor: `${a.statusColor}18` }]}>
                   <View style={[styles.statusDot, { backgroundColor: a.statusColor }]} />
                   <Text style={[styles.statusText, { color: a.statusColor, fontSize: 9 }]}>{a.status}</Text>
                 </View>
               </Pressable>
             ))}
-          </View>
-        </Section>
+          </ScrollView>
+        </View>
       )}
     </View>
   );
@@ -3860,9 +3963,9 @@ function ProgressDots({ count, active }: { count: number; active: number }) {
   );
 }
 
-function ScoreRing({ value, large, subLabel }: { value: number; large?: boolean; subLabel?: string }) {
-  const size = large ? 100 : 54;
-  const strokeWidth = large ? 8 : 5;
+function ScoreRing({ value, large, subLabel, size: sizeProp }: { value: number; large?: boolean; subLabel?: string; size?: number }) {
+  const size = sizeProp ?? (large ? 100 : 54);
+  const strokeWidth = size >= 90 ? 8 : size >= 70 ? 7 : 5;
   const radius = (size - strokeWidth) / 2;
   const circumference = 2 * Math.PI * radius;
   const dashOffset = circumference * (1 - Math.min(value, 100) / 100);
@@ -3882,7 +3985,7 @@ function ScoreRing({ value, large, subLabel }: { value: number; large?: boolean;
         <SvgText
           x={size / 2} y={size / 2}
           textAnchor="middle" dy="0.35em"
-          fontSize={large ? 24 : 13} fontWeight="900"
+          fontSize={size >= 90 ? 24 : size >= 70 ? 21 : 13} fontWeight="900"
           fill={large ? '#fff' : colors.slate900}
         >{value}</SvgText>
       </Svg>

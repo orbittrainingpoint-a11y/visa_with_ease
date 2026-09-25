@@ -1857,3 +1857,55 @@ test('A consultant-only account cannot use client features (applications, docume
   }
   assert.equal((await get('/consultant/appointments', t)).res.status, 200, 'its own workspace still works');
 });
+
+// ─── Consultant lifecycle: isolation, cancellation, audit ────────────────────
+
+async function inviteConsultant(consultantId: string, tag: string) {
+  const admin = await demoToken('platform_admin');
+  const email = `${tag}.${Date.now()}.${Math.floor(Math.random() * 1e6)}@partner.example.com`;
+  const inv = await post('/admin/consultants/invite', { email, name: `Consultant ${tag}`, consultantId }, admin);
+  assert.equal(inv.res.status, 201);
+  await post('/auth/reset-password', { token: new URL(inv.body.setupUrl).searchParams.get('token'), newPassword: 'Consultant#2026x' });
+  const login = await post('/auth/consultant-session', { email, password: 'Consultant#2026x' });
+  assert.equal(login.res.status, 201);
+  return login.body.token as string;
+}
+
+test('Consultant lifecycle — another consultant never sees a case, cancelling closes it, every view is audited', async () => {
+  const priya = await inviteConsultant('c-priya', 'priya');
+  const omar = await inviteConsultant('c-omar', 'omar');
+  const client = await registerFresh('life');
+  const app1 = await post('/applications', { destinationCountry: 'France', visaType: 'schengen-tourist', intendedFrom: '2026-12-01' }, client);
+  const appId = app1.body.application.id as string;
+  const booking = await post('/bookings', { consultantId: 'c-priya', applicationId: appId, sessionType: 'standard', slotISO: '2030-07-10T06:00:00.000Z' }, client);
+  const grant = await post('/access-grants', { applicationId: appId, consultantId: 'c-priya', categories: ['profile', 'requirements', 'contact'], expiresAt: '2031-01-01T00:00:00.000Z', acceptedTerms: true }, client);
+  assert.equal(grant.res.status, 201);
+
+  // The right consultant reads the case; a different consultant gets nothing — not even confirmation it exists.
+  assert.equal((await get(`/consultant/appointments/${booking.body.bookingId}/case`, priya)).res.status, 200);
+  assert.equal((await get(`/consultant/appointments/${booking.body.bookingId}/case`, omar)).res.status, 404);
+  assert.ok(!(await get('/consultant/appointments', omar)).body.appointments.some((a: { bookingId: string }) => a.bookingId === booking.body.bookingId), 'not in the other consultant’s schedule');
+
+  // The view was recorded for the audit trail.
+  const log = await get('/admin/audit-log', await demoToken('platform_admin'));
+  assert.ok(log.body.entries?.some?.((e: { action: string; resource: string }) => e.action === 'CONSULTANT_VIEW_CASE' && e.resource === appId) ?? JSON.stringify(log.body).includes(appId), 'the case view was audit-logged');
+
+  // Cancelling the appointment ends the consultant's access (grant revoked, case closed).
+  assert.equal((await post(`/bookings/${booking.body.bookingId}/cancel`, {}, client)).res.status, 200);
+  const after = await get(`/consultant/appointments/${booking.body.bookingId}/case`, priya);
+  assert.equal(after.res.status, 403);
+  assert.ok(['APPOINTMENT_CANCELLED', 'ACCESS_NOT_GRANTED'].includes(after.body.error.code));
+  assert.equal((await get('/access-grants', client)).body.grants.filter((g: { consultantId: string }) => g.consultantId === 'c-priya').length, 0, 'the grant was revoked with the cancellation');
+});
+
+test('Rescheduling keeps the client’s sharing: the old appointment is cancelled only after the new one exists', async () => {
+  const priya = await inviteConsultant('c-priya', 'resched');
+  const client = await registerFresh('resched');
+  const app1 = await post('/applications', { destinationCountry: 'France', visaType: 'schengen-tourist', intendedFrom: '2026-12-01' }, client);
+  const appId = app1.body.application.id as string;
+  const first = await post('/bookings', { consultantId: 'c-priya', applicationId: appId, sessionType: 'standard', slotISO: '2030-08-10T06:00:00.000Z' }, client);
+  await post('/access-grants', { applicationId: appId, consultantId: 'c-priya', categories: ['profile'], expiresAt: '2031-01-01T00:00:00.000Z', acceptedTerms: true }, client);
+  const second = await post('/bookings', { consultantId: 'c-priya', applicationId: appId, sessionType: 'standard', slotISO: '2030-08-12T06:00:00.000Z' }, client);
+  assert.equal((await post(`/bookings/${first.body.bookingId}/cancel`, {}, client)).res.status, 200);
+  assert.equal((await get(`/consultant/appointments/${second.body.bookingId}/case`, priya)).res.status, 200, 'sharing survives a reschedule');
+});

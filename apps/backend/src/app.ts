@@ -1043,6 +1043,7 @@ export function createApp(services: Services = createServices(), options: AppOpt
       if (!consultantId) return res.status(403).json({ error: { code: 'NOT_LINKED', message: 'This login is not linked to a consultant profile yet.' } });
       const booking = await services.consultants.getBooking(req.params.bookingId as string);
       if (!booking || booking.consultantId !== consultantId) throw notFound('Appointment not found');
+      if (booking.status === 'cancelled') return res.status(403).json({ error: { code: 'APPOINTMENT_CANCELLED', message: 'This appointment was cancelled, so the client’s case is no longer available.' } });
       const grant = await activeGrantFor(consultantId, booking.applicationId);
       if (!grant) {
         return res.status(403).json({ error: { code: 'ACCESS_NOT_GRANTED', message: 'The client has not granted you access to their case. Ask them to share it from their Bookings screen.' } });
@@ -1286,8 +1287,18 @@ export function createApp(services: Services = createServices(), options: AppOpt
 
   app.post('/bookings/:bookingId/cancel', requireAuth, async (req, res, next) => {
     try {
+      const before = await services.consultants.getBooking(req.params.bookingId as string);
       const result = await services.consultants.cancelBooking(req.params.bookingId as string, req.user!.uid);
       if (result === 'not_found') throw notFound('Booking not found');
+      // Cancelling ends the consultant's access too — unless the client still has another live appointment with
+      // the same consultant for this application (a reschedule creates the new one before cancelling the old).
+      if (before && before.userId === req.user!.uid) {
+        const stillBooked = (await services.consultants.listBookings()).some((x) => x.userId === before.userId && x.consultantId === before.consultantId && x.applicationId === before.applicationId && x.status !== 'cancelled' && x.bookingId !== before.bookingId);
+        if (!stillBooked) {
+          const grants = (await services.accessGrants.listActiveGrants()).filter((g) => g.consultantId === before.consultantId && g.applicationId === before.applicationId && g.grantedBy === req.user!.uid);
+          await Promise.all(grants.map((g) => services.accessGrants.revokeGrant(g.grantId, req.user!.uid)));
+        }
+      }
       await appendAuditLog({ actor: req.user!.email ?? req.user!.uid, action: 'CANCEL_BOOKING', resource: req.params.bookingId as string, ip: req.ip ?? '?' });
       res.json({ bookingId: req.params.bookingId, status: 'cancelled' });
     } catch (err) {

@@ -4201,7 +4201,7 @@ function ConsultantCaseScreen({ bookingId, appointment, back }: { bookingId: str
       </View>
       {appointment && appointment.status !== 'cancelled' && <CallButton bookingId={appointment.bookingId} call={appointment.call} />}
 
-      {loading && <View style={{ padding: 30, alignItems: 'center' }}><ActivityIndicator size="large" color={colors.royal600} /></View>}
+      {loading && <View style={{ padding: 30, alignItems: 'center', gap: 8 }}><ActivityIndicator size="large" color={colors.royal600} /><Text style={styles.rowMeta}>Loading the client’s shared details…</Text></View>}
 
       {!loading && error && (
         <View style={{ backgroundColor: '#FEF3C7', borderRadius: 16, padding: 18, gap: 8, alignItems: 'center' }}>
@@ -4262,6 +4262,21 @@ function ConsultantCaseScreen({ bookingId, appointment, back }: { bookingId: str
 }
 
 function ConsultantWorkspaceProfileScreen({ me, authUser, canSwitch, switchToPersonal, onSignOut }: { me: ApiConsultantMe | null; authUser: AuthUser | null; canSwitch: boolean; switchToPersonal: () => void; onSignOut: () => void }) {
+  // A work login that can reach client data should be easy to lock: the same per-account fingerprint / face unlock.
+  const [bio, setBio] = useState<BiometricSupport | null>(null);
+  const [lockOn, setLockOn] = useState(false);
+  useEffect(() => {
+    getBiometricSupport().then(setBio).catch(() => {});
+    if (authUser?.uid) isLockEnabled(authUser.uid).then(setLockOn).catch(() => {});
+  }, [authUser?.uid]);
+  const toggleLock = async () => {
+    const uid = authUser?.uid;
+    if (!uid) return;
+    if (lockOn) { await setLockEnabled(uid, false); setLockOn(false); return; }
+    const r = await authenticateBiometric('Confirm it’s you to turn on the app lock');
+    if (r.ok) { await setLockEnabled(uid, true); setLockOn(true); }
+    else if (!r.cancelled) Alert.alert('Could not turn on the lock', 'Your phone did not confirm the check. Try again.');
+  };
   return (
     <View style={{ gap: 14 }}>
       <WorkspaceBadge />
@@ -4277,6 +4292,15 @@ function ConsultantWorkspaceProfileScreen({ me, authUser, canSwitch, switchToPer
         <TaskRow title="Nothing is visible by default" meta="You see a client’s name and destination for your appointments — nothing more." done />
         <TaskRow title="Clients grant access explicitly" meta="After they accept the sharing terms and choose what to share." done />
         <TaskRow title="Every view is recorded" meta="Access expires automatically and clients can revoke it any time." done />
+      </Section>
+      <Section title="Security">
+        <ToggleRow
+          title={`${bio?.label ?? 'Biometric'} unlock`}
+          meta={bio && !bio.available ? 'Set up a fingerprint or face on your phone first' : lockOn ? 'On — the app locks when you leave it' : 'Recommended: protect client data if your phone is lost'}
+          value={lockOn}
+          onToggle={toggleLock}
+          disabled={!!bio && !bio.available}
+        />
       </Section>
       {canSwitch && (
         <Pressable style={styles.secondaryButton} onPress={switchToPersonal}><Text style={styles.secondaryButtonText}>Switch to my personal account</Text></Pressable>

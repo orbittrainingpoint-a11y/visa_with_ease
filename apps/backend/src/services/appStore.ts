@@ -419,8 +419,9 @@ export async function listMessagesForThread(threadId: string): Promise<StoredMes
   if (!db) {
     return memMessages.filter((m) => m.threadId === threadId).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   }
-  const snap = await db.collection('messages').where('threadId', '==', threadId).orderBy('createdAt', 'asc').get();
-  return snap.docs.map((d) => d.data() as StoredMessage);
+  // Sorted here: filtering on threadId AND ordering by createdAt would need a composite Firestore index.
+  const snap = await db.collection('messages').where('threadId', '==', threadId).get();
+  return snap.docs.map((d) => d.data() as StoredMessage).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 }
 
 /** Every message on file, oldest first — callers group by threadId
@@ -520,8 +521,10 @@ export async function listOverduePendingDeletions(): Promise<AccountDeletionReco
   if (!db) {
     return [...memDeletionRequests.values()].filter((r) => r.status === 'pending' && r.scheduledFor < nowIso);
   }
-  const snap = await db.collection('accountDeletions').where('status', '==', 'pending').where('scheduledFor', '<', nowIso).get();
-  return snap.docs.map((d) => d.data() as AccountDeletionRecord);
+  // One equality filter only: combining it with a range on scheduledFor needs a composite Firestore index that
+  // was never created, which made this (and the hourly purge job) fail. The date check is done here instead.
+  const snap = await db.collection('accountDeletions').where('status', '==', 'pending').get();
+  return snap.docs.map((d) => d.data() as AccountDeletionRecord).filter((r) => r.scheduledFor < nowIso);
 }
 
 // Real referral codes and claims. A code is deterministic per uid (so it

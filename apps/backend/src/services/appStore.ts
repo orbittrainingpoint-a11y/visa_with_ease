@@ -16,6 +16,10 @@ export interface UserRecord {
   passwordHash: string;
   roles: string[];
   status?: 'active' | 'suspended';
+  /** Age band only (never the date of birth) — set when the account is created. */
+  ageBand?: 'under_18' | '18_plus';
+  /** Set by the unsubscribe link: no non-essential email to this address. */
+  emailOptOut?: boolean;
   /** For role 'consultant': which marketplace consultant this login is (set by a platform admin). */
   consultantId?: string;
   createdAt?: string;
@@ -702,5 +706,21 @@ export async function setUserConsultantId(email: string, consultantId: string | 
   if (!doc.exists) return false;
   const current = (doc.data() as UserRecord).roles ?? ['consumer'];
   await ref.set({ consultantId: consultantId ?? null, roles: withRole(current) }, { merge: true });
+  return true;
+}
+
+/** Records an unsubscribe from non-essential email. Keyed by the address, like the account itself. */
+export async function setEmailOptOut(email: string, optOut: boolean): Promise<boolean> {
+  const key = email.trim().toLowerCase();
+  const db = getDb();
+  if (!db) {
+    const user = memUsers.get(key);
+    if (!user) return false;
+    memUsers.set(key, { ...user, emailOptOut: optOut });
+    return true;
+  }
+  const doc = await db.collection('users').doc(key).get();
+  if (!doc.exists) return false;
+  await doc.ref.set({ emailOptOut: optOut }, { merge: true });
   return true;
 }

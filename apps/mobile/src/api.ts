@@ -118,11 +118,13 @@ export function login(email: string, password: string, remember = false) {
 export function consultantLogin(email: string, password: string) {
   return request<AuthSession>('POST', '/auth/consultant-session', { email, password });
 }
-export function register(name: string, email: string, password: string) {
-  return request<AuthSession>('POST', '/auth/register', { name, email, password });
+/** Birth date (YYYY-MM-DD) is required: children under the minimum age get no account (COPPA). */
+export function register(name: string, email: string, password: string, dateOfBirth: string) {
+  return request<AuthSession>('POST', '/auth/register', { name, email, password, dateOfBirth });
 }
-export function googleLogin(idToken: string) {
-  return request<AuthSession>('POST', '/auth/google', { idToken });
+/** A first-time Google account needs a birth date too; the server asks for it (AGE_REQUIRED) and the app sends it. */
+export function googleLogin(idToken: string, dateOfBirth?: string) {
+  return request<AuthSession>('POST', '/auth/google', { idToken, ...(dateOfBirth ? { dateOfBirth } : {}) });
 }
 export function demoLogin(persona: 'consumer' | 'consultant' | 'hr_admin' | 'platform_admin') {
   return request<AuthSession>('POST', '/auth/demo', { persona });

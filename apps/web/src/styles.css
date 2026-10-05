@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Plus+Jakarta+Sans:wght@700;800&display=swap');
+/* Fonts are self-hosted (public/assets/fonts), loaded from index.html — no third-party font requests. */
 
 :root {
   --bg: #f8fafc;

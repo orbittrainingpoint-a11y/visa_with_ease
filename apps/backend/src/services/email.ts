@@ -1,4 +1,5 @@
 import nodemailer, { type Transporter } from 'nodemailer';
+import { withEmailFooter, postalAddress } from './compliance.js';
 
 /**
  * Real email delivery via Gmail SMTP. Falls back to `null` (never throws)
@@ -32,7 +33,8 @@ export async function sendEmail(to: string, subject: string, html: string): Prom
   const t = getTransporter();
   if (!t) return false;
   const from = process.env.SMTP_FROM || process.env.SMTP_USER;
-  await t.sendMail({ from: `"Visa With Ease" <${from}>`, to, subject, html });
+  // Every outgoing email carries the business address and a working unsubscribe link (CAN-SPAM).
+  await t.sendMail({ from: `"Visa With Ease" <${from}>`, to, subject, html: withEmailFooter(to, html) });
   return true;
 }
 

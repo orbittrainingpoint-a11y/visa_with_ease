@@ -102,7 +102,7 @@ test('POST /auth/refresh — rejects a missing or invalid token', async () => {
 
 test('POST /chat — without an applicationId it still answers about the caller own latest application', async () => {
   // A fresh account, so the shared demo user's application list (asserted empty elsewhere) stays untouched.
-  const reg = await post('/auth/register', { name: 'Chat Default', email: `chat-default-${Date.now()}@example.com`, password: 'Sup3rSecret!x' });
+  const reg = await post('/auth/register', { name: 'Chat Default', email: `chat-default-${Date.now()}@example.com`, dateOfBirth: '1990-05-14', password: 'Sup3rSecret!x' });
   assert.equal(reg.res.status, 201);
   const token = reg.body.token as string;
   const created = await post('/applications', { destinationCountry: 'France', visaType: 'schengen-tourist', intendedFrom: '2026-12-01' }, token);
@@ -114,7 +114,7 @@ test('POST /chat — without an applicationId it still answers about the caller 
 
 test('Bookings — list is scoped to the caller, cancel frees the slot, others cannot cancel', async () => {
   const reg = async (tag: string) => {
-    const r = await post('/auth/register', { name: `Book ${tag}`, email: `book-${tag}-${Date.now()}@example.com`, password: 'Sup3rSecret!x' });
+    const r = await post('/auth/register', { name: `Book ${tag}`, email: `book-${tag}-${Date.now()}@example.com`, dateOfBirth: '1990-05-14', password: 'Sup3rSecret!x' });
     assert.equal(r.res.status, 201);
     return r.body.token as string;
   };
@@ -147,7 +147,7 @@ test('Bookings — list is scoped to the caller, cancel frees the slot, others c
 
 test('DELETE /applications/:id — owner only; cancels its bookings and revokes its access grants', async () => {
   const reg = async (tag: string) => {
-    const r = await post('/auth/register', { name: `Del ${tag}`, email: `del-${tag}-${Date.now()}@example.com`, password: 'Sup3rSecret!x' });
+    const r = await post('/auth/register', { name: `Del ${tag}`, email: `del-${tag}-${Date.now()}@example.com`, dateOfBirth: '1990-05-14', password: 'Sup3rSecret!x' });
     assert.equal(r.res.status, 201);
     return r.body.token as string;
   };
@@ -177,7 +177,7 @@ test('DELETE /applications/:id — owner only; cancels its bookings and revokes 
 // ─── Consultant workspace, consent, calls and face verification ───────────────
 
 async function registerFresh(tag: string) {
-  const r = await post('/auth/register', { name: `T ${tag}`, email: `t-${tag}-${Date.now()}@example.com`, password: 'Sup3rSecret!x' });
+  const r = await post('/auth/register', { name: `T ${tag}`, email: `t-${tag}-${Date.now()}@example.com`, dateOfBirth: '1990-05-14', password: 'Sup3rSecret!x' });
   assert.equal(r.res.status, 201);
   return r.body.token as string;
 }
@@ -376,7 +376,7 @@ test('Passport data read on the phone is kept and shown to a consultant only whe
 test('Admin can link a login to a consultant profile — that login becomes a consultant', async () => {
   const admin = await demoToken('platform_admin');
   const email = `link-${Date.now()}@example.com`;
-  const reg = await post('/auth/register', { name: 'Link Me', email, password: 'Sup3rSecret!x' });
+  const reg = await post('/auth/register', { name: 'Link Me', email, dateOfBirth: '1990-05-14', password: 'Sup3rSecret!x' });
   assert.equal(reg.res.status, 201);
   assert.deepEqual(reg.body.user.roles, ['consumer']);
   assert.equal((await get('/consultant/appointments', reg.body.token)).res.status, 403, 'not a consultant yet');
@@ -394,7 +394,7 @@ test('Admin can link a login to a consultant profile — that login becomes a co
 
 test('POST /auth/register — password too short returns 400', async () => {
   const { res, body } = await post('/auth/register', {
-    name: 'Test User', email: 'test@example.com', password: 'short'
+    name: 'Test User', email: 'test@example.com', dateOfBirth: '1990-05-14', password: 'short'
   });
   assert.equal(res.status, 400);
   assert.ok(body.error?.message?.toLowerCase().includes('password'));
@@ -403,7 +403,7 @@ test('POST /auth/register — password too short returns 400', async () => {
 test('POST /auth/register — valid registration returns session', async () => {
   const email = `test${Date.now()}@example.com`;
   const { res, body } = await post('/auth/register', {
-    name: 'New User', email, password: 'SecurePass123'
+    name: 'New User', email, dateOfBirth: '1990-05-14', password: 'SecurePass123'
   });
   assert.equal(res.status, 201);
   assert.equal(body.user.email, email);
@@ -416,8 +416,8 @@ test('POST /auth/register — two accounts with a long shared email prefix get d
   // "sharedprefix-b@x.com" share a 13-character prefix, so the two accounts
   // used to collide onto the exact same uid and silently merge their data.
   const stamp = Date.now();
-  const a = await post('/auth/register', { name: 'Prefix A', email: `sharedprefix-a-${stamp}@example.com`, password: 'SecurePass123' });
-  const b = await post('/auth/register', { name: 'Prefix B', email: `sharedprefix-b-${stamp}@example.com`, password: 'SecurePass123' });
+  const a = await post('/auth/register', { name: 'Prefix A', email: `sharedprefix-a-${stamp}@example.com`, dateOfBirth: '1990-05-14', password: 'SecurePass123' });
+  const b = await post('/auth/register', { name: 'Prefix B', email: `sharedprefix-b-${stamp}@example.com`, dateOfBirth: '1990-05-14', password: 'SecurePass123' });
   assert.equal(a.res.status, 201);
   assert.equal(b.res.status, 201);
   assert.notEqual(a.body.user.uid, b.body.user.uid, 'different accounts must never collide onto the same uid');
@@ -430,7 +430,7 @@ test('POST /auth/register — two accounts with a long shared email prefix get d
 
 test('POST /auth/forgot-password — issues a reset link for a real account and it actually resets the password', async () => {
   const email = `resettest${Date.now()}@example.com`;
-  await post('/auth/register', { name: 'Reset Test', email, password: 'OriginalPass123' });
+  await post('/auth/register', { name: 'Reset Test', email, dateOfBirth: '1990-05-14', password: 'OriginalPass123' });
 
   const { res: forgotRes, body: forgotBody } = await post('/auth/forgot-password', { email });
   assert.equal(forgotRes.status, 200);
@@ -462,7 +462,7 @@ test('POST /auth/reset-password — rejects an invalid or expired token', async 
 
 test('POST /auth/reset-password — reused token is rejected the second time', async () => {
   const email = `resetreuse${Date.now()}@example.com`;
-  await post('/auth/register', { name: 'Reset Reuse', email, password: 'OriginalPass123' });
+  await post('/auth/register', { name: 'Reset Reuse', email, dateOfBirth: '1990-05-14', password: 'OriginalPass123' });
   const { body: forgotBody } = await post('/auth/forgot-password', { email });
   const token = new URL(forgotBody.devResetUrl).searchParams.get('token');
 
@@ -480,7 +480,7 @@ test('POST /auth/forgot-password — devResetUrl is gated on ENABLE_DEV_AUTH_BYP
   // password-reset links to anyone. AI_MOCK stays 'true' for this whole
   // suite; only toggling ENABLE_DEV_AUTH_BYPASS off should suppress the leak.
   const email = `resetgate${Date.now()}@example.com`;
-  await post('/auth/register', { name: 'Reset Gate', email, password: 'OriginalPass123' });
+  await post('/auth/register', { name: 'Reset Gate', email, dateOfBirth: '1990-05-14', password: 'OriginalPass123' });
   process.env.ENABLE_DEV_AUTH_BYPASS = 'false';
   try {
     const { res, body } = await post('/auth/forgot-password', { email });
@@ -526,7 +526,7 @@ test('POST /auth/delete-account — actually persists a real, checkable record, 
   // actually true because nothing was tracking a pending deletion at all.
   const email = `deleteme${Date.now()}@example.com`;
   const password = 'SecurePass123';
-  const { body: registerBody } = await post('/auth/register', { name: 'Delete Me', email, password });
+  const { body: registerBody } = await post('/auth/register', { name: 'Delete Me', email, password, dateOfBirth: '1990-05-14' });
   const token = registerBody.token;
 
   const { res: deleteRes, body: deleteBody } = await post('/auth/delete-account', {}, token);
@@ -1078,7 +1078,7 @@ test('POST /bookings — rejects an applicationId the caller does not own (IDOR)
   const ownerToken = await demoToken('consumer');
   const create = await post('/applications', { destinationCountry: 'Germany', visaType: 'Tourist', intendedFrom: '2026-11-01', applicantName: 'Owner' }, ownerToken);
 
-  const attacker = await post('/auth/register', { name: 'Booking Attacker', email: `bookingattacker${Date.now()}@example.com`, password: 'SecurePass123' });
+  const attacker = await post('/auth/register', { name: 'Booking Attacker', email: `bookingattacker${Date.now()}@example.com`, dateOfBirth: '1990-05-14', password: 'SecurePass123' });
   const { res, body } = await post('/bookings', {
     consultantId: 'c-priya',
     applicationId: create.body.application.id,
@@ -1399,7 +1399,7 @@ test('POST /access-grants — rejects an applicationId the caller does not own (
   const ownerToken = await demoToken('consumer');
   const create = await post('/applications', { destinationCountry: 'Spain', visaType: 'Tourist', intendedFrom: '2026-12-01', applicantName: 'Owner' }, ownerToken);
 
-  const attacker = await post('/auth/register', { name: 'Grant Attacker', email: `grantattacker${Date.now()}@example.com`, password: 'SecurePass123' });
+  const attacker = await post('/auth/register', { name: 'Grant Attacker', email: `grantattacker${Date.now()}@example.com`, dateOfBirth: '1990-05-14', password: 'SecurePass123' });
   const { res, body } = await post('/access-grants', {
     applicationId: create.body.application.id,
     consultantId: 'c-priya',
@@ -1424,7 +1424,7 @@ test('GET /access-grants — a user can see and revoke their own grants, never s
   }, ownerToken);
   assert.equal(grant.res.status, 201);
 
-  const other = await post('/auth/register', { name: 'Other User', email: `otheruser${Date.now()}@example.com`, password: 'SecurePass123' });
+  const other = await post('/auth/register', { name: 'Other User', email: `otheruser${Date.now()}@example.com`, dateOfBirth: '1990-05-14', password: 'SecurePass123' });
   const otherList = await get('/access-grants', other.body.token);
   assert.equal(otherList.res.status, 200);
   assert.ok(!otherList.body.grants.some((g: any) => g.grantId === grant.body.grantId), 'must never leak another user\'s grants');
@@ -1486,9 +1486,9 @@ test('GET /consultant-console — crm reflects real booking count/revenue, not f
 });
 
 test('POST /messages + GET /messages — real consultant<->client conversation, with authorization', async () => {
-  const clientA = await post('/auth/register', { name: 'Message Client A', email: `msgclienta${Date.now()}@example.com`, password: 'SecurePass123' });
+  const clientA = await post('/auth/register', { name: 'Message Client A', email: `msgclienta${Date.now()}@example.com`, dateOfBirth: '1990-05-14', password: 'SecurePass123' });
   const clientAToken = clientA.body.token;
-  const clientB = await post('/auth/register', { name: 'Message Client B', email: `msgclientb${Date.now()}@example.com`, password: 'SecurePass123' });
+  const clientB = await post('/auth/register', { name: 'Message Client B', email: `msgclientb${Date.now()}@example.com`, dateOfBirth: '1990-05-14', password: 'SecurePass123' });
   const clientBToken = clientB.body.token;
 
   const sent = await post('/messages', { consultantId: 'c-elena', text: 'My bank statement is 4 months old — is that too old?' }, clientAToken);
@@ -1523,7 +1523,7 @@ test('GET /my-conversations — a client can discover a consultant\'s reply (pre
   // to list their own threads — listThreadsForUser existed on the service
   // but was never wired to a route, so a real reply was permanently
   // invisible to the client who sent the original message.
-  const client = await post('/auth/register', { name: 'Conversation Client', email: `myconv${Date.now()}@example.com`, password: 'SecurePass123' });
+  const client = await post('/auth/register', { name: 'Conversation Client', email: `myconv${Date.now()}@example.com`, dateOfBirth: '1990-05-14', password: 'SecurePass123' });
   const clientToken = client.body.token;
 
   const before = await get('/my-conversations', clientToken);
@@ -1558,8 +1558,8 @@ test('GET /hr — teams are grouped from real employee profiles, scoped to the H
   // their OWN profile, the same field everyone else's employer comes from.
   await put('/profile', { employment: { employer, jobTitle: 'HR Manager', annualIncomeUsd: '0' } }, hrToken);
 
-  const empA = await post('/auth/register', { name: 'HR Employee A', email: `hremp-a-${Date.now()}@example.com`, password: 'SecurePass123' });
-  const empB = await post('/auth/register', { name: 'HR Employee B', email: `hremp-b-${Date.now()}@example.com`, password: 'SecurePass123' });
+  const empA = await post('/auth/register', { name: 'HR Employee A', email: `hremp-a-${Date.now()}@example.com`, dateOfBirth: '1990-05-14', password: 'SecurePass123' });
+  const empB = await post('/auth/register', { name: 'HR Employee B', email: `hremp-b-${Date.now()}@example.com`, dateOfBirth: '1990-05-14', password: 'SecurePass123' });
   // Field names match what apps/mobile/App.tsx's ProfileEmploymentScreen
   // actually sends (employer/jobTitle/annualIncomeUsd/resumeUploaded/
   // resumeFileName) — not the older, never-actually-sent contractType/
@@ -1570,7 +1570,7 @@ test('GET /hr — teams are grouped from real employee profiles, scoped to the H
 
   // A different company's employee must never appear in this admin's view.
   const otherEmployer = `Globex ${Date.now()}`;
-  const empC = await post('/auth/register', { name: 'Other Company Employee', email: `otherco-${Date.now()}@example.com`, password: 'SecurePass123' });
+  const empC = await post('/auth/register', { name: 'Other Company Employee', email: `otherco-${Date.now()}@example.com`, dateOfBirth: '1990-05-14', password: 'SecurePass123' });
   await put('/profile', { employment: { employer: otherEmployer, jobTitle: 'Analyst', annualIncomeUsd: '50000' } }, empC.body.token);
 
   const { res, body } = await get('/hr', hrToken);
@@ -1588,7 +1588,7 @@ test('GET /hr — teams are grouped from real employee profiles, scoped to the H
 });
 
 test('GET /employee — profile and tasks are derived from the real employment profile and real application state', async () => {
-  const emp = await post('/auth/register', { name: 'Task Employee', email: `taskemp-${Date.now()}@example.com`, password: 'SecurePass123' });
+  const emp = await post('/auth/register', { name: 'Task Employee', email: `taskemp-${Date.now()}@example.com`, dateOfBirth: '1990-05-14', password: 'SecurePass123' });
   const token = emp.body.token;
   const employer = `Globex ${Date.now()}`;
   await put('/profile', {
@@ -1609,9 +1609,9 @@ test('GET /employee — profile and tasks are derived from the real employment p
 // ─── Referrals ──────────────────────────────────────────────────────────────
 
 test('GET /referrals + POST /referrals/claim — real validation and persistence, not an unconditional success', async () => {
-  const referrer = await post('/auth/register', { name: 'Referrer', email: `referrer-${Date.now()}@example.com`, password: 'SecurePass123' });
+  const referrer = await post('/auth/register', { name: 'Referrer', email: `referrer-${Date.now()}@example.com`, dateOfBirth: '1990-05-14', password: 'SecurePass123' });
   const referrerToken = referrer.body.token;
-  const friend = await post('/auth/register', { name: 'Referred Friend', email: `friend-${Date.now()}@example.com`, password: 'SecurePass123' });
+  const friend = await post('/auth/register', { name: 'Referred Friend', email: `friend-${Date.now()}@example.com`, dateOfBirth: '1990-05-14', password: 'SecurePass123' });
   const friendToken = friend.body.token;
 
   const before = await get('/referrals', referrerToken);
@@ -1657,7 +1657,7 @@ test('Unknown route returns generic 404', async () => {
 
 async function freshUser(tag: string) {
   const email = `${tag}.${Date.now()}.${Math.floor(Math.random() * 1e6)}@example.com`;
-  const r = await post('/auth/register', { name: 'Chat Tester', email, password: 'ChatTest#2026x' });
+  const r = await post('/auth/register', { name: 'Chat Tester', email, dateOfBirth: '1990-05-14', password: 'ChatTest#2026x' });
   return r.body.token as string;
 }
 
@@ -1722,7 +1722,7 @@ test('Face scores outside 0–100 are rejected (a huge number must not normalise
 
 test('Admin purge erases an account: applications, face template and the login itself', async () => {
   const email = `purge.${Date.now()}@example.com`;
-  const reg = await post('/auth/register', { name: 'Purge Me', email, password: 'PurgeMe#2026x' });
+  const reg = await post('/auth/register', { name: 'Purge Me', email, dateOfBirth: '1990-05-14', password: 'PurgeMe#2026x' });
   const token = reg.body.token as string;
   const uid = uidOf(token);
   await post('/applications', { destinationCountry: 'France', visaType: 'Tourist', intendedFrom: '2026-12-01' }, token);
@@ -1756,7 +1756,7 @@ const googlePost = async (path: string, body: unknown, token?: string) => {
 test('Google sign-in — a new Google user gets a real account that survives a session refresh', async () => {
   const email = `g.new.${Date.now()}@example.com`;
   fakeGoogle['tok-new'] = { email, emailVerified: true, name: 'Gina Google', sub: `sub-${Date.now()}` };
-  const first = await googlePost('/auth/google', { idToken: 'tok-new' });
+  const first = await googlePost('/auth/google', { idToken: 'tok-new', dateOfBirth: '1990-05-14' });
   assert.equal(first.res.status, 201);
   assert.equal(first.body.user.name, 'Gina Google');
   // Regression: refresh looked the user up by email and 401'd for Google users, signing them out on every app restart.
@@ -1770,7 +1770,7 @@ test('Google sign-in — a new Google user gets a real account that survives a s
 
 test('Google sign-in — links to the existing password account with the same verified email (one person, one account)', async () => {
   const email = `g.link.${Date.now()}@example.com`;
-  const reg = await post('/auth/register', { name: 'Linked Person', email, password: 'LinkMe#2026x' });
+  const reg = await post('/auth/register', { name: 'Linked Person', email, dateOfBirth: '1990-05-14', password: 'LinkMe#2026x' });
   fakeGoogle['tok-link'] = { email, emailVerified: true, name: 'Someone Else', sub: `sub-link-${Date.now()}` };
   const g = await googlePost('/auth/google', { idToken: 'tok-link' });
   assert.equal(g.res.status, 200);
@@ -1789,7 +1789,7 @@ test('Google sign-in — an unverified Google email cannot claim an account, and
 test('Suspended accounts cannot sign in (password or Google) and their session stops refreshing', async () => {
   const email = `g.susp.${Date.now()}@example.com`;
   fakeGoogle['tok-susp'] = { email, emailVerified: true, name: 'Sam Suspended', sub: `sub-susp-${Date.now()}` };
-  const g = await googlePost('/auth/google', { idToken: 'tok-susp' });
+  const g = await googlePost('/auth/google', { idToken: 'tok-susp', dateOfBirth: '1990-05-14' });
   const admin = await demoToken('platform_admin');
   assert.equal((await post(`/admin/users/${g.body.user.uid}/suspend`, {}, admin)).res.status, 200);
   const again = await googlePost('/auth/google', { idToken: 'tok-susp' });
@@ -1798,7 +1798,7 @@ test('Suspended accounts cannot sign in (password or Google) and their session s
   assert.equal((await googlePost('/auth/refresh', {}, g.body.token)).res.status, 401, 'an existing session stops refreshing');
 
   const pwEmail = `pw.susp.${Date.now()}@example.com`;
-  const reg = await post('/auth/register', { name: 'Pat Password', email: pwEmail, password: 'Suspend#2026x' });
+  const reg = await post('/auth/register', { name: 'Pat Password', email: pwEmail, dateOfBirth: '1990-05-14', password: 'Suspend#2026x' });
   await post(`/admin/users/${reg.body.user.uid}/suspend`, {}, admin);
   const login = await post('/auth/session', { email: pwEmail, password: 'Suspend#2026x' });
   assert.equal(login.res.status, 403);
@@ -1831,7 +1831,7 @@ test('Consultant invite → set password → consultant-only sign-in; a normal c
   assert.equal(me.body.consultantId, consultantId);
 
   // A normal client account is refused at the consultant door, with a clear reason.
-  const client = await post('/auth/register', { name: 'Just A Client', email: `client.${Date.now()}@example.com`, password: 'ClientOnly#2026x' });
+  const client = await post('/auth/register', { name: 'Just A Client', email: `client.${Date.now()}@example.com`, dateOfBirth: '1990-05-14', password: 'ClientOnly#2026x' });
   const refused = await post('/auth/consultant-session', { email: client.body.user.email, password: 'ClientOnly#2026x' });
   assert.equal(refused.res.status, 403);
   assert.equal(refused.body.error.code, 'NOT_A_CONSULTANT');
@@ -1997,4 +1997,92 @@ test('Consultant schedule — a deleted application never shows as "case shared"
   const row = (await get('/consultant/appointments', priya)).body.appointments.find((a: { bookingId: string }) => a.bookingId === booking.body.bookingId);
   if (row) assert.equal(row.access.granted, false, 'no access is shown for a deleted application');
   assert.equal((await get(`/consultant/appointments/${booking.body.bookingId}/case`, priya)).res.status, 403, 'the case is closed');
+});
+
+// ─── Legal compliance: age gate, uploads, email footer and unsubscribe ─────────
+
+import { ageOn, ageBandOf, uploadProblem, withEmailFooter, unsubscribeUrl, verifyUnsubscribeToken, MAX_UPLOAD_BYTES } from './services/compliance.js';
+
+test('Age gate — a birth date is required, real, and computes the age correctly', () => {
+  const now = new Date('2026-10-05T12:00:00Z');
+  assert.equal(ageOn('2013-10-05', now), 13, 'birthday today counts as that age');
+  assert.equal(ageOn('2013-10-06', now), 12, 'the day after the birthday is not yet 13');
+  assert.equal(ageOn('2001-02-30', now), null, 'a date that does not exist is rejected');
+  assert.equal(ageOn('2030-01-01', now), null, 'a future date is rejected');
+  assert.equal(ageOn('not-a-date', now), null);
+  assert.equal(ageOn(undefined, now), null);
+  assert.equal(ageBandOf(17), 'under_18');
+  assert.equal(ageBandOf(18), '18_plus');
+});
+
+test('Age gate — under 13 gets no account, and no record is created (COPPA)', async () => {
+  const email = `child.${Date.now()}@example.com`;
+  const young = new Date(Date.now() - 10 * 365.25 * 86400000).toISOString().slice(0, 10);
+  const refused = await post('/auth/register', { name: 'Young Person', email, password: 'ChildSafe#2026', dateOfBirth: young });
+  assert.equal(refused.res.status, 403);
+  assert.equal(refused.body.error.code, 'AGE_RESTRICTED');
+  assert.equal((await post('/auth/session', { email, password: 'ChildSafe#2026' })).res.status, 401, 'no account was created');
+  assert.equal((await post('/auth/register', { name: 'No Date', email: `nodob.${Date.now()}@example.com`, password: 'NoDate#2026x' })).body.error.code, 'DOB_REQUIRED');
+});
+
+test('Age gate — a new Google account must give a birth date, and a child is refused', async () => {
+  fakeGoogle['tok-kid'] = { email: `kid.${Date.now()}@example.com`, emailVerified: true, name: 'Kid', sub: `sub-kid-${Date.now()}` };
+  const asked = await googlePost('/auth/google', { idToken: 'tok-kid' });
+  assert.equal(asked.res.status, 428);
+  assert.equal(asked.body.error.code, 'AGE_REQUIRED');
+  const young = new Date(Date.now() - 9 * 365.25 * 86400000).toISOString().slice(0, 10);
+  const refused = await googlePost('/auth/google', { idToken: 'tok-kid', dateOfBirth: young });
+  assert.equal(refused.res.status, 403);
+  assert.equal(refused.body.error.code, 'AGE_RESTRICTED');
+});
+
+test('Uploads — only document types we read, and a 10 MB limit (unit)', () => {
+  assert.equal(uploadProblem('application/pdf', 'aGk='), null);
+  assert.equal(uploadProblem('image/jpeg', undefined), null);
+  assert.equal(uploadProblem('image/heic', 'aGk=')?.code, undefined, 'HEIC is allowed');
+  assert.equal(uploadProblem('text/html', 'PGgxPg==')?.code, 'UNSUPPORTED_FILE_TYPE');
+  assert.equal(uploadProblem('application/x-msdownload', 'aGk=')?.status, 415);
+  assert.equal(uploadProblem(undefined, 'aGk=')?.code, 'UNSUPPORTED_FILE_TYPE');
+  const tooBig = 'A'.repeat(Math.ceil((MAX_UPLOAD_BYTES * 4) / 3) + 8);
+  assert.equal(uploadProblem('image/png', tooBig)?.code, 'FILE_TOO_LARGE');
+});
+
+test('Uploads — the audit endpoint refuses an HTML or script upload before anything is stored', async () => {
+  const token = await registerFresh('upload-type');
+  const app = await post('/applications', { destinationCountry: 'France', visaType: 'schengen-tourist', intendedFrom: '2027-03-01' }, token);
+  const appId = app.body.application.id as string;
+  const slot = await post('/upload-slots', { applicationId: appId, documentId: 'doc-type-check' }, token);
+  assert.equal(slot.res.status, 201);
+  const bad = await post('/audit', { applicationId: appId, documentId: 'doc-type-check', documentType: 'passport', imageBase64: 'PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==', mimeType: 'text/html' }, token);
+  assert.equal(bad.res.status, 415);
+  assert.equal(bad.body.error.code, 'UNSUPPORTED_FILE_TYPE');
+});
+
+test('Email footer — every outgoing email carries the unsubscribe link and the postal address (CAN-SPAM)', () => {
+  const prev = process.env.COMPANY_POSTAL_ADDRESS;
+  process.env.COMPANY_POSTAL_ADDRESS = 'Visa With Ease, Business Bay, Dubai, UAE';
+  try {
+    const html = withEmailFooter('someone@example.com', '<p>Hello</p><a href="{{unsubscribe_link}}">x</a>');
+    assert.ok(html.includes('Business Bay, Dubai, UAE'), 'physical address present');
+    assert.ok(html.includes('/email/unsubscribe?e=someone%40example.com&t='), 'a real unsubscribe link for this recipient');
+    assert.ok(!html.includes('{{unsubscribe_link}}'), 'the placeholder is replaced');
+    assert.ok(html.includes('Unsubscribe'), 'a visible unsubscribe line');
+    process.env.COMPANY_POSTAL_ADDRESS = '';
+    assert.ok(withEmailFooter('a@b.co', '<p>x</p>').includes('Postal address not configured'), 'a missing address is visible, not silently dropped');
+  } finally {
+    if (prev === undefined) delete process.env.COMPANY_POSTAL_ADDRESS; else process.env.COMPANY_POSTAL_ADDRESS = prev;
+  }
+});
+
+test('Unsubscribe — a signed link opts that address out; a forged or edited link does not', async () => {
+  const email = `unsub.${Date.now()}@example.com`;
+  await post('/auth/register', { name: 'Unsub Me', email, password: 'Unsub#2026x', dateOfBirth: '1990-05-14' });
+  const link = new URL(unsubscribeUrl(email));
+  assert.ok(verifyUnsubscribeToken(email, link.searchParams.get('t') ?? ''));
+  assert.ok(!verifyUnsubscribeToken(`someone.else.${Date.now()}@example.com`, link.searchParams.get('t') ?? ''), 'a token for one address does not work for another');
+  const forged = await fetch(`${base}/email/unsubscribe?e=${encodeURIComponent(email)}&t=forged`);
+  assert.equal(forged.status, 400);
+  const ok = await fetch(`${base}${link.pathname}${link.search}`);
+  assert.equal(ok.status, 200);
+  assert.ok((await ok.text()).includes('You are unsubscribed'));
 });

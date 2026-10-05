@@ -182,7 +182,7 @@ export function App() {
   const location = useLocation();
   const publicPaths = [
     '/', '/services', '/process', '/about', '/contact', '/faq',
-    '/privacy', '/terms', '/pricing', '/help', '/partners',
+    '/privacy', '/terms', '/dmca', '/pricing', '/help', '/partners',
     '/visa-calculator', '/bank-balance', '/embassy-finder',
     '/country-comparison', '/visa-waiver', '/rejection-analyzer',
   ];
@@ -651,6 +651,7 @@ function PublicSite() {
       <Route path="/blog/:slug" element={<BlogPostPage />} />
       <Route path="/privacy" element={<PublicPage><PrivacyPolicyPage /></PublicPage>} />
       <Route path="/terms" element={<PublicPage><TermsOfServicePage /></PublicPage>} />
+      <Route path="/dmca" element={<PublicPage><DmcaPage /></PublicPage>} />
       <Route path="/pricing" element={<PublicPage><PricingPage /></PublicPage>} />
       <Route path="/help" element={<PublicPage><HelpCenter /></PublicPage>} />
       <Route path="/partners" element={<PublicPage><EcosystemPartners /></PublicPage>} />
@@ -963,6 +964,75 @@ function PrivacyPolicyPage() {
   );
 }
 
+function DmcaPage() {
+  const h2: React.CSSProperties = { fontSize: 18, fontWeight: 700, color: '#0B1F4B', margin: '30px 0 10px' };
+  const p: React.CSSProperties = { color: '#334155', lineHeight: 1.7, margin: '0 0 12px' };
+  const ol: React.CSSProperties = { color: '#334155', lineHeight: 1.7, margin: '0 0 12px', paddingLeft: 22 };
+  const note: React.CSSProperties = { ...p, background: '#F8FAFC', border: '1px solid #E2E8F0', borderRadius: 10, padding: '12px 16px', fontSize: 13.5 };
+  // The designated agent is registered with the U.S. Copyright Office. Set these once that registration is done.
+  const agentEmail = (import.meta as { env?: Record<string, string | undefined> }).env?.VITE_DMCA_EMAIL || 'support@visawithease.app';
+  const agentRegistered = !!(import.meta as { env?: Record<string, string | undefined> }).env?.VITE_DMCA_AGENT_NAME;
+  const agentName = (import.meta as { env?: Record<string, string | undefined> }).env?.VITE_DMCA_AGENT_NAME ?? 'Visa With Ease — Copyright Agent';
+  const agentAddress = (import.meta as { env?: Record<string, string | undefined> }).env?.VITE_DMCA_AGENT_ADDRESS;
+  return (
+    <section className="page" style={{ maxWidth: 820, margin: '0 auto' }}>
+      <div className="page-title"><div><p>Legal</p><h1>Copyright (DMCA) notices</h1></div></div>
+      <article className="panel" style={{ padding: '28px 32px' }}>
+        <p style={p}>
+          Visa With Ease does not publish anything you upload. Documents you add stay in your account and are
+          only shared with a consultant you choose. If you believe material on Visa With Ease infringes your
+          copyright, tell our designated copyright agent using the steps below.
+        </p>
+
+        <h2 style={h2}>Designated copyright agent</h2>
+        <div style={note}>
+          <strong>{agentName}</strong><br />
+          Email: <a href={`mailto:${agentEmail}`} style={{ color: '#1A56DB' }}>{agentEmail}</a><br />
+          {agentAddress ? <>Postal address: {agentAddress}</> : null}
+          {!agentRegistered && (
+            <p style={{ margin: '10px 0 0', color: '#B45309' }}>
+              The designated agent is being registered with the U.S. Copyright Office. Until that is confirmed,
+              send notices to the email above; they are reviewed the same way.
+            </p>
+          )}
+        </div>
+
+        <h2 style={h2}>What a valid notice must contain</h2>
+        <ol style={ol}>
+          <li>Your physical or electronic signature.</li>
+          <li>Identification of the copyrighted work you say is infringed (or a list of works, if several).</li>
+          <li>Identification of the material you want removed, with enough detail for us to find it (the web address).</li>
+          <li>Your name, postal address, telephone number and email address.</li>
+          <li>A statement that you have a good-faith belief the use is not authorised by the owner, its agent or the law.</li>
+          <li>A statement, under penalty of perjury, that the information in the notice is accurate and that you are the owner or authorised to act for the owner.</li>
+        </ol>
+
+        <h2 style={h2}>What happens next</h2>
+        <ol style={ol}>
+          <li>We review the notice and remove or disable the material expeditiously if it is valid.</li>
+          <li>We tell the account holder and give them the chance to send a counter-notice.</li>
+          <li>If a counter-notice is valid, we restore the material unless the owner files a court action.</li>
+          <li>Repeat infringers lose their accounts under our terms.</li>
+        </ol>
+
+        <h2 style={h2}>Registering a designated agent with the U.S. Copyright Office</h2>
+        <p style={p}>This is what the service provider does once, so that copyright notices reach a named person. Our steps:</p>
+        <ol style={ol}>
+          <li>Go to the Copyright Office designated agent directory (https://dmca.copyright.gov/) and create an account.</li>
+          <li>Enter the agent’s name, postal address, telephone and email, and the service name (Visa With Ease).</li>
+          <li>Pay the filing fee shown on that site (the amount is set by the Copyright Office and can change; check it there).</li>
+          <li>Keep the registration current: renew it every three years, and update it whenever the agent’s details change.</li>
+          <li>Publish the agent’s details here (set VITE_DMCA_AGENT_NAME, VITE_DMCA_EMAIL and VITE_DMCA_AGENT_ADDRESS on the server build) so this page shows the registered contact.</li>
+        </ol>
+
+        <p style={{ ...p, color: '#64748B', fontSize: 13 }}>
+          This page explains our process; it is not legal advice. Misleading notices can carry legal liability for the sender.
+        </p>
+      </article>
+    </section>
+  );
+}
+
 function TermsOfServicePage() {
   const h2: React.CSSProperties = { fontSize: 18, fontWeight: 700, color: '#0B1F4B', margin: '30px 0 10px' };
   const p: React.CSSProperties = { color: '#334155', lineHeight: 1.7, margin: '0 0 12px' };
@@ -1014,7 +1084,7 @@ function TermsOfServicePage() {
           limited license to process Your Content solely to provide the Service to you (generating audit
           results, scores, and — if you request it — sharing relevant details with a consultant you book). We
           do not use Your Content to train AI models, and our handling of it is described in the{' '}
-          <Link to="/privacy" style={lnk}>Privacy Policy</Link>.
+          <Link to="/privacy" style={lnk}>Privacy Policy</Link>. Copyright complaints about material on the Service are handled under our <Link to="/dmca" style={lnk}>DMCA notice process</Link>.
         </p>
 
         <h2 style={h2}>5. Consultants and third-party bookings</h2>

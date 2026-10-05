@@ -134,6 +134,17 @@ const CHAT_DOC_TIPS: Record<string, string> = {
   medical: 'Hospital letter with the appointment date and treatment plan.',
 };
 
+/** A birth date the server will accept: a real past date, plausibly old. Mirrors the server's check. */
+function dobValid(v: string): boolean {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(v.trim());
+  if (!m) return false;
+  const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
+  const date = new Date(Date.UTC(y, mo - 1, d));
+  if (date.getUTCFullYear() !== y || date.getUTCMonth() !== mo - 1 || date.getUTCDate() !== d) return false;
+  const now = new Date();
+  return date.getTime() <= now.getTime() && now.getUTCFullYear() - y <= 120;
+}
+
 const OFF_TOPIC_REPLY = "I can only help with visa and immigration questions — things like document requirements, embassy rules, application timelines, and travel eligibility. What visa question can I help you with?";
 
 const tabs = [
@@ -837,23 +848,38 @@ function AppInner() {
     }
   };
 
-  const handleGoogleLogin = async () => {
+  // A first-time Google account needs a birth date (COPPA). The server answers AGE_REQUIRED (428) and the
+  // app asks once; the Google token is kept so the person doesn't have to pick their account again.
+  const pendingGoogleToken = useRef<string | null>(null);
+  const [googleNeedsDob, setGoogleNeedsDob] = useState(false);
+  const handleGoogleLogin = async (dateOfBirth?: string) => {
     if (loginLoading) return;
     setLoginError('');
     setLoginLoading(true);
     try {
-      await GoogleSignin.hasPlayServices();
-      const userInfo = await GoogleSignin.signIn();
-      // Backing out of the Google account screen is not an error.
-      if ((userInfo as { type?: string }).type === 'cancelled' || !userInfo.data) return;
-      const idToken = userInfo.data.idToken;
-      if (!idToken) throw new Error('Google did not return an identity token. This usually means the app’s Google setup is incomplete — sign in with email for now.');
-      const session = await apiGoogleLogin(idToken);
+      let idToken = dateOfBirth ? pendingGoogleToken.current : null;
+      if (!idToken) {
+        await GoogleSignin.hasPlayServices();
+        const userInfo = await GoogleSignin.signIn();
+        // Backing out of the Google account screen is not an error.
+        if ((userInfo as { type?: string }).type === 'cancelled' || !userInfo.data) return;
+        idToken = userInfo.data.idToken ?? null;
+        if (!idToken) throw new Error('Google did not return an identity token. This usually means the app’s Google setup is incomplete — sign in with email for now.');
+        pendingGoogleToken.current = idToken;
+      }
+      const session = await apiGoogleLogin(idToken, dateOfBirth);
+      pendingGoogleToken.current = null;
+      setGoogleNeedsDob(false);
       await startSession(session);
       setAuthUser(session.user);
       await routeAfterAuth(false, session.user.roles, session.user.uid);
       void offerBiometricLock(session.user.uid);
     } catch (e: any) {
+      if (e?.status === 428 || e?.code === 'AGE_REQUIRED') {
+        setGoogleNeedsDob(true);
+        setLoginError('Enter your date of birth to finish creating your account.');
+        return;
+      }
       if (e?.code === statusCodes.SIGN_IN_CANCELLED) return;
       if (e?.code === statusCodes.IN_PROGRESS) return;
       // Say what actually went wrong instead of a raw SDK code.
@@ -1133,7 +1159,9 @@ function AppInner() {
             setPassword={setAuthPassword}
             toggleAccepted={() => setAcceptedTerms((value) => !value)}
             start={handleLogin}
-            onGoogleLogin={handleGoogleLogin}
+            onGoogleLogin={() => { void handleGoogleLogin(); }}
+            googleNeedsDob={googleNeedsDob}
+            onGoogleDobSubmit={(dob) => { void handleGoogleLogin(dob); }}
             onForgot={() => setRoute({ name: 'forgotPassword' })}
             onRegister={() => setRoute({ name: 'register' })}
             onConsultantLogin={() => setRoute({ name: 'consultantLogin' })}
@@ -1648,9 +1676,28 @@ function tripCountdown(dateISO: string) {
   return `${days} DAYS`;
 }
 
+/** Asks for the birth date once, for a brand-new Google account. */
+function GoogleBirthDateStep({ busy, onSubmit }: { busy: boolean; onSubmit: (dob: string) => void }) {
+  const [dob, setDob] = useState('');
+  const ok = dobValid(dob);
+  return (
+    <View style={{ gap: 8, marginBottom: 12, backgroundColor: colors.royal50, borderRadius: 14, padding: 12 }}>
+      <Text style={{ fontWeight: '800', color: colors.slate900 }}>One more step: your date of birth</Text>
+      <Text style={{ fontSize: 12, color: colors.slate600 }}>Needed to check you are old enough to hold an account. The date is not kept.</Text>
+      <TextInput value={dob} onChangeText={(t) => setDob(t.replace(/[^0-9-]/g, '').slice(0, 10))} keyboardType="numbers-and-punctuation" placeholder="YYYY-MM-DD" style={styles.searchInput} accessibilityLabel="Date of birth" />
+      <Pressable disabled={!ok || busy} onPress={() => onSubmit(dob.trim())} accessibilityLabel="Finish sign-up" style={[styles.primaryButton, { marginTop: 0 }, (!ok || busy) && styles.disabledButton]}>
+        <Text style={styles.primaryButtonText}>Finish sign-up</Text>
+      </Pressable>
+    </View>
+  );
+}
+
 function WelcomeScreen({
   accepted, email, password, setEmail, setPassword, toggleAccepted, start, onForgot, onRegister, onGoogleLogin, onConsultantLogin, loginError, loginLoading, setStickyFooter,
+  googleNeedsDob, onGoogleDobSubmit,
 }: {
+  googleNeedsDob: boolean;
+  onGoogleDobSubmit: (dob: string) => void;
   accepted: boolean; email: string; password: string;
   setEmail: (v: string) => void; setPassword: (v: string) => void;
   toggleAccepted: () => void; start: () => void; onForgot: () => void; onRegister: () => void;
@@ -1696,8 +1743,11 @@ function WelcomeScreen({
           </View>
         </View>
         <View>
+          {googleNeedsDob && (
+            <GoogleBirthDateStep busy={!!loginLoading} onSubmit={onGoogleDobSubmit} />
+          )}
           <Pressable style={[styles.secondaryButton, { flexDirection: 'row', gap: 10, marginBottom: 12 }]}
-            onPress={onGoogleLogin} disabled={loginLoading}>
+            onPress={() => onGoogleLogin()} disabled={loginLoading}>
             <Ionicons name="logo-google" size={18} color={colors.slate700} />
             <Text style={[styles.secondaryButtonText, { fontWeight: '700' }]}>Continue with Google</Text>
           </Pressable>
@@ -6778,6 +6828,7 @@ function RegisterScreen({ back, onSuccess, setStickyFooter }: { back: () => void
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [dob, setDob] = useState('');
   const [strength, setStrength] = useState(0);
   const [accepted, setAccepted] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -6793,14 +6844,14 @@ function RegisterScreen({ back, onSuccess, setStickyFooter }: { back: () => void
   };
   const strengthColors = ['#DC2626','#F59E0B','#3B82F6','#10B981'];
   const strengthLabels = ['Weak','Fair','Good','Strong'];
-  const canCreate = name.length > 1 && email.includes('@') && password.length >= 8 && accepted && !loading;
+  const canCreate = name.length > 1 && email.includes('@') && password.length >= 8 && dobValid(dob) && accepted && !loading;
 
   const handleCreate = async () => {
     if (!canCreate) return;
     setError('');
     setLoading(true);
     try {
-      const session = await apiRegister(name.trim(), email.trim(), password);
+      const session = await apiRegister(name.trim(), email.trim(), password, dob.trim());
       onSuccess(session);
     } catch (e: any) {
       setError(e?.message ?? 'Registration failed. Please try again.');
@@ -6819,6 +6870,9 @@ function RegisterScreen({ back, onSuccess, setStickyFooter }: { back: () => void
         <TextInput value={name} onChangeText={setName} placeholder="Your full name" style={styles.searchInput} />
         <Text style={[styles.rowMeta, { marginBottom: 6 }]}>Email address</Text>
         <TextInput value={email} onChangeText={setEmail} autoCapitalize="none" keyboardType="email-address" placeholder="you@example.com" style={styles.searchInput} />
+        <Text style={[styles.rowMeta, { marginBottom: 6 }]}>Date of birth</Text>
+        <TextInput value={dob} onChangeText={(t) => setDob(t.replace(/[^0-9-]/g, '').slice(0, 10))} keyboardType="numbers-and-punctuation" placeholder="YYYY-MM-DD" style={[styles.searchInput, dob.length > 0 && !dobValid(dob) && { borderColor: '#DC2626', borderWidth: 1.5 }]} accessibilityLabel="Date of birth" />
+        <Text style={[styles.rowMeta, { marginBottom: 12, fontSize: 11.5 }]}>Used only to check you are old enough to hold an account. The date itself is not kept.</Text>
         <Text style={[styles.rowMeta, { marginBottom: 6 }]}>Password</Text>
         <TextInput value={password} onChangeText={v => { setPassword(v); calcStrength(v); }} secureTextEntry placeholder="Minimum 8 characters" style={styles.searchInput} />
         {password.length > 0 && (

@@ -59,7 +59,7 @@ test('Mobile: demo login as consumer — returns valid session', async () => {
 
 test('Mobile: email/password login — returns session with consumer role', async () => {
   await api('POST', '/auth/register', {
-    name: 'Test User', email: 'user@test.visaiq.app', password: 'SecurePass99'
+    name: 'Test User', email: 'user@test.visaiq.app', dateOfBirth: '1990-05-14', password: 'SecurePass99'
   });
   const r = await api('POST', '/auth/session', {
     email: 'user@test.visaiq.app', password: 'SecurePass99', remember: false
@@ -70,7 +70,7 @@ test('Mobile: email/password login — returns session with consumer role', asyn
 
 test('Mobile: email/password login — rejects wrong password', async () => {
   await api('POST', '/auth/register', {
-    name: 'Wrong Pw User', email: 'wrongpw@test.visaiq.app', password: 'CorrectPass99'
+    name: 'Wrong Pw User', email: 'wrongpw@test.visaiq.app', dateOfBirth: '1990-05-14', password: 'CorrectPass99'
   });
   const r = await api('POST', '/auth/session', {
     email: 'wrongpw@test.visaiq.app', password: 'IncorrectPass99', remember: false
@@ -81,7 +81,7 @@ test('Mobile: email/password login — rejects wrong password', async () => {
 test('Mobile: registration — creates account and returns session', async () => {
   const email = `mobile${Date.now()}@test.visaiq.app`;
   const r = await api('POST', '/auth/register', {
-    name: 'Mobile Test', email, password: 'MobilePass123'
+    name: 'Mobile Test', email, dateOfBirth: '1990-05-14', password: 'MobilePass123'
   });
   assert.equal(r.status, 201);
   assert.equal(r.body.user.email, email);
@@ -90,7 +90,7 @@ test('Mobile: registration — creates account and returns session', async () =>
 
 test('Mobile: short password returns 400 on register', async () => {
   const r = await api('POST', '/auth/register', {
-    name: 'Test', email: 'x@example.com', password: '123'
+    name: 'Test', email: 'x@example.com', dateOfBirth: '1990-05-14', password: '123'
   });
   assert.equal(r.status, 400);
   assert.ok(r.body.error?.message?.toLowerCase().includes('password'));

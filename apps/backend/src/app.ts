@@ -1,5 +1,7 @@
 import { faqCatalog, getFaq, faqReply, answerFromKnowledge, needsApplications } from './services/chatKnowledge.js';
 import { requirementsForProfile } from './services/profileRequirements.js';
+import { ageOn, ageBandOf, minSignupAge, uploadProblem, verifyUnsubscribeToken, withEmailFooter } from './services/compliance.js';
+import { setEmailOptOut } from './services/appStore.js';
 import { createHash, randomBytes } from 'node:crypto';
 import cors from 'cors';
 import express from 'express';
@@ -288,9 +290,18 @@ export function createApp(services: Services = createServices(), options: AppOpt
 
   // Registration — creates account, returns session token immediately
   app.post('/auth/register', authLimiter, async (req, res) => {
-    const { name, email, password } = req.body ?? {};
+    const { name, email, password, dateOfBirth } = req.body ?? {};
     if (!email || !password || !name || typeof email !== 'string' || typeof password !== 'string' || typeof name !== 'string') {
       return res.status(400).json({ error: { code: 'INVALID_BODY', message: 'name, email and password are required' } });
+    }
+    // Age gate (COPPA): a birth date is required, and children under the minimum age get no account at all.
+    // The date itself is not stored — only the age band.
+    const age = ageOn(dateOfBirth);
+    if (age === null) {
+      return res.status(400).json({ error: { code: 'DOB_REQUIRED', message: 'Enter your date of birth (day, month and year).' } });
+    }
+    if (age < minSignupAge()) {
+      return res.status(403).json({ error: { code: 'AGE_RESTRICTED', message: `You must be at least ${minSignupAge()} to create an account.` } });
     }
     if (password.length < 8) {
       return res.status(400).json({ error: { code: 'WEAK_PASSWORD', message: 'Password must be at least 8 characters' } });
@@ -309,7 +320,7 @@ export function createApp(services: Services = createServices(), options: AppOpt
     // data. SHA-256 output is uniform regardless of input similarity.
     const uid = `user-${createHash('sha256').update(email.toLowerCase()).digest('base64url').slice(0, 16)}`;
     const roles = ['consumer'];
-    await createUser({ uid, email, name, passwordHash: hashPassword(password), roles });
+    await createUser({ uid, email, name, passwordHash: hashPassword(password), roles, ageBand: ageBandOf(age) });
     const token = signToken({ uid, email, roles }, '7d');
     res.status(201).json({ token, user: { uid, email, name, roles }, expiresAt });
   });
@@ -345,12 +356,22 @@ export function createApp(services: Services = createServices(), options: AppOpt
       let record = await getUserByEmail(email);
       const created = !record;
       if (!record) {
+        // Age gate for a new Google account, before anything is created. Google doesn't tell us the birth date,
+        // so the app asks for it once (428 AGE_REQUIRED) and sends it with the next attempt.
+        const age = ageOn(req.body?.dateOfBirth);
+        if (age === null) {
+          return res.status(428).json({ error: { code: 'AGE_REQUIRED', message: 'Enter your date of birth to finish creating your account.' } });
+        }
+        if (age < minSignupAge()) {
+          return res.status(403).json({ error: { code: 'AGE_RESTRICTED', message: `You must be at least ${minSignupAge()} to create an account.` } });
+        }
         record = {
           uid: `google-${identity.sub}`,
           email,
           name: identity.name ?? email.split('@')[0],
           passwordHash: hashPassword(randomBytes(32).toString('hex')),
           roles: ['consumer'],
+          ageBand: ageBandOf(age),
         };
         await createUser(record);
       }
@@ -743,6 +764,12 @@ export function createApp(services: Services = createServices(), options: AppOpt
       // Never blocks or fails the audit itself: Storage may not be enabled
       // on this project yet, and that must not break scanning.
       const { imageBase64, mimeType } = req.body as { imageBase64?: string; mimeType?: string };
+      // Content rules: only the document types we can read, and a size limit (the file itself is stored with the
+      // account; nothing is published, and only the owner and a granted consultant can ever see it).
+      if (imageBase64 || mimeType) {
+        const problem = uploadProblem(mimeType, imageBase64);
+        if (problem) return res.status(problem.status).json({ error: { code: problem.code, message: problem.message } });
+      }
       if (imageBase64 && mimeType) {
         const storagePath = await saveDocumentImage(applicationId, documentId, imageBase64, mimeType);
         if (storagePath) await saveDocumentFilePath(documentId, storagePath);
@@ -2160,6 +2187,23 @@ export function createApp(services: Services = createServices(), options: AppOpt
   // /auth/session and /auth/google below). There is still no scheduled job
   // that purges data once scheduledFor passes — that needs real
   // infrastructure on the server this app deploys to, not just an API route.
+  // Unsubscribe from non-essential email. The link in every email carries a signed token for that address only.
+  app.get('/email/unsubscribe', async (req, res, next) => {
+    try {
+      const email = typeof req.query.e === 'string' ? req.query.e : '';
+      const token = typeof req.query.t === 'string' ? req.query.t : '';
+      const page = (title: string, body: string) => `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><body style="font-family:sans-serif;max-width:480px;margin:48px auto;padding:0 20px;color:#0F172A"><h1 style="font-size:22px">${title}</h1><p style="line-height:1.6;color:#334155">${body}</p></body>`;
+      if (!email || !token || !verifyUnsubscribeToken(email, token)) {
+        return res.status(400).type('html').send(page('Link not valid', 'This unsubscribe link is not valid. Sign in to Visa With Ease to manage your email settings.'));
+      }
+      const updated = await setEmailOptOut(email, true);
+      await appendAuditLog({ actor: email, action: 'EMAIL_UNSUBSCRIBE', resource: 'email', ip: req.ip ?? '?' });
+      res.type('html').send(page('You are unsubscribed', updated ? 'You will no longer receive non-essential emails from Visa With Ease. Account and security emails will still be sent.' : 'You are unsubscribed.'));
+    } catch (err) {
+      next(err);
+    }
+  });
+
   app.post('/auth/delete-account', requireAuth, async (req, res, next) => {
     try {
       const scheduledFor = new Date(Date.now() + 30 * 86400000).toISOString();

@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   login as apiLogin, register as apiRegister, googleLogin as apiGoogleLogin,
   sendChatMessage, setUnauthorizedHandler, consultantLogin as apiConsultantLogin, setToken, startSession, endSession, restoreSession,
-  fetchApplications, createApplication as apiCreateApplication,
+  fetchApplications, createApplication as apiCreateApplication, previewRequirements, type ApplicantProfile,
   fetchConsultants as apiFetchConsultants,
   fetchSessionOptions as apiFetchSessionOptions,
   createBooking as apiCreateBooking,
@@ -125,6 +125,13 @@ const CHAT_DOC_TIPS: Record<string, string> = {
   insurance: 'The policy certificate showing cover amount and travel dates.',
   itinerary: 'Flight and hotel reservations with dates matching your application.',
   photo: 'Plain light background, neutral face, no glasses, taken in the last 6 months.',
+  sponsor: 'Signed sponsor letter with the sponsor’s bank statements and ID.',
+  business: 'Trade licence or company papers and the last two years of tax records.',
+  study: 'Admission or enrolment letter with the course dates and fees.',
+  family: 'Invitation or host ID, or the marriage and birth certificates.',
+  refusal: 'The earlier refusal letter, with a written explanation of what has changed.',
+  consent: 'Signed by both parents or guardians, with copies of their IDs.',
+  medical: 'Hospital letter with the appointment date and treatment plan.',
 };
 
 const OFF_TOPIC_REPLY = "I can only help with visa and immigration questions — things like document requirements, embassy rules, application timelines, and travel eligibility. What visa question can I help you with?";
@@ -399,6 +406,8 @@ function AppInner() {
   const [newAppResidence, setNewAppResidence] = useState('');
   const [newAppDestination, setNewAppDestination] = useState('');
   const [newAppTravelFrom, setNewAppTravelFrom] = useState('');
+  // The applicant's answers (about you, money, history, family) — they decide which documents apply.
+  const [newAppProfile, setNewAppProfile] = useState<ApplicantProfile>({});
   const [newAppCreating, setNewAppCreating] = useState(false);
 
   // Nationality and residence rarely change between applications — carry
@@ -633,6 +642,7 @@ function AppInner() {
         applicantName: authUser?.name ?? 'Applicant',
         nationality: newAppNationality.trim() || undefined,
         residenceCountry: newAppResidence.trim() || undefined,
+        profile: Object.keys(newAppProfile).length > 0 ? newAppProfile : undefined,
       });
       const normalized = normalizeApp(application);
       setAppList(prev => [normalized, ...prev]);
@@ -642,6 +652,7 @@ function AppInner() {
       savePreferences({ nationality: newAppNationality.trim(), residenceCountry: newAppResidence.trim() });
       setNewAppDestination('');
       setNewAppTravelFrom('');
+      setNewAppProfile({});
       openApplication(normalized.id);
     } catch (e: any) {
       setCreateAppError(e?.message ?? 'Could not create application. Please check your connection and try again.');
@@ -1150,13 +1161,15 @@ function AppInner() {
             setDestination={setNewAppDestination}
             travelFrom={newAppTravelFrom}
             setTravelFrom={setNewAppTravelFrom}
+            profile={newAppProfile}
+            setProfile={setNewAppProfile}
             creating={newAppCreating}
             createError={createAppError}
             setStickyFooter={setStickyFooter}
             backLabel={route.step === 0 ? 'Skip for now' : 'Back'}
             back={() => { setCreateAppError(''); route.step === 0 ? goHome() : setRoute({ name: 'onboarding', step: route.step - 1 }); }}
             next={() => {
-              if (route.step < 3) {
+              if (route.step < 5) {
                 setCreateAppError('');
                 setRoute({ name: 'onboarding', step: route.step + 1 });
               } else {
@@ -1300,12 +1313,14 @@ function AppInner() {
             setDestination={setNewAppDestination}
             travelFrom={newAppTravelFrom}
             setTravelFrom={setNewAppTravelFrom}
+            profile={newAppProfile}
+            setProfile={setNewAppProfile}
             creating={newAppCreating}
             createError={createAppError}
             setStickyFooter={setStickyFooter}
             back={() => { setCreateAppError(''); route.step === 0 ? setRoute({ name: 'tabs', tab: 'apps' }) : setRoute({ name: 'newApp', step: route.step - 1 }); }}
             next={() => {
-              if (route.step < 3) {
+              if (route.step < 5) {
                 setCreateAppError('');
                 setRoute({ name: 'newApp', step: route.step + 1 });
               } else {
@@ -2397,11 +2412,112 @@ const VISA_TYPES = [
   { id: 'australia-student',  label: 'Australia Student (500)',flag: '🇦🇺', popular: false, desc: 'Australia student visa · A$650',              dest: 'Australia' },
 ];
 
+const PURPOSE_OPTIONS: Array<{ id: NonNullable<ApplicantProfile['purpose']>; label: string; hint?: string }> = [
+  { id: 'tourism', label: 'Tourism or holiday', hint: 'Sightseeing, friends or a short break' },
+  { id: 'business', label: 'Business', hint: 'Meetings, conferences or a deal' },
+  { id: 'family_visit', label: 'Visiting family or friends' },
+  { id: 'study', label: 'Study', hint: 'A course or university place' },
+  { id: 'work', label: 'Work', hint: 'A job offer or work permit' },
+  { id: 'medical', label: 'Medical treatment' },
+  { id: 'transit', label: 'Transit through' },
+  { id: 'other', label: 'Something else' },
+];
+const EMPLOYMENT_OPTIONS: Array<{ id: NonNullable<ApplicantProfile['employmentStatus']>; label: string; hint?: string }> = [
+  { id: 'employed', label: 'Employed', hint: 'You work for an employer' },
+  { id: 'self_employed', label: 'Self-employed or own a business' },
+  { id: 'student', label: 'Student' },
+  { id: 'unemployed', label: 'Not working right now' },
+  { id: 'retired', label: 'Retired' },
+  { id: 'homemaker', label: 'Looking after the home' },
+];
+const SPONSOR_OPTIONS: Array<{ id: NonNullable<ApplicantProfile['financialSponsor']>; label: string; hint?: string }> = [
+  { id: 'self', label: 'I pay for it myself' },
+  { id: 'person', label: 'A person pays (family or friend)' },
+  { id: 'company', label: 'My employer or a company pays' },
+  { id: 'institution', label: 'A school, university or scholarship pays' },
+  { id: 'none', label: 'Nobody yet — still arranging funds' },
+];
+const TRAVEL_HISTORY_OPTIONS: Array<{ id: NonNullable<ApplicantProfile['travelHistory']>; label: string; hint?: string }> = [
+  { id: 'first_time', label: 'Never travelled abroad' },
+  { id: 'visited_no_issues', label: 'Travelled before, no problems', hint: 'Always left on time' },
+  { id: 'previously_refused', label: 'A visa was refused before', hint: 'You will need the refusal letter' },
+  { id: 'overstayed', label: 'Stayed longer than allowed before', hint: 'Has to be explained in writing' },
+];
+const FAMILY_OPTIONS: Array<{ id: NonNullable<ApplicantProfile['familySituation']>; label: string; hint?: string }> = [
+  { id: 'single', label: 'Single' },
+  { id: 'married', label: 'Married' },
+  { id: 'with_children', label: 'Married with children' },
+  { id: 'with_dependants', label: 'Dependants at home (parents or others)' },
+];
+
+/** One answer out of a short list — large, tappable, the same look as the visa type picker. */
+function ChoiceList<T extends string>({ options, value, onChange }: { options: Array<{ id: T; label: string; hint?: string }>; value?: T; onChange: (id: T) => void }) {
+  return (
+    <View style={{ gap: 8 }}>
+      {options.map((o) => {
+        const on = value === o.id;
+        return (
+          <Pressable key={o.id} onPress={() => onChange(o.id)} accessibilityRole="radio" accessibilityState={{ checked: on }} accessibilityLabel={o.label}
+            style={[styles.optionCard, on && styles.optionCardActive]}>
+            <View style={styles.flex}>
+              <Text style={styles.rowTitle}>{o.label}</Text>
+              {o.hint ? <Text style={styles.rowMeta}>{o.hint}</Text> : null}
+            </View>
+            {on && <Ionicons name="checkmark-circle" size={22} color={colors.royal600} />}
+          </Pressable>
+        );
+      })}
+    </View>
+  );
+}
+
+/** The checklist this applicant gets, built by the server from the answers so far (the same list they will see later). */
+function RequirementsPreview({ destination, profile }: { destination: string; profile: ApplicantProfile }) {
+  const [state, setState] = useState<{ loading: boolean; error?: string; items: ApiRequirement[] }>({ loading: true, items: [] });
+  const key = JSON.stringify([destination, profile]);
+  useEffect(() => {
+    let alive = true;
+    setState((prev) => ({ ...prev, loading: true, error: undefined }));
+    // A short pause so a fast tapper doesn't send one request per tap.
+    const timer = setTimeout(() => {
+      previewRequirements(destination, profile)
+        .then((r) => { if (alive) setState({ loading: false, items: r.requirements }); })
+        .catch((e: any) => { if (alive) setState({ loading: false, items: [], error: e?.message ?? 'Could not build your checklist.' }); });
+    }, 300);
+    return () => { alive = false; clearTimeout(timer); };
+  }, [key]);
+  const required = state.items.filter((i) => i.required);
+  const fromAnswers = required.filter((i) => i.id.startsWith('profile-'));
+  return (
+    <View style={[styles.stepCard, { gap: 10, marginBottom: 12 }]}>
+      <Text style={styles.rowTitle}>Your document checklist</Text>
+      {state.loading && <ActivityIndicator color={colors.royal600} />}
+      {!!state.error && <Text style={{ color: '#DC2626', fontSize: 13 }}>{state.error}</Text>}
+      {!state.loading && !state.error && (
+        <Text style={styles.rowMeta}>
+          {required.length} documents for your case{fromAnswers.length > 0 ? `, ${fromAnswers.length} because of your answers` : ''}.
+        </Text>
+      )}
+      {!state.loading && required.map((i) => (
+        <View key={i.id} style={{ flexDirection: 'row', gap: 10, alignItems: 'flex-start' }}>
+          <Ionicons name={i.id.startsWith('profile-') ? 'sparkles-outline' : 'document-text-outline'} size={18} color={i.id.startsWith('profile-') ? colors.royal600 : colors.slate500} style={{ marginTop: 2 }} />
+          <View style={styles.flex}>
+            <Text style={[styles.rowTitle, { fontSize: 14 }]}>{i.title}</Text>
+            {!!i.why && <Text style={styles.rowMeta}>{i.why}</Text>}
+          </View>
+        </View>
+      ))}
+    </View>
+  );
+}
+
 function NewApplicationScreen({
   step, visaTypeId, setVisaTypeId, nationality, setNationality, residence, setResidence,
-  destination, setDestination, travelFrom, setTravelFrom, creating, createError, back, next, backLabel, setStickyFooter,
+  destination, setDestination, travelFrom, setTravelFrom, profile, setProfile, creating, createError, back, next, backLabel, setStickyFooter,
 }: {
   step: number;
+  profile: ApplicantProfile;
+  setProfile: (p: ApplicantProfile) => void;
   visaTypeId: string; setVisaTypeId: (v: string) => void;
   nationality: string; setNationality: (v: string) => void;
   residence: string; setResidence: (v: string) => void;
@@ -2428,6 +2544,8 @@ function NewApplicationScreen({
   // The primary action is pinned to the bottom of the screen instead of
   // scrolling away below a long option list (visa types, country lists,
   // etc.) — this is the same footer slot every step below feeds into.
+  const aboutValid = !!profile.purpose && !!profile.employmentStatus && typeof profile.age === 'number' && profile.age >= 1 && profile.age <= 110;
+  const moneyValid = !!profile.financialSponsor && !!profile.travelHistory && !!profile.familySituation;
   useEffect(() => {
     if (step === 1) {
       const disabled = !nationality.trim() || !residence.trim();
@@ -2436,7 +2554,14 @@ function NewApplicationScreen({
           <Text style={[styles.primaryButtonText, disabled && styles.disabledButtonText]}>Continue →</Text>
         </Pressable>
       );
-    } else if (step === 3) {
+    } else if (step === 3 || step === 4) {
+      const disabled = step === 3 ? !aboutValid : !moneyValid;
+      setStickyFooter(
+        <Pressable style={[styles.primaryButton, { marginTop: 0 }, disabled && styles.disabledButton]} onPress={disabled ? undefined : callNext}>
+          <Text style={[styles.primaryButtonText, disabled && styles.disabledButtonText]}>Continue →</Text>
+        </Pressable>
+      );
+    } else if (step === 5) {
       const disabled = creating || !travelFromValid;
       setStickyFooter(
         <Pressable style={[styles.primaryButton, { marginTop: 0 }, disabled && styles.disabledButton]} onPress={disabled ? undefined : callNext}>
@@ -2454,13 +2579,13 @@ function NewApplicationScreen({
       );
     }
     return () => setStickyFooter(null);
-  }, [step, nationality, residence, creating, travelFromValid, callNext]);
+  }, [step, nationality, residence, creating, travelFromValid, callNext, aboutValid, moneyValid]);
 
   if (step === 0) {
     return (
       <View>
         <BackButton label={backLabel ?? 'Applications'} onPress={back} />
-        <Text style={styles.eyebrow}>New application · Step 1 of 4</Text>
+        <Text style={styles.eyebrow}>New application · Step 1 of 6</Text>
         <Text style={styles.title}>Choose visa type</Text>
         {VISA_TYPES.map(vt => (
           <Pressable key={vt.id} onPress={() => setVisaTypeId(vt.id)}
@@ -2478,7 +2603,7 @@ function NewApplicationScreen({
             {visaTypeId === vt.id && <Ionicons name="checkmark-circle" size={22} color={colors.royal600} />}
           </Pressable>
         ))}
-        <ProgressDots count={4} active={step} />
+        <ProgressDots count={6} active={step} />
       </View>
     );
   }
@@ -2487,7 +2612,7 @@ function NewApplicationScreen({
     return (
       <View>
         <BackButton label={backLabel ?? 'Applications'} onPress={back} />
-        <Text style={styles.eyebrow}>New application · Step 2 of 4</Text>
+        <Text style={styles.eyebrow}>New application · Step 2 of 6</Text>
         <Text style={styles.title}>Your nationality</Text>
         <Text style={styles.bodyText}>Enter the country that issued your primary passport.</Text>
         <View style={styles.stepCard}>
@@ -2504,7 +2629,7 @@ function NewApplicationScreen({
             placeholder="e.g. United Arab Emirates, UK"
           />
         </View>
-        <ProgressDots count={4} active={step} />
+        <ProgressDots count={6} active={step} />
       </View>
     );
   }
@@ -2514,7 +2639,7 @@ function NewApplicationScreen({
     return (
       <View>
         <BackButton label={backLabel ?? 'Applications'} onPress={back} />
-        <Text style={styles.eyebrow}>New application · Step 3 of 4</Text>
+        <Text style={styles.eyebrow}>New application · Step 3 of 6</Text>
         <Text style={styles.title}>Destination</Text>
         <Text style={styles.bodyText}>Confirm the destination country for your {selectedVt.label} visa.</Text>
         <View style={styles.stepCard}>
@@ -2525,18 +2650,65 @@ function NewApplicationScreen({
             placeholder={defaultDest}
           />
         </View>
-        <ProgressDots count={4} active={step} />
+        <ProgressDots count={6} active={step} />
       </View>
     );
   }
 
-  // step === 3 — travel dates + confirm
+  if (step === 3) {
+    const ageText = typeof profile.age === 'number' ? String(profile.age) : '';
+    return (
+      <View>
+        <BackButton label={backLabel ?? 'Applications'} onPress={back} />
+        <Text style={styles.eyebrow}>New application · Step 4 of 6</Text>
+        <Text style={styles.title}>About you</Text>
+        <Text style={styles.bodyText}>These answers decide which documents your application needs. Nothing is shared with anyone.</Text>
+        <View style={styles.stepCard}>
+          <Text style={[styles.rowMeta, { marginBottom: 6 }]}>Your age</Text>
+          <TextInput
+            value={ageText}
+            onChangeText={(t) => { const digits = t.replace(/\D/g, '').slice(0, 3); setProfile({ ...profile, age: digits ? Number(digits) : undefined }); }}
+            placeholder="e.g. 34"
+            keyboardType="number-pad"
+            style={styles.searchInput}
+            accessibilityLabel="Your age"
+          />
+        </View>
+        <Text style={[styles.rowMeta, { fontWeight: '800', marginTop: 10, marginBottom: 2 }]}>Purpose of the trip</Text>
+        <ChoiceList options={PURPOSE_OPTIONS} value={profile.purpose} onChange={(purpose) => setProfile({ ...profile, purpose })} />
+        <Text style={[styles.rowMeta, { fontWeight: '800', marginTop: 10, marginBottom: 2 }]}>Your employment</Text>
+        <ChoiceList options={EMPLOYMENT_OPTIONS} value={profile.employmentStatus} onChange={(employmentStatus) => setProfile({ ...profile, employmentStatus })} />
+        <ProgressDots count={6} active={step} />
+      </View>
+    );
+  }
+
+  if (step === 4) {
+    return (
+      <View>
+        <BackButton label={backLabel ?? 'Applications'} onPress={back} />
+        <Text style={styles.eyebrow}>New application · Step 5 of 6</Text>
+        <Text style={styles.title}>Money, history and family</Text>
+        <Text style={styles.bodyText}>Officers ask about these. Answer exactly as it is — the checklist is built from your answers.</Text>
+        <Text style={[styles.rowMeta, { fontWeight: '800', marginTop: 10, marginBottom: 2 }]}>Who pays for the trip?</Text>
+        <ChoiceList options={SPONSOR_OPTIONS} value={profile.financialSponsor} onChange={(financialSponsor) => setProfile({ ...profile, financialSponsor })} />
+        <Text style={[styles.rowMeta, { fontWeight: '800', marginTop: 10, marginBottom: 2 }]}>Your travel history</Text>
+        <ChoiceList options={TRAVEL_HISTORY_OPTIONS} value={profile.travelHistory} onChange={(travelHistory) => setProfile({ ...profile, travelHistory })} />
+        <Text style={[styles.rowMeta, { fontWeight: '800', marginTop: 10, marginBottom: 2 }]}>Family situation</Text>
+        <ChoiceList options={FAMILY_OPTIONS} value={profile.familySituation} onChange={(familySituation) => setProfile({ ...profile, familySituation })} />
+        <ProgressDots count={6} active={step} />
+      </View>
+    );
+  }
+
+  // step === 5 — travel date, the generated checklist, then create
   return (
     <View>
       <BackButton label={backLabel ?? 'Applications'} onPress={back} />
-      <Text style={styles.eyebrow}>New application · Step 4 of 4</Text>
-      <Text style={styles.title}>Travel date</Text>
+      <Text style={styles.eyebrow}>New application · Step 6 of 6</Text>
+      <Text style={styles.title}>Travel date and your checklist</Text>
       <Text style={styles.bodyText}>When do you plan to start your trip? (We use this to track your timeline.)</Text>
+      <RequirementsPreview destination={destination.trim() || selectedVt.dest} profile={profile} />
       <View style={styles.stepCard}>
         <Text style={[styles.rowMeta, { marginBottom: 6 }]}>Intended departure date (YYYY-MM-DD)</Text>
         <TextInput
@@ -2557,7 +2729,7 @@ function NewApplicationScreen({
           {travelFrom.trim() ? <Text style={styles.rowMeta}>Departing {travelFrom.trim()}</Text> : null}
         </View>
       </View>
-      <ProgressDots count={4} active={step} />
+      <ProgressDots count={6} active={step} />
       {createError ? (
         <View style={{ backgroundColor: '#FEE2E2', borderRadius: 10, padding: 12, marginBottom: 8 }}>
           <Text style={{ color: '#DC2626', fontSize: 13 }}>{createError}</Text>
@@ -2689,6 +2861,13 @@ const DOCUMENT_TYPE_OPTIONS: { id: string; label: string; icon: IoniconName }[] 
   { id: 'insurance',  label: 'Travel medical insurance',    icon: 'shield-checkmark-outline' },
   { id: 'itinerary',  label: 'Flight & hotel reservation',  icon: 'airplane-outline' },
   { id: 'photo',      label: 'Biometric photo',             icon: 'camera-outline' },
+  { id: 'sponsor',    label: 'Sponsor letter and statements', icon: 'people-outline' },
+  { id: 'business',   label: 'Business or tax records',     icon: 'business-outline' },
+  { id: 'study',      label: 'Enrolment or admission letter', icon: 'school-outline' },
+  { id: 'family',     label: 'Family or host documents',    icon: 'home-outline' },
+  { id: 'refusal',    label: 'Refusal letter or explanation', icon: 'alert-circle-outline' },
+  { id: 'consent',    label: 'Parental consent',            icon: 'document-text-outline' },
+  { id: 'medical',    label: 'Hospital or medical letter',  icon: 'medkit-outline' },
   { id: 'other',      label: 'Other supporting document',   icon: 'document-outline' },
 ];
 

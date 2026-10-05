@@ -1,4 +1,5 @@
 import { faqCatalog, getFaq, faqReply, answerFromKnowledge, needsApplications } from './services/chatKnowledge.js';
+import { requirementsForProfile } from './services/profileRequirements.js';
 import { createHash, randomBytes } from 'node:crypto';
 import cors from 'cors';
 import express from 'express';
@@ -11,6 +12,7 @@ import {
   authSessionRequestSchema,
   auditRequestSchema,
   bookingRequestSchema,
+  applicantProfileSchema,
   chatRequestSchema,
   requirementsOverrideSchema,
   userProfilePatchSchema,
@@ -579,11 +581,48 @@ export function createApp(services: Services = createServices(), options: AppOpt
         ? req.user.email.split('@')[0].split(/[._-]/).map((w: string) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
         : 'Applicant';
       const applicantName = req.body.applicantName ?? derivedName;
+      // The answers that decide which documents apply to this person. Stored with the application, and the
+      // checklist size comes from the same engine the client sees, so the two can never disagree.
+      const parsedProfile = applicantProfileSchema.safeParse(req.body?.profile ?? {});
+      if (!parsedProfile.success) {
+        return res.status(400).json({ error: { code: 'INVALID_PROFILE', message: 'One of the answers is not valid. Please check the form.' } });
+      }
+      const profile = Object.keys(parsedProfile.data).length > 0 ? parsedProfile.data : undefined;
+      const base = await services.requirements.getRequirementsForCountry(destinationCountry);
+      const documentsRequired = profile ? requirementsForProfile(base, profile).requirements.filter((r) => r.required).length : undefined;
       const application = await services.applications.createApplication(
-        { destinationCountry, visaType, intendedFrom, applicantName, purpose: purpose ?? visaType, nationality, residenceCountry },
+        { destinationCountry, visaType, intendedFrom, applicantName, purpose: purpose ?? visaType, nationality, residenceCountry, profile, documentsRequired },
         req.user?.uid
       );
       res.status(201).json({ application });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // The checklist for a destination and an applicant's answers, before an application exists (the wizard's review).
+  app.post('/requirements/preview', requireAuth, async (req, res, next) => {
+    try {
+      const { destinationCountry, profile } = (req.body ?? {}) as { destinationCountry?: unknown; profile?: unknown };
+      if (typeof destinationCountry !== 'string' || !destinationCountry.trim() || destinationCountry.length > 100) {
+        return res.status(400).json({ error: { code: 'INVALID_BODY', message: 'destinationCountry is required' } });
+      }
+      const parsed = applicantProfileSchema.safeParse(profile ?? {});
+      if (!parsed.success) return res.status(400).json({ error: { code: 'INVALID_PROFILE', message: 'One of the answers is not valid.' } });
+      const base = await services.requirements.getRequirementsForCountry(destinationCountry.trim());
+      res.json(requirementsForProfile(base, parsed.data));
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // The saved application's checklist: the same answers it was created with, so the list never drifts.
+  app.get('/applications/:id/requirements', requireAuth, async (req, res, next) => {
+    try {
+      const owned = await services.applications.getApplication(req.params.id as string, req.user!.uid);
+      if (!owned) throw notFound('Application not found');
+      const base = await services.requirements.getRequirementsForCountry(owned.destinationCountry);
+      res.json(requirementsForProfile(base, owned.profile));
     } catch (err) {
       next(err);
     }
@@ -1921,7 +1960,15 @@ export function createApp(services: Services = createServices(), options: AppOpt
       const STATUS_LABEL: Record<string, string> = { excellent: 'Passed all checks', attention_needed: 'Needs attention', issues_to_fix: 'Issues found' };
       const STATUS_COLOR: Record<string, string> = { excellent: '#10B981', attention_needed: '#F59E0B', issues_to_fix: '#DC2626' };
 
-      let documents: any[] = DOCUMENT_TEMPLATES.map(tmpl => ({
+      // An application created with answers gets the documents its answers call for (sponsor, refusal, enrolment…);
+      // older applications keep the standard six.
+      const ICONS: Record<string, string> = { passport: 'id-card-outline', bank: 'cash-outline', employment: 'briefcase-outline', insurance: 'shield-checkmark-outline', itinerary: 'airplane-outline', photo: 'camera-outline', sponsor: 'people-outline', business: 'business-outline', study: 'school-outline', family: 'home-outline', refusal: 'alert-circle-outline', consent: 'document-text-outline', medical: 'medkit-outline', other: 'document-outline' };
+      const templates = relevantApp?.profile
+        ? requirementsForProfile(await services.requirements.getRequirementsForCountry(relevantApp.destinationCountry), relevantApp.profile).requirements
+            .filter((r) => r.required)
+            .map((r) => ({ id: r.id, title: r.title, type: r.docType ?? 'other', icon: ICONS[r.docType ?? 'other'] ?? 'document-outline', required: true }))
+        : DOCUMENT_TEMPLATES;
+      let documents: any[] = templates.map(tmpl => ({
         id: `${relevantApp?.id ?? 'doc'}-${tmpl.id}`,
         title: tmpl.title,
         type: tmpl.type,

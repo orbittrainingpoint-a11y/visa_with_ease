@@ -1,4 +1,5 @@
 import type {
+  ApplicantProfile,
   AccessGrantRequest,
   AuditRequest,
   AuditResult,
@@ -37,7 +38,7 @@ export interface ApplicationRepository {
   getApplicationForStaff(id: string): Promise<VisaApplication | null>;
   /** Deletes one of the caller's own applications. false = not found / not theirs. */
   deleteApplication(id: string, userId: string): Promise<boolean>;
-  createApplication(input: { destinationCountry: string; visaType: string; intendedFrom: string; applicantName: string; purpose?: string; nationality?: string; residenceCountry?: string }, userId?: string): Promise<VisaApplication>;
+  createApplication(input: { destinationCountry: string; visaType: string; intendedFrom: string; applicantName: string; purpose?: string; nationality?: string; residenceCountry?: string; profile?: ApplicantProfile; documentsRequired?: number }, userId?: string): Promise<VisaApplication>;
 }
 
 export interface StorageService {

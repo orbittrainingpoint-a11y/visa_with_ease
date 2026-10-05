@@ -110,11 +110,12 @@ export function createFirestoreServices(db: Firestore): Services {
         status: 'draft',
         readinessScore: Math.min(baseScore, 30),
         documentsUploaded: 0,
-        documentsRequired: 6,
+        documentsRequired: input.documentsRequired ?? 6,
         issuesCount: 0,
         intendedFrom: input.intendedFrom,
         ...(input.nationality ? { nationality: input.nationality } : {}),
-        ...(input.residenceCountry ? { residenceCountry: input.residenceCountry } : {})
+        ...(input.residenceCountry ? { residenceCountry: input.residenceCountry } : {}),
+        ...(input.profile ? { profile: input.profile } : {})
       };
       await db.collection('applications').doc(id).set({ ...newApp, ownerId: uid });
       return newApp;

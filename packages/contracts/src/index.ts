@@ -42,7 +42,20 @@ export const requirementSchema = z.object({
   sourceIds: z.array(z.string()),
   // Plain-language reason this is asked for / what happens without it. Optional:
   // clients fall back to an honest generic explanation pointing at the sources.
-  why: z.string().max(600).optional()
+  why: z.string().max(600).optional(),
+  // Which kind of document satisfies this (passport, bank, employment, sponsor, refusal…). Drives the upload list.
+  docType: z.string().max(40).optional()
+});
+
+// The answers that decide which requirements apply to this applicant. Every field is optional so a
+// partly-answered profile still produces a checklist; the requirements engine (apps/backend) turns it into items.
+export const applicantProfileSchema = z.object({
+  age: z.number().int().min(1).max(110).optional(),
+  purpose: z.enum(['tourism', 'business', 'family_visit', 'study', 'work', 'medical', 'transit', 'other']).optional(),
+  employmentStatus: z.enum(['employed', 'self_employed', 'student', 'unemployed', 'retired', 'homemaker']).optional(),
+  financialSponsor: z.enum(['none', 'self', 'person', 'company', 'institution']).optional(),
+  travelHistory: z.enum(['first_time', 'visited_no_issues', 'previously_refused', 'overstayed']).optional(),
+  familySituation: z.enum(['single', 'married', 'with_children', 'with_dependants']).optional()
 });
 
 // Whether a human at Visa With Ease has checked this country's data against
@@ -88,7 +101,8 @@ export const applicationSchema = z.object({
   issuesCount: z.number(),
   intendedFrom: z.string(),
   nationality: z.string().optional(),
-  residenceCountry: z.string().optional()
+  residenceCountry: z.string().optional(),
+  profile: applicantProfileSchema.optional()
 });
 
 export const chatResponseSchema = z.object({
@@ -225,6 +239,7 @@ export type VisaContext = z.infer<typeof visaContextSchema>;
 export type Finding = z.infer<typeof findingSchema>;
 export type AuditResult = z.infer<typeof auditResultSchema>;
 export type Requirement = z.infer<typeof requirementSchema>;
+export type ApplicantProfile = z.infer<typeof applicantProfileSchema>;
 export type RequirementsResponse = z.infer<typeof requirementsResponseSchema>;
 export type RequirementsOverride = z.infer<typeof requirementsOverrideSchema>;
 export type VisaApplication = z.infer<typeof applicationSchema>;

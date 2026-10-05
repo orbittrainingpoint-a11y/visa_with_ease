@@ -1909,3 +1909,79 @@ test('Rescheduling keeps the client’s sharing: the old appointment is cancelle
   assert.equal((await post(`/bookings/${first.body.bookingId}/cancel`, {}, client)).res.status, 200);
   assert.equal((await get(`/consultant/appointments/${second.body.bookingId}/case`, priya)).res.status, 200, 'sharing survives a reschedule');
 });
+
+// ─── Applicant profile → dynamic requirements ─────────────────────────────────
+
+import { requirementsForProfile } from './services/profileRequirements.js';
+import { getRequirementsForCountry } from '@visaiq/mock-data';
+
+test('Requirements engine — the answers add exactly what this applicant needs, and nothing else', async () => {
+  const base = getRequirementsForCountry('France');
+  const ids = (p?: Parameters<typeof requirementsForProfile>[1]) => requirementsForProfile(base, p).requirements.map((r) => r.id);
+
+  assert.deepEqual(ids(undefined), base.requirements.map((r) => r.id), 'no answers → the official list, unchanged');
+  assert.ok(ids({ employmentStatus: 'employed' }).includes('profile-employment-letter'));
+  assert.ok(ids({ employmentStatus: 'self_employed' }).includes('profile-business-registration'));
+  assert.ok(ids({ employmentStatus: 'student' }).includes('profile-enrolment-letter'));
+  assert.ok(!ids({ employmentStatus: 'student' }).includes('profile-employment-letter'), 'a student is not asked for an employment letter');
+
+  const sponsored = ids({ financialSponsor: 'company' });
+  assert.ok(sponsored.includes('profile-sponsor-letter'));
+  assert.ok(!ids({ financialSponsor: 'self' }).includes('profile-sponsor-letter'), 'paying yourself needs no sponsor letter');
+
+  assert.ok(ids({ travelHistory: 'previously_refused' }).includes('profile-refusal-letter'));
+  assert.ok(!ids({ travelHistory: 'visited_no_issues' }).includes('profile-refusal-letter'));
+  assert.ok(ids({ familySituation: 'with_children' }).includes('profile-children-birth'));
+  assert.ok(ids({ age: 16 }).includes('profile-parental-consent'));
+  assert.ok(!ids({ age: 30 }).includes('profile-parental-consent'));
+  assert.ok(ids({ purpose: 'business' }).includes('profile-invitation-business'));
+
+  // No duplicates, and every added item says why it is asked for.
+  const full = requirementsForProfile(base, { employmentStatus: 'employed', financialSponsor: 'person', travelHistory: 'previously_refused', familySituation: 'married', age: 30, purpose: 'family_visit' });
+  assert.equal(new Set(full.requirements.map((r) => r.id)).size, full.requirements.length);
+  for (const r of full.requirements.filter((x) => x.id.startsWith('profile-'))) assert.ok(r.why && r.why.length > 20, `${r.id} has a reason`);
+});
+
+test('POST /applications — answers are stored and the checklist size matches the requirements engine', async () => {
+  const token = await registerFresh('profile');
+  const profile = { age: 34, purpose: 'business' as const, employmentStatus: 'self_employed' as const, financialSponsor: 'none' as const, travelHistory: 'previously_refused' as const, familySituation: 'married' as const };
+  const created = await post('/applications', { destinationCountry: 'Germany', visaType: 'Business', intendedFrom: '2027-03-01', profile }, token);
+  assert.equal(created.res.status, 201);
+  assert.deepEqual(created.body.application.profile, profile);
+  const expected = requirementsForProfile(getRequirementsForCountry('Germany'), profile).requirements.filter((r) => r.required).length;
+  assert.equal(created.body.application.documentsRequired, expected, 'the checklist size is the engine’s, not a fixed 6');
+
+  const plain = await post('/applications', { destinationCountry: 'France', visaType: 'Tourist', intendedFrom: '2027-03-01' }, token);
+  assert.equal(plain.body.application.documentsRequired, 6, 'no answers → the standard checklist');
+  assert.equal(plain.body.application.profile, undefined);
+
+  const bad = await post('/applications', { destinationCountry: 'France', visaType: 'Tourist', intendedFrom: '2027-03-01', profile: { employmentStatus: 'astronaut' } }, token);
+  assert.equal(bad.res.status, 400);
+  assert.equal(bad.body.error.code, 'INVALID_PROFILE');
+});
+
+test('POST /requirements/preview and GET /applications/:id/requirements — the same list before and after creating', async () => {
+  const token = await registerFresh('preview');
+  const profile = { employmentStatus: 'student', financialSponsor: 'person', age: 20, purpose: 'study' };
+  const preview = await post('/requirements/preview', { destinationCountry: 'France', profile }, token);
+  assert.equal(preview.res.status, 200);
+  assert.ok(preview.body.requirements.some((r: { id: string }) => r.id === 'profile-enrolment-letter'));
+  assert.ok(preview.body.requirements.some((r: { id: string }) => r.id === 'profile-sponsor-letter'));
+  assert.equal((await post('/requirements/preview', { destinationCountry: '' }, token)).res.status, 400);
+  assert.equal((await post('/requirements/preview', { destinationCountry: 'France' })).res.status, 401, 'needs sign-in');
+
+  const app = await post('/applications', { destinationCountry: 'France', visaType: 'Tourist', intendedFrom: '2027-03-01', profile }, token);
+  const saved = await get(`/applications/${app.body.application.id}/requirements`, token);
+  assert.equal(saved.res.status, 200);
+  assert.deepEqual(saved.body.requirements.map((r: { id: string }) => r.id), preview.body.requirements.map((r: { id: string }) => r.id));
+  const other = await registerFresh('preview-other');
+  assert.equal((await get(`/applications/${app.body.application.id}/requirements`, other)).res.status, 404, 'only the owner sees the checklist');
+});
+
+test('GET /documents — a profiled application lists the documents its answers call for', async () => {
+  const token = await registerFresh('docs');
+  await post('/applications', { destinationCountry: 'France', visaType: 'Tourist', intendedFrom: '2027-03-01', profile: { financialSponsor: 'person', travelHistory: 'previously_refused' } }, token);
+  const docs = (await get('/documents', token)).body.documents as Array<{ type: string; title: string }>;
+  assert.ok(docs.some((d) => d.type === 'sponsor'), 'sponsor document listed');
+  assert.ok(docs.some((d) => d.type === 'refusal'), 'refusal document listed');
+});

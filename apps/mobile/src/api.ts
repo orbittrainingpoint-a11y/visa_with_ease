@@ -154,6 +154,21 @@ export function fetchApplication(id: string) {
 export function deleteApplication(id: string) {
   return request<{ id: string; deleted: boolean; cancelledBookings: number; revokedGrants: number }>('DELETE', `/applications/${encodeURIComponent(id)}`);
 }
+/** The answers that decide which documents apply (mirrors the server's applicantProfileSchema). */
+export interface ApplicantProfile {
+  age?: number;
+  purpose?: 'tourism' | 'business' | 'family_visit' | 'study' | 'work' | 'medical' | 'transit' | 'other';
+  employmentStatus?: 'employed' | 'self_employed' | 'student' | 'unemployed' | 'retired' | 'homemaker';
+  financialSponsor?: 'none' | 'self' | 'person' | 'company' | 'institution';
+  travelHistory?: 'first_time' | 'visited_no_issues' | 'previously_refused' | 'overstayed';
+  familySituation?: 'single' | 'married' | 'with_children' | 'with_dependants';
+}
+export function previewRequirements(destinationCountry: string, profile: ApplicantProfile) {
+  return request<ApiRequirementsResponse>('POST', '/requirements/preview', { destinationCountry, profile });
+}
+export function fetchApplicationRequirements(applicationId: string) {
+  return request<ApiRequirementsResponse>('GET', `/applications/${encodeURIComponent(applicationId)}/requirements`);
+}
 export function createApplication(body: {
   destinationCountry: string;
   visaType: string;
@@ -163,6 +178,7 @@ export function createApplication(body: {
   purpose?: string;
   nationality?: string;
   residenceCountry?: string;
+  profile?: ApplicantProfile;
 }) {
   return request<{ application: ApiApplication }>('POST', '/applications', body);
 }
@@ -176,6 +192,8 @@ export interface ApiRequirement {
   satisfied: boolean;
   sourceIds: string[];
   why?: string;
+  /** passport, bank, employment, sponsor, refusal… — which kind of document satisfies it. */
+  docType?: string;
 }
 export interface ApiRequirementsVerification {
   status: 'verified' | 'unverified';

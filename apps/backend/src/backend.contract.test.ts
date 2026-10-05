@@ -1985,3 +1985,16 @@ test('GET /documents — a profiled application lists the documents its answers 
   assert.ok(docs.some((d) => d.type === 'sponsor'), 'sponsor document listed');
   assert.ok(docs.some((d) => d.type === 'refusal'), 'refusal document listed');
 });
+
+test('Consultant schedule — a deleted application never shows as "case shared"', async () => {
+  const priya = await inviteConsultant('c-priya', 'deleted');
+  const client = await registerFresh('deleted');
+  const app1 = await post('/applications', { destinationCountry: 'France', visaType: 'schengen-tourist', intendedFrom: '2026-12-01' }, client);
+  const appId = app1.body.application.id as string;
+  const booking = await post('/bookings', { consultantId: 'c-priya', applicationId: appId, sessionType: 'standard', slotISO: '2030-10-10T06:00:00.000Z' }, client);
+  await post('/access-grants', { applicationId: appId, consultantId: 'c-priya', categories: ['profile'], expiresAt: '2031-01-01T00:00:00.000Z', acceptedTerms: true }, client);
+  assert.equal((await del(`/applications/${appId}`, client)).res.status, 200);
+  const row = (await get('/consultant/appointments', priya)).body.appointments.find((a: { bookingId: string }) => a.bookingId === booking.body.bookingId);
+  if (row) assert.equal(row.access.granted, false, 'no access is shown for a deleted application');
+  assert.equal((await get(`/consultant/appointments/${booking.body.bookingId}/case`, priya)).res.status, 403, 'the case is closed');
+});

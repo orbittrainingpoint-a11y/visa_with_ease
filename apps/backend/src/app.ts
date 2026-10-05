@@ -1051,7 +1051,8 @@ export function createApp(services: Services = createServices(), options: AppOpt
       const apps = new Map(await Promise.all(appIds.map(async (id) => [id, await services.applications.getApplicationForStaff(id)] as const)));
       const rows = await Promise.all(mine.map(async (b) => {
         const application = apps.get(b.applicationId) ?? null;
-        const grant = pickGrant(grants, consultantId, b.applicationId);
+        // A grant for an application that has since been deleted gives access to nothing.
+        const grant = application ? pickGrant(grants, consultantId, b.applicationId) : null;
         return {
           bookingId: b.bookingId,
           status: b.status,
